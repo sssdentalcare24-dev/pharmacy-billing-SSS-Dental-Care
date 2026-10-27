@@ -56,7 +56,7 @@ Tick each item:
 7. On each clinic device: open the app → log in with the temporary password → set a personal password.
 8. Watch Settings → Audit log for the first day.
 
-**Rollback** (if anything is wrong): Apps Script → Manage deployments → edit → pick the previous version → Deploy; in GitHub revert the merge (or redeploy tag `v2-before-upgrade`). Data: see `MIGRATION.md` §8.
+**Rollback** (if anything is wrong): Apps Script → Manage deployments → edit → pick the previous version → Deploy; in GitHub revert the merge (the previous website is commit `9a392c4`). Data: see `MIGRATION.md` §8.
 
 ## D. Production deployment checklist
 
