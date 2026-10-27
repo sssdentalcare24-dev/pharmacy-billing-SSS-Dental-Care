@@ -6,197 +6,302 @@
 
 ;/* ══ FILE: 00-boot.js ══════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════
-   00-boot.js — loads FIRST. Speed helpers used by the rest of the app:
-   1. __sha256()        – password hashing (no plain passwords in code)
-   2. Data prefetch     – starts downloading Google Sheets data while the
-                          user is still typing the password
-   3. Offline queue     – if internet drops while saving, the save is
-                          kept on this device and retried automatically
-   4. Lazy lists        – long tables render 50 rows at a time, more load
-                          as you scroll
+   00-boot.js — loads FIRST. Secure connection layer (v3):
+   • API.login / API.call — POST + session token (no data in URLs)
+   • Every older fetch(...?action=...) call is converted automatically
+   • Offline queue with clear status per transaction:
+       saved · pending sync · sync failed (with reason)
+     Each write carries a unique request ID → server never duplicates it.
+   • Sync status line, online/offline indicator, last sync time
+   • Auto-logout after 30 minutes without use
+   • Small shared helpers: esc(), todayLocal(), newId(), qrDataUrl()
    ════════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
 
-  // ── 1. SHA-256 (sync, UTF-8) ───────────────────────────────────────
-  var K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
-  window.__sha256 = function (str) {
-    var bytes = Array.from(new TextEncoder().encode(String(str)));
-    var bitLen = bytes.length * 8;
-    bytes.push(0x80);
-    while (bytes.length % 64 !== 56) bytes.push(0);
-    for (var s = 7; s >= 0; s--) bytes.push(s >= 4 ? 0 : (bitLen >>> (s * 8)) & 0xff);
-    var H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
-    var W = new Array(64);
-    for (var off = 0; off < bytes.length; off += 64) {
-      for (var t = 0; t < 16; t++) W[t] = (bytes[off+t*4]<<24)|(bytes[off+t*4+1]<<16)|(bytes[off+t*4+2]<<8)|bytes[off+t*4+3];
-      for (t = 16; t < 64; t++) {
-        var x = W[t-15], y = W[t-2];
-        var s0 = ((x>>>7)|(x<<25)) ^ ((x>>>18)|(x<<14)) ^ (x>>>3);
-        var s1 = ((y>>>17)|(y<<15)) ^ ((y>>>19)|(y<<13)) ^ (y>>>10);
-        W[t] = (W[t-16] + s0 + W[t-7] + s1) | 0;
-      }
-      var a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
-      for (t = 0; t < 64; t++) {
-        var S1 = ((e>>>6)|(e<<26)) ^ ((e>>>11)|(e<<21)) ^ ((e>>>25)|(e<<7));
-        var ch = (e & f) ^ (~e & g);
-        var t1 = (h + S1 + ch + K[t] + W[t]) | 0;
-        var S0 = ((a>>>2)|(a<<30)) ^ ((a>>>13)|(a<<19)) ^ ((a>>>22)|(a<<10));
-        var mj = (a & b) ^ (a & c) ^ (b & c);
-        var t2 = (S0 + mj) | 0;
-        h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
-      }
-      H[0]=(H[0]+a)|0; H[1]=(H[1]+b)|0; H[2]=(H[2]+c)|0; H[3]=(H[3]+d)|0;
-      H[4]=(H[4]+e)|0; H[5]=(H[5]+f)|0; H[6]=(H[6]+g)|0; H[7]=(H[7]+h)|0;
-    }
-    return H.map(function (v) { return ('00000000' + (v >>> 0).toString(16)).slice(-8); }).join('');
+  // ── shared helpers ────────────────────────────────────────────────
+  var ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  window.esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ESC[c]; }); };
+  window.todayLocal = function () { return new Date().toLocaleDateString('en-CA'); };   // YYYY-MM-DD in clinic's local time
+  window.newId = function (prefix) { return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7).toUpperCase(); };
+  window.qrDataUrl = function (text, cell) {          // local QR (no third-party website)
+    try { var q = qrcode(0, 'M'); q.addData(String(text)); q.make(); return q.createDataURL(cell || 5, 2); } catch (e) { return ''; }
   };
 
-  // ── Helpers ────────────────────────────────────────────────────────
+  var IDLE_LOGOUT_MIN = 30;
+  var READS = { getAllData: 1, getSettings: 1, getExpenses: 1, whoami: 1, getStockMovements: 1, listUsers: 1, getAuditLog: 1,
+    listBackups: 1, validateData: 1, login: 1, logout: 1, ping: 1 };
+  var NO_QUEUE = { reserveReceiptNo: 1, changePassword: 1, createUser: 1, resetUserPassword: 1, setUserActive: 1, backupNow: 1 };
+  var LABELS = { saveBill: 'Bill', cancelBill: 'Cancel bill', deleteBill: 'Cancel bill', savePatient: 'Patient', deletePatient: 'Delete patient',
+    saveAppointment: 'Appointment', updateAppointmentStatus: 'Appointment status', deleteAppointment: 'Delete appointment',
+    saveTreatmentReceipt: 'Treatment receipt', savePrescription: 'Prescription', saveExamForm: 'Exam form', saveExpense: 'Expense',
+    deleteExpense: 'Delete expense', addMedicine: 'New medicine', updateMedicine: 'Medicine edit', addPurchase: 'Purchase',
+    cancelPurchase: 'Cancel purchase', deletePurchase: 'Cancel purchase', adjustStock: 'Stock adjustment', saveSettings: 'Settings' };
+
   function storedApiUrl() {
-    try { return (JSON.parse(localStorage.getItem('medistock_config') || '{}').apiUrl) || ''; }
-    catch (e) { return ''; }
+    try { return (JSON.parse(localStorage.getItem('medistock_config') || '{}').apiUrl) || ''; } catch (e) { return ''; }
   }
+  function apiUrl() { return (window.CONFIG && window.CONFIG.apiUrl) || storedApiUrl(); }
   function isApi(url) { return typeof url === 'string' && url.indexOf('script.google.com/macros/') !== -1; }
-  function paramsOf(url) { try { return new URL(url).searchParams; } catch (e) { return new URLSearchParams(''); } }
   function toast(msg, type) { if (typeof window.showToast === 'function') window.showToast(msg, type || 'success'); }
+  function jsonResponse(obj) { return new Response(JSON.stringify(obj), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
 
   var nativeFetch = window.fetch.bind(window);
 
-  // ── 2. Prefetch Sheets data while the login screen is showing ─────
-  var prefetch = null;
-  var api0 = storedApiUrl();
-  if (api0 && navigator.onLine !== false) {
-    var pUrl = api0 + '?action=getAllData';
-    prefetch = { url: pUrl, at: Date.now(), p: nativeFetch(pUrl, { method: 'GET', redirect: 'follow' }) };
-    prefetch.p.catch(function () { prefetch = null; });
+  // ── session ───────────────────────────────────────────────────────
+  var SKEY = 'ssdc_session';
+  var API = window.API = { session: null, lastSync: 0, lastResult: {} };
+  API.loadSession = function () {
+    try { API.session = JSON.parse(sessionStorage.getItem(SKEY) || 'null'); } catch (e) { API.session = null; }
+    return API.session;
+  };
+  API.saveSession = function (s) {
+    API.session = s;
+    try { if (s) sessionStorage.setItem(SKEY, JSON.stringify(s)); else sessionStorage.removeItem(SKEY); } catch (e) {}
+  };
+  API.token = function () { return API.session && API.session.token; };
+  API.user = function () { return API.session && API.session.user; };
+  API.isOwner = function () { var u = API.user(); return !!u && u.role === 'OWNER'; };
+  API.loadSession();
+
+  API.ensureUrl = function () {
+    if (apiUrl()) return true;
+    var url = (prompt('First-time setup on this device:\n\nPaste your Google Apps Script Web App link\n(ends with /exec).') || '').trim();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) {
+      if (url) alert('That does not look like an Apps Script link (https://script.google.com/macros/s/.../exec).');
+      return false;
+    }
+    var cfg = {}; try { cfg = JSON.parse(localStorage.getItem('medistock_config') || '{}'); } catch (e) {}
+    cfg.apiUrl = url; localStorage.setItem('medistock_config', JSON.stringify(cfg));
+    if (window.CONFIG) window.CONFIG.apiUrl = url;
+    return true;
+  };
+
+  function post(body) {
+    var url = apiUrl();
+    if (!url) return Promise.reject(new Error('No server link set'));
+    return nativeFetch(url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   }
 
-  // ── 3. Offline queue for saves ─────────────────────────────────────
-  // Only actions that are safe to send twice are queued (the server
-  // ignores duplicates / overwrites by ID).
-  var QUEUEABLE = { saveBill:1, deleteBill:1, savePatient:1, deletePatient:1, saveAppointment:1,
-    updateAppointmentStatus:1, deleteAppointment:1, saveExpense:1, deleteExpense:1,
-    updateMedicine:1, deleteMedicine:1, saveSettings:1, deletePurchase:1 };
-  var QKEY = 'ssdc_sync_queue';
-  function readQ() { try { return JSON.parse(localStorage.getItem(QKEY) || '[]'); } catch (e) { return []; } }
-  function writeQ(q) { try { localStorage.setItem(QKEY, JSON.stringify(q)); } catch (e) {} updateBadge(q.length); }
-  function keyOf(url) {
-    var p = paramsOf(url);
-    return p.get('action') + '|' + (p.get('id') || p.get('billId') || p.get('settingKey') || url);
+  function banner(msg) {
+    var el = document.getElementById('ssdcBanner');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'ssdcBanner';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100000;background:#c0392b;color:#fff;padding:10px 16px;font-weight:700;text-align:center;font-size:14px;';
+      document.body.appendChild(el);
+    }
+    el.textContent = '⚠️ ' + msg;
   }
-  function enqueue(url) {
-    var k = keyOf(url);
-    var q = readQ().filter(function (it) { return it.k !== k; });
-    q.push({ k: k, url: url, at: Date.now() });
+
+  // Session / permission codes are handled the same way for every call.
+  function handleCodes(res) {
+    if (!res || res.success !== false) return res;
+    if (res.code === 'AUTH_REQUIRED') {
+      API.saveSession(null);
+      if (typeof window.onSessionLost === 'function') window.onSessionLost(res.error);
+    } else if (res.code === 'MUST_CHANGE_PASSWORD') {
+      if (typeof window.openChangePassword === 'function') window.openChangePassword(true);
+    } else if (res.code === 'FORBIDDEN') {
+      toast('🔒 ' + res.error, 'warning');
+    } else if (res.code === 'MIGRATION_REQUIRED' || res.code === 'USE_POST') {
+      banner(res.error);
+    }
+    return res;
+  }
+
+  API.login = function (username, password) {
+    return post({ action: 'login', username: username, password: password }).then(function (res) {
+      if (res.success) API.saveSession({ token: res.token, user: res.user, at: Date.now() });
+      else if (res.code === 'MIGRATION_REQUIRED' || res.code === 'USE_POST') banner(res.error);
+      return res;
+    });
+  };
+  API.logout = function () {
+    var t = API.token(); API.saveSession(null);
+    if (t) post({ action: 'logout', token: t }).catch(function () {});
+  };
+
+  // Direct call. Writes get a request ID; if the network is down they are queued
+  // (unless interactive) and the promise resolves with {queued:true}.
+  API.call = function (action, params, opts) {
+    opts = opts || {};
+    var p = Object.assign({}, params || {});
+    var reqId = READS[action] ? '' : (p.reqId || newId('R'));
+    var body = Object.assign({}, p, { action: action, token: API.token() });
+    if (reqId) body.reqId = reqId;
+    return post(body).then(function (res) {
+      handleCodes(res);
+      if (action === 'getAllData' && res && res.success !== false) { API.lastSync = Date.now(); res = mergePending(res); updateStatusLine(); }
+      // session ended / server busy: keep the write and send it after login / later
+      if (reqId && !NO_QUEUE[action] && !opts.noQueue && res && ['AUTH_REQUIRED', 'MUST_CHANGE_PASSWORD', 'BUSY', 'RATE_LIMIT', 'SERVER_ERROR'].indexOf(res.code) !== -1) {
+        delete p.token; enqueue(action, p, reqId);
+        return { success: false, code: res.code, queued: true, reqId: reqId, error: res.error };
+      }
+      return res;
+    }, function (err) {
+      if (reqId && !NO_QUEUE[action] && !opts.noQueue) {
+        delete p.token; enqueue(action, p, reqId);
+        return { success: false, code: 'OFFLINE', queued: true, reqId: reqId, error: 'No internet — saved on this device, will sync automatically' };
+      }
+      return { success: false, code: 'NETWORK', error: 'No internet connection' };
+    });
+  };
+
+  // ── offline queue ─────────────────────────────────────────────────
+  var QKEY = 'ssdc_sync_queue_v2';
+  function readQ() { try { return JSON.parse(localStorage.getItem(QKEY) || '[]'); } catch (e) { return []; } }
+  // Carry over unsent items from the previous app version (URL-based queue) so nothing is lost.
+  (function migrateOldQueue() {
+    try {
+      var old = JSON.parse(localStorage.getItem('ssdc_sync_queue') || '[]');
+      if (!old.length) return;
+      var q = readQ();
+      old.forEach(function (it) {
+        var u = new URL(it.url), params = {}; u.searchParams.forEach(function (v, k) { params[k] = v; });
+        var action = params.action; delete params.action;
+        if (action) q.push({ reqId: newId('R'), action: action, params: params, at: it.at || Date.now(), status: 'pending', attempts: 0, error: '' });
+      });
+      localStorage.setItem(QKEY, JSON.stringify(q));
+      localStorage.removeItem('ssdc_sync_queue');
+    } catch (e) {}
+  })();
+  function writeQ(q) { try { localStorage.setItem(QKEY, JSON.stringify(q)); } catch (e) {} updateStatusLine(); }
+  function enqueue(action, params, reqId) {
+    var q = readQ();
+    if (q.some(function (it) { return it.reqId === reqId; })) return;
+    q.push({ reqId: reqId, action: action, params: params, at: Date.now(), status: 'pending', attempts: 0, error: '' });
     writeQ(q);
   }
-  function dropKey(k) {
-    var q = readQ(); var n = q.filter(function (it) { return it.k !== k; });
-    if (n.length !== q.length) writeQ(n);
+  function summary(it) {
+    var p = it.params || {};
+    return (LABELS[it.action] || it.action) + ' · ' + (p.patientName || p.patient || p.name || p.medicineName || p.billId || p.id || p.settingKey || '');
   }
-  function updateBadge(n) {
-    var el = document.getElementById('syncQueueBadge');
-    if (!el) {
-      if (!n) return;
-      el = document.createElement('div');
-      el.id = 'syncQueueBadge';
-      el.title = 'Saved on this device, waiting for internet';
-      el.onclick = function () { window.__flushSyncQueue(true); };
-      (document.body || document.documentElement).appendChild(el);
-    }
-    el.textContent = '⏳ ' + n + ' waiting to sync';
-    el.style.display = n ? 'block' : 'none';
-  }
+  API.queue = {
+    list: readQ,
+    summary: summary,
+    counts: function () { var q = readQ(); return { pending: q.filter(function (i) { return i.status !== 'failed'; }).length, failed: q.filter(function (i) { return i.status === 'failed'; }).length }; },
+    retry: function (reqId) { var q = readQ(); q.forEach(function (i) { if (i.reqId === reqId) { i.status = 'pending'; i.error = ''; } }); writeQ(q); return API.queue.flush(true); },
+    discard: function (reqId) { writeQ(readQ().filter(function (i) { return i.reqId !== reqId; })); },
+    pendingParams: function (action) { return readQ().filter(function (i) { return i.action === action; }).map(function (i) { return i.params; }); }
+  };
   var flushing = false;
-  window.__flushSyncQueue = function (manual) {
-    if (flushing || navigator.onLine === false) return Promise.resolve();
-    var q = readQ(); if (!q.length) return Promise.resolve();
-    flushing = true; var done = 0;
+  API.queue.flush = function (manual) {
+    if (flushing || !API.token() || navigator.onLine === false) return Promise.resolve();
+    var q = readQ().filter(function (i) { return i.status !== 'failed'; });
+    if (!q.length) return Promise.resolve();
+    flushing = true;
+    var done = 0, failed = 0, stop = false;
     return q.reduce(function (chain, it) {
       return chain.then(function () {
-        return nativeFetch(it.url, { method: 'GET', redirect: 'follow' })
-          .then(function (r) { return r.json(); })
-          .then(function (res) { if (res && res.success !== false) { dropKey(it.k); done++; } })
-          .catch(function () {});
+        if (stop) return;
+        return post(Object.assign({}, it.params, { action: it.action, token: API.token(), reqId: it.reqId })).then(function (res) {
+          var all = readQ(), cur = all.filter(function (x) { return x.reqId === it.reqId; })[0];
+          if (!cur) return;
+          if (res && res.success !== false) { writeQ(all.filter(function (x) { return x.reqId !== it.reqId; })); done++; return; }
+          handleCodes(res);
+          if (['AUTH_REQUIRED', 'MUST_CHANGE_PASSWORD', 'BUSY', 'RATE_LIMIT', 'SERVER_ERROR', 'MIGRATION_REQUIRED', 'USE_POST'].indexOf(res && res.code) !== -1) {
+            cur.attempts++; cur.error = res.error || ''; writeQ(all); stop = true; return;
+          }
+          cur.status = 'failed'; cur.error = (res && res.error) || 'Rejected by server'; writeQ(all); failed++;
+        }, function () { stop = true; });   // still offline
       });
     }, Promise.resolve()).then(function () {
       flushing = false;
-      if (done) toast('☁️ ' + done + ' pending item(s) synced to Google Sheets', 'success');
-      else if (manual) toast('Still offline — will retry automatically', 'warning');
+      if (done) { toast('☁️ ' + done + ' saved item(s) synced to Google Sheets', 'success'); if (typeof window.loadData === 'function') window.loadData(); }
+      if (failed) toast('❌ ' + failed + ' item(s) could not be saved — tap the red sync status to see why', 'error');
+      else if (manual && !done) toast(navigator.onLine === false ? 'Still offline — will retry automatically' : 'Nothing could be sent yet', 'warning');
     });
   };
 
-  // Pending (unsynced) bills are merged into fresh server data so they
-  // never "disappear" from the list while waiting to sync.
+  // Records saved offline stay visible (marked) until the server confirms them.
   function mergePending(data) {
-    var q = readQ(); if (!q.length || !data || !Array.isArray(data.bills)) return data;
-    var have = {}; data.bills.forEach(function (b) { have[String(b.billId)] = 1; });
+    var q = readQ(); if (!q.length || !data) return data;
+    var haveBill = {}; (data.bills || []).forEach(function (b) { haveBill[String(b.billId)] = 1; });
+    var ids = function (list, key) { var m = {}; (list || []).forEach(function (x) { m[String(x[key || 'id'])] = 1; }); return m; };
+    var havePt = ids(data.patients), haveAp = ids(data.appointments), haveEx = ids(data.expenses);
     q.forEach(function (it) {
-      var p = paramsOf(it.url);
-      if (p.get('action') === 'saveBill' && !have[p.get('billId')]) {
-        var items = []; try { items = JSON.parse(p.get('items') || '[]'); } catch (e) {}
-        data.bills.push({ billId: p.get('billId'), patientName: p.get('patientName') || '', doctor: p.get('doctor') || '',
-          phone: p.get('phone') || '', date: p.get('date') || '', subtotal: +p.get('subtotal') || 0,
-          discount: +p.get('discount') || 0, total: +p.get('total') || 0, costTotal: +p.get('costTotal') || 0,
-          paymentMode: p.get('paymentMode') || 'Cash', items: items });
+      var p = it.params || {}, st = it.status === 'failed' ? 'failed' : 'pending';
+      if (it.action === 'saveBill' && !haveBill[p.billId] && data.bills) {
+        var items = []; try { items = typeof p.items === 'string' ? JSON.parse(p.items) : (p.items || []); } catch (e) {}
+        data.bills.push({ billId: p.billId, patientName: p.patientName || '', doctor: p.doctor || '', phone: p.phone || '', date: p.date || todayLocal(),
+          subtotal: +p.subtotal || 0, discount: +p.discount || 0, total: +p.total || 0, costTotal: +p.costTotal || 0,
+          paymentMode: p.paymentMode || 'Cash', items: items, syncStatus: st, syncError: it.error });
       }
-      if (p.get('action') === 'deleteBill') {
-        data.bills = data.bills.filter(function (b) { return String(b.billId) !== p.get('billId'); });
-      }
+      if ((it.action === 'cancelBill' || it.action === 'deleteBill') && data.bills) data.bills = data.bills.filter(function (b) { return String(b.billId) !== String(p.billId); });
+      if (it.action === 'savePatient' && data.patients && !havePt[p.id]) data.patients.push(Object.assign({}, p, { syncStatus: st }));
+      if (it.action === 'saveAppointment' && data.appointments && !haveAp[p.id]) data.appointments.push(Object.assign({}, p, { syncStatus: st }));
+      if (it.action === 'saveExpense' && data.expenses && !haveEx[p.id]) data.expenses.push(Object.assign({}, p, { amount: +p.amount || 0, syncStatus: st }));
     });
     return data;
   }
-  function jsonResponse(obj) {
-    return new Response(JSON.stringify(obj), { status: 200, headers: { 'Content-Type': 'application/json' } });
-  }
 
-  // ── fetch wrapper (only touches Google Apps Script calls) ─────────
+  // ── every legacy fetch(...?action=...) goes through the secure POST ──
   window.fetch = function (input, init) {
-    var url = typeof input === 'string' ? input : '';
-    var method = ((init && init.method) || 'GET').toUpperCase();
-    if (!isApi(url) || method !== 'GET') return nativeFetch(input, init);
-    var action = paramsOf(url).get('action') || 'getAllData';
-
-    if (action === 'getAllData') {
-      var src;
-      if (prefetch && prefetch.url === url && Date.now() - prefetch.at < 120000) {
-        var pf = prefetch; prefetch = null;
-        src = pf.p.then(function (r) { return r.clone(); }, function () { return nativeFetch(input, init); });
-      } else {
-        src = nativeFetch(input, init);
-      }
-      return src.then(function (r) {
-        if (!r.ok) return r;
-        return r.clone().json().then(function (d) { return jsonResponse(mergePending(d)); }, function () { return r; });
-      });
-    }
-
-    if (QUEUEABLE[action]) {
-      var k = keyOf(url);
-      return nativeFetch(input, init).then(function (r) { dropKey(k); return r; }, function (err) {
-        enqueue(url);
-        throw err;
-      });
-    }
-    return nativeFetch(input, init);
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (!isApi(url)) return nativeFetch(input, init);
+    var u; try { u = new URL(url); } catch (e) { return nativeFetch(input, init); }
+    var params = {}; u.searchParams.forEach(function (v, k) { params[k] = v; });
+    var action = params.action || 'getAllData'; delete params.action;
+    if (!API.token()) return Promise.resolve(jsonResponse({ success: false, code: 'AUTH_REQUIRED', error: 'Please log in' }));
+    var reqId = READS[action] ? '' : newId('R');
+    var body = Object.assign({}, params, { action: action, token: API.token() }); if (reqId) body.reqId = reqId;
+    return post(body).then(function (res) {
+      handleCodes(res);
+      if (action === 'getAllData' && res && res.success !== false) { API.lastSync = Date.now(); res = mergePending(res); updateStatusLine(); }
+      return jsonResponse(res);
+    }, function (err) {
+      if (reqId && !NO_QUEUE[action]) enqueue(action, params, reqId);
+      throw err;      // older code then shows its "saved locally / offline" message
+    });
   };
 
-  window.addEventListener('online', function () { setTimeout(window.__flushSyncQueue, 1500); });
-  setInterval(function () { window.__flushSyncQueue(); }, 60000);
-  document.addEventListener('DOMContentLoaded', function () {
-    updateBadge(readQ().length);
-    setTimeout(window.__flushSyncQueue, 8000);
+  // ── sync status line (sidebar) + badge ────────────────────────────
+  function fmtTime(t) { return t ? new Date(t).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'; }
+  function updateStatusLine() {
+    var c = API.queue ? API.queue.counts() : { pending: 0, failed: 0 };
+    var online = navigator.onLine !== false;
+    var line = document.getElementById('syncStatusLine');
+    if (line) {
+      line.innerHTML = '<span style="color:' + (online ? '#2ecc71' : '#f39c12') + ';">●</span> ' + (online ? 'Online' : 'Offline')
+        + ' · synced ' + fmtTime(API.lastSync)
+        + (c.pending ? ' · <b style="color:#f8c471;">' + c.pending + ' waiting</b>' : '')
+        + (c.failed ? ' · <b style="color:#ff8a80;">' + c.failed + ' failed</b>' : '');
+    }
+    var el = document.getElementById('syncQueueBadge');
+    if (!el && (c.pending || c.failed) && document.body) {
+      el = document.createElement('div'); el.id = 'syncQueueBadge';
+      el.onclick = function () { if (typeof window.openSyncCentre === 'function') window.openSyncCentre(); else API.queue.flush(true); };
+      document.body.appendChild(el);
+    }
+    if (el) {
+      el.textContent = c.failed ? '❌ ' + c.failed + ' not saved — tap' : '⏳ ' + c.pending + ' waiting to sync';
+      el.style.background = c.failed ? '#c0392b' : '#f39c12';
+      el.style.display = (c.pending || c.failed) ? 'block' : 'none';
+    }
+  }
+  API.updateStatusLine = updateStatusLine;
+  window.addEventListener('online', function () { updateStatusLine(); setTimeout(function () { API.queue.flush(); }, 1500); });
+  window.addEventListener('offline', updateStatusLine);
+  setInterval(function () { API.queue.flush(); }, 60000);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener && navigator.serviceWorker.addEventListener('message', function (e) {
+    if (e.data === 'ssdc-sync') API.queue.flush();
   });
+  document.addEventListener('DOMContentLoaded', function () { updateStatusLine(); setTimeout(function () { API.queue.flush(); }, 5000); });
 
-  // ── 4. Lazy lists (render 50 rows, load more on scroll) ───────────
+  // ── auto-logout after inactivity ──────────────────────────────────
+  var lastActivity = Date.now();
+  ['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(function (ev) {
+    window.addEventListener(ev, function () { lastActivity = Date.now(); }, { passive: true, capture: true });
+  });
+  setInterval(function () {
+    if (API.token() && Date.now() - lastActivity > IDLE_LOGOUT_MIN * 60000 && typeof window.doLogout === 'function') {
+      window.doLogout(true);
+      toast('🔒 Logged out after ' + IDLE_LOGOUT_MIN + ' minutes without use', 'warning');
+    }
+  }, 30000);
+
+  // ── lazy lists (render 50 rows, load more on scroll) ──────────────
   var PAGE = 50;
   window.__lazyLimits = {};
   window.__lazyRender = {};
@@ -207,8 +312,7 @@
     if (shown >= total) return '';
     setTimeout(observe, 0);
     var btn = '<button type="button" class="lazy-more" data-lazy="' + key + '" onclick="__lazyLoadMore(\'' + key + '\')">⬇ Show more (' + (total - shown) + ' more)</button>';
-    return colspan ? '<tr class="lazy-more-row"><td colspan="' + colspan + '">' + btn + '</td></tr>'
-                   : '<div class="lazy-more-wrap">' + btn + '</div>';
+    return colspan ? '<tr class="lazy-more-row"><td colspan="' + colspan + '">' + btn + '</td></tr>' : '<div class="lazy-more-wrap">' + btn + '</div>';
   };
   window.__lazyLoadMore = function (key) {
     window.__lazyLimits[key] = (window.__lazyLimits[key] || PAGE) + PAGE * 2;
@@ -216,9 +320,7 @@
     if (fn) { window.__lazyKeep = true; try { fn(); } finally { window.__lazyKeep = false; } }
   };
   var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function (entries) {
-    entries.forEach(function (en) {
-      if (en.isIntersecting) { io.unobserve(en.target); window.__lazyLoadMore(en.target.getAttribute('data-lazy')); }
-    });
+    entries.forEach(function (en) { if (en.isIntersecting) { io.unobserve(en.target); window.__lazyLoadMore(en.target.getAttribute('data-lazy')); } });
   }, { rootMargin: '400px' }) : null;
   function observe() {
     if (!io) return;
@@ -248,59 +350,89 @@
         let bills = [];
         let purchases = [];
         let cart = [];
+        let cancelledBills = [];      // owner: cancelled bills (kept, not deleted)
+        let serverTreatments = [];    // dental treatment receipts from Sheets (dental revenue)
         let currentPage = 'dashboard';
+        // Other modules use window.medicines / window.bills — make those point at the real data.
+        Object.defineProperties(window, {
+            medicines:        { get: () => medicines,        set: v => { medicines = v; },        configurable: true },
+            bills:            { get: () => bills,            set: v => { bills = v; },            configurable: true },
+            purchases:        { get: () => purchases,        set: v => { purchases = v; },        configurable: true },
+            cart:             { get: () => cart,             set: v => { cart = v; },             configurable: true },
+            cancelledBills:   { get: () => cancelledBills,   set: v => { cancelledBills = v; },   configurable: true },
+            serverTreatments: { get: () => serverTreatments, set: v => { serverTreatments = v; }, configurable: true }
+        });
 
         // ============ LOGIN / AUTH ============
-        // Passwords are stored only as SHA-256 hashes (never plain text in public code).
-        // To change a password: open the app, press F12 → Console, run
-        //   __sha256('ssdc|owner|NEW_PASSWORD')   (or 'ssdc|staff|NEW_PASSWORD')
-        // and paste the result below.
-        const CREDENTIALS = {
-            owner: { username: 'owner', hash: 'e4a5873d591d1aaecce6c14588b5ee697251baddc12417f87904ce42447405e1' },
-            staff: { username: 'staff', hash: '64fcd924b3a21386dc4e49f5665b4ec635a4feffb8395c608bef60d6aad6ac62' }
-        };
-
+        // Login is checked by the server (apps-script/Code.gs). No passwords or hashes in this file.
         let currentRole = null; // 'owner' or 'staff'
         let selectedRole = 'owner';
 
-        function selectRole(role) {
+        function selectRole(role, keepError) {
             selectedRole = role;
             document.getElementById('tabOwner').classList.toggle('active', role === 'owner');
             document.getElementById('tabStaff').classList.toggle('active', role === 'staff');
-            document.getElementById('loginUsername').value = '';
+            document.getElementById('loginUsername').value = role;      // usernames are created by the owner; these are the defaults
             document.getElementById('loginPassword').value = '';
-            document.getElementById('loginError').style.display = 'none';
+            if (!keepError) document.getElementById('loginError').style.display = 'none';
         }
 
-        function doLogin() {
-            const username = document.getElementById('loginUsername').value.trim();
+        let _loggingIn = false;
+        async function doLogin() {
+            if (_loggingIn) return;
+            const errEl = document.getElementById('loginError');
+            const username = (document.getElementById('loginUsername').value || '').trim();
             const password = document.getElementById('loginPassword').value;
-            const cred = CREDENTIALS[selectedRole];
-            if (username === cred.username && __sha256('ssdc|' + selectedRole + '|' + password) === cred.hash) {
-                currentRole = selectedRole;
-                document.getElementById('loginScreen').classList.add('hidden');
-                applyRoleUI();
-                initApp();
-            } else {
-                document.getElementById('loginError').style.display = 'block';
-            }
+            if (!username || !password) { errEl.textContent = '❌ Enter username and password'; errEl.style.display = 'block'; return; }
+            if (!API.ensureUrl()) return;
+            const btn = document.querySelector('.login-btn');
+            _loggingIn = true; if (btn) { btn.disabled = true; btn.textContent = '⏳ Checking…'; }
+            let res;
+            try { res = await API.login(username, password); }
+            catch (e) { res = { success: false, error: 'Cannot reach the server — check internet' }; }
+            _loggingIn = false; if (btn) { btn.disabled = false; btn.textContent = '🔐 Login'; }
+            if (!res.success) { errEl.textContent = '❌ ' + (res.error || 'Login failed'); errEl.style.display = 'block'; return; }
+            errEl.style.display = 'none';
+            document.getElementById('loginPassword').value = '';
+            startSession(res.user);
         }
 
-        function doLogout() {
+        // Called after login and when the app is reopened with a live session.
+        function startSession(user) {
+            currentRole = user.role === 'OWNER' ? 'owner' : 'staff';
+            document.getElementById('loginScreen').classList.add('hidden');
+            applyRoleUI();
+            if (user.mustChangePassword) { if (typeof openChangePassword === 'function') openChangePassword(true); return; }
+            initApp();
+            API.queue.flush();
+        }
+
+        // Server said the session ended (expired, password changed, account disabled).
+        window.onSessionLost = function (msg) {
+            if (!currentRole) return;
+            doLogout(true);
+            const errEl = document.getElementById('loginError');
+            errEl.textContent = '🔒 ' + (msg || 'Session ended — please log in again'); errEl.style.display = 'block';
+        };
+
+        function doLogout(silent) {
+            API.logout();
             currentRole = null;
             selectedRole = 'owner';
             document.getElementById('loginScreen').classList.remove('hidden');
             document.getElementById('loginUsername').value = '';
             document.getElementById('loginPassword').value = '';
-            document.getElementById('loginError').style.display = 'none';
-            selectRole('owner');
+            if (!silent) document.getElementById('loginError').style.display = 'none';
+            selectRole('owner', true);
         }
+        window.doLogout = doLogout;
 
         function applyRoleUI() {
             const isOwner = currentRole === 'owner';
             // Update user badge
+            const u = API.user() || {};
             document.getElementById('userIcon').textContent = isOwner ? '👑' : '👨‍⚕️';
-            document.getElementById('userName').textContent = isOwner ? 'Owner' : 'Staff';
+            document.getElementById('userName').textContent = u.displayName || (isOwner ? 'Owner' : 'Staff');
             // Show/hide owner-only nav items
             document.querySelectorAll('.owner-only').forEach(el => {
                 el.classList.toggle('hidden', !isOwner);
@@ -409,15 +541,17 @@
                     medicines = c.medicines || [];
                     bills = c.bills || [];
                     purchases = c.purchases || [];
+                    serverTreatments = c.serverTreatments || [];
                     refreshUI();
-                    
                 } catch(e) {}
             }
             loadData();
             updateDate();
-            setInterval(updateDate, 60000);
-            // Auto-refresh from Sheets every 30 seconds
-            setInterval(function(){ loadData(); }, 300000);
+            if (!window.__appTimers) {
+                window.__appTimers = true;
+                setInterval(updateDate, 60000);
+                setInterval(function(){ if (API.token()) loadData(); }, 300000);   // refresh from Sheets every 5 min
+            }
         }
         // ============ END LOGIN / AUTH ============
 
@@ -492,174 +626,97 @@
             }, 800);
         }
 
-        // LOAD DATA FROM GOOGLE SHEETS
+        function _normTime(t) {
+            if(!t && t!==0) return '';
+            var s = String(t).trim();
+            if (/^\d{1,2}:\d{2}\s*(AM|PM)$/i.test(s)) return s.toUpperCase();
+            var h, m;
+            var num = parseFloat(s);
+            if (!isNaN(num) && num >= 0 && num < 1) { var totalMins = Math.round(num * 24 * 60); h = Math.floor(totalMins / 60); m = totalMins % 60; }
+            if (h === undefined && s.includes('T')) { var d = new Date(s); if (!isNaN(d)) { h = d.getUTCHours(); m = d.getUTCMinutes(); } }
+            if (h === undefined && /^\d{1,2}:\d{2}$/.test(s)) { var pts = s.split(':'); h = parseInt(pts[0]); m = parseInt(pts[1]); }
+            if (h === undefined) return s;
+            var snapM = m < 15 ? 0 : m < 45 ? 30 : 0, snapH = m >= 45 ? h + 1 : h;
+            if (snapH >= 24) snapH = 23;
+            return ('0' + (snapH % 12 || 12)).slice(-2) + ':' + (snapM === 0 ? '00' : '30') + ' ' + (snapH < 12 ? 'AM' : 'PM');
+        }
+        function _normBill(b) {
+            let items = b.items || [];
+            if (typeof items === 'string') { try { items = JSON.parse(items); } catch(e) { items = []; } }
+            if (Array.isArray(items)) items = items.map(i => typeof i === 'string' ? (() => { try { return JSON.parse(i); } catch(e) { return i; } })() : i);
+            return { ...b, phone: String(b.phone || ''), date: b.date ? String(b.date).split('T')[0] : '',
+                total: parseFloat(b.total) || 0, subtotal: parseFloat(b.subtotal) || 0, discount: parseFloat(b.discount) || 0,
+                costTotal: parseFloat(b.costTotal) || 0, items: items, syncStatus: b.syncStatus || 'saved' };
+        }
+
+        // LOAD DATA FROM GOOGLE SHEETS (secure, via the server session)
+        let _firstLoadDone = false;
         async function loadData() {
-            if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) {
-                CONFIG.demoMode = true;
-                loadDemoData();
+            if (!CONFIG.apiUrl || !API.token()) { updateConnectionStatus(false); return; }
+            const data = await API.call('getAllData');
+            if (!data || data.success === false) {
                 updateConnectionStatus(false);
-                showToast('Demo Mode - Set API URL in Settings to use live data', 'warning');
+                // Keep showing the data already on screen / saved on this device. Never swap in demo data.
+                if (data && (data.code === 'NETWORK' || data.code === 'OFFLINE')) showToast('📴 Offline — showing data saved on this device', 'warning');
+                else if (data && ['AUTH_REQUIRED', 'MUST_CHANGE_PASSWORD', 'MIGRATION_REQUIRED', 'USE_POST'].indexOf(data.code) === -1)
+                    showToast('⚠️ Could not load from Google Sheets: ' + (data.error || ''), 'warning');
                 return;
             }
+            medicines = (data.medicines || []).map(m => ({ ...m, stock: parseInt(m.stock) || 0, price: parseFloat(m.price) || 0, costPrice: parseFloat(m.costPrice) || 0 }));
+            bills = (data.bills || []).map(_normBill);
+            cancelledBills = (data.cancelledBills || []).map(_normBill);
+            purchases = data.purchases || [];
+            serverTreatments = data.treatmentReceipts || [];
+            if (data.staffMaxDiscountPct !== undefined) CONFIG.staffMaxDiscountPct = parseFloat(data.staffMaxDiscountPct);
 
-            try {
-                // Google Apps Script CORS fix:
-                // - No custom headers (they trigger a preflight OPTIONS that Apps Script rejects)
-                // - redirect: 'follow' is required because Apps Script issues a redirect on GET
-                const url = CONFIG.apiUrl + '?action=getAllData';
-                const response = await fetch(url, {
-                    method: 'GET',
-                    redirect: 'follow'
-                });
-                
-                if (!response.ok) {
-                    throw new Error('HTTP ' + response.status);
-                }
-                
-                const data = await response.json();
-
-                // Normalize types — Sheets can return numbers as strings
-                medicines = (data.medicines || []).map(m => ({
-                    ...m,
-                    stock: parseInt(m.stock) || 0,
-                    price: parseFloat(m.price) || 0,
-                    costPrice: parseFloat(m.costPrice) || 0
-                }));
-                bills = (data.bills || []).map(b => {
-                    let items = b.items || [];
-                    if (typeof items === 'string') {
-                        try { items = JSON.parse(items); } catch(e) { items = []; }
-                    }
-                    // Handle double-encoded: each element might still be a string
-                    if (Array.isArray(items)) {
-                        items = items.map(i => typeof i === 'string' ? (() => { try { return JSON.parse(i); } catch(e) { return i; } })() : i);
-                    }
-                    return {
-                        ...b,
-                        phone: String(b.phone || ''),
-                        date: b.date ? String(b.date).split('T')[0] : '',
-                        total: parseFloat(b.total) || 0,
-                        subtotal: parseFloat(b.subtotal) || 0,
-                        discount: parseFloat(b.discount) || 0,
-                        costTotal: parseFloat(b.costTotal) || 0,
-                        items: items
-                    };
-                });
-                purchases = data.purchases || [];
-
-                // Load patients & appointments - always update from Sheets or keep localStorage
-                // Always update patients from Sheets if available, otherwise keep localStorage
-                if (data.patients && data.patients.length) {
-                    _patients = data.patients.map(function(p){ return {
-                        id: p.id||('PT-'+Date.now()+Math.random()),
-                        name: p.name||'', phone: String(p.phone||''), age: p.age||'',
-                        sex: p.sex||'', doctor: p.doctor||'', treatment: p.treatment||'',
-                        balance: parseFloat(p.balance)||0, alerts: p.alerts||'',
-                        status: p.status||'Active', lastVisit: p.lastVisit||'', addedOn: p.addedOn||''
-                    }; });
-                    localStorage.setItem('pt_records', JSON.stringify(_patients));
-                }
-                if (data.appointments && data.appointments.length) {
-                    _appointments = data.appointments.map(function(a){ return {
-                        id: a.id||('A'+Date.now()+Math.random()),
-                        patient: a.patient||'', phone: String(a.phone||''), date: a.date||'',
-                        time: (function(t){
-                            if(!t && t!==0) return '';
-                            var s = String(t).trim();
-                            // Already correct slot format e.g. "10:30 AM"
-                            if (/^\d{1,2}:\d{2}\s*(AM|PM)$/i.test(s)) return s.toUpperCase();
-                            var h, m;
-                            // Google Sheets decimal fraction of day e.g. 0.4375 = 10:30 AM
-                            var num = parseFloat(s);
-                            if (!isNaN(num) && num >= 0 && num < 1) {
-                                var totalMins = Math.round(num * 24 * 60);
-                                h = Math.floor(totalMins / 60);
-                                m = totalMins % 60;
-                            }
-                            // ISO timestamp e.g. "1970-01-01T05:08:00.000Z"
-                            if (h === undefined && s.includes('T')) {
-                                var d = new Date(s);
-                                if (!isNaN(d)) { h = d.getUTCHours(); m = d.getUTCMinutes(); }
-                            }
-                            // Raw 24h time e.g. "10:30" or "05:08"
-                            if (h === undefined && /^\d{1,2}:\d{2}$/.test(s)) {
-                                var pts = s.split(':'); h = parseInt(pts[0]); m = parseInt(pts[1]);
-                            }
-                            if (h === undefined) return s;
-                            // Snap to nearest valid slot (every 30 min)
-                            var snapM = m < 15 ? 0 : m < 45 ? 30 : 0;
-                            var snapH = m >= 45 ? h + 1 : h;
-                            if (snapH >= 24) snapH = 23;
-                            var ampm = snapH < 12 ? 'AM' : 'PM';
-                            var h12 = snapH % 12 || 12;
-                            return ('0' + h12).slice(-2) + ':' + (snapM === 0 ? '00' : '30') + ' ' + ampm;
-                        })(a.time),
-                        reason: a.reason||'', doctor: a.doctor||'',
-                        status: a.status||'Confirmed', bookedAt: a.bookedAt||''
-                    }; });
-                    localStorage.setItem('appointments', JSON.stringify(_appointments));
-                }
-
-                // ── LOAD EXPENSES FROM SHEETS ──────────────────────
-                if (data.expenses && data.expenses.length) {
-                    var sheetExpenses = data.expenses.map(function(e){ return {
-                        id:       e.id       || ('EXP-' + Date.now() + Math.random()),
-                        date:     e.date     ? String(e.date).split('T')[0] : '',
-                        category: e.category || '',
-                        amount:   parseFloat(e.amount)  || 0,
-                        vendor:   e.vendor   || '',
-                        notes:    e.notes    || '',
-                        mode:     e.mode     || e.paymentMode || e['Payment Mode'] || 'Cash',
-                        addedAt:  e.addedAt  || e.added_at || ''
-                    }; });
-                    // Merge: keep local entries not in Sheets, add Sheets entries not local
-                    var localExpenses = JSON.parse(localStorage.getItem('clinic_expenses') || '[]');
-                    var sheetIds = sheetExpenses.map(function(e){ return e.id; });
-                    var localOnly = localExpenses.filter(function(e){ return sheetIds.indexOf(e.id) === -1; });
-                    _expenses = sheetExpenses.concat(localOnly);
-                    // Sort newest first by date
-                    _expenses.sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
-                    localStorage.setItem('clinic_expenses', JSON.stringify(_expenses));
-                }
-                // ───────────────────────────────────────────────────
-
-                CONFIG.demoMode = false;
-                updateConnectionStatus(true);
-                // Cache data locally for fast next login
-                try {
-                    localStorage.setItem('medistock_cache', JSON.stringify({ medicines, bills, purchases }));
-                } catch(e) {}
-                refreshUI();
-                // Force refresh patients, appointments and expenses tables
-                setTimeout(function(){
-                    if(typeof renderPatientsTable==='function') renderPatientsTable();
-                    if(typeof updatePatientStats==='function') updatePatientStats();
-                    if(typeof renderAppointments==='function') renderAppointments();
-                    if(typeof renderExpenses==='function') renderExpenses();
-                }, 100);
-                showToast('✅ Data loaded from Google Sheets', 'success');
-                // Load custom WA templates from Sheets so all devices stay in sync
-                if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets();
-            } catch (err) {
-                console.error('Load data error:', err);
-                updateConnectionStatus(false);
-                CONFIG.demoMode = false;
-                loadDemoData();
-                showToast("Could not load from Sheets. Saves still work.", "warning");
-
-
-
+            if (Array.isArray(data.patients)) {
+                _patients = data.patients.map(function(p){ return {
+                    id: p.id||('PT-'+Date.now()+Math.random()), name: p.name||'', phone: String(p.phone||''), age: p.age||'',
+                    sex: p.sex||'', doctor: p.doctor||'', treatment: p.treatment||'', balance: parseFloat(p.balance)||0, alerts: p.alerts||'',
+                    status: p.status||'Active', lastVisit: p.lastVisit||'', addedOn: p.addedOn||'', syncStatus: p.syncStatus
+                }; });
+                localStorage.setItem('pt_records', JSON.stringify(_patients));
             }
+            if (Array.isArray(data.appointments)) {
+                _appointments = data.appointments.map(function(a){ return {
+                    id: a.id||('A'+Date.now()+Math.random()), patient: a.patient||'', phone: String(a.phone||''), date: a.date||'',
+                    time: _normTime(a.time), reason: a.reason||'', doctor: a.doctor||'', status: a.status||'Confirmed', bookedAt: a.bookedAt||''
+                }; });
+                localStorage.setItem('appointments', JSON.stringify(_appointments));
+            }
+            if (Array.isArray(data.expenses) && API.isOwner()) {
+                _expenses = data.expenses.map(function(e){ return {
+                    id: e.id || ('EXP-' + Date.now() + Math.random()), date: e.date ? String(e.date).split('T')[0] : '', category: e.category || '',
+                    amount: parseFloat(e.amount) || 0, vendor: e.vendor || '', notes: e.notes || '', mode: e.mode || e.paymentMode || 'Cash',
+                    addedAt: e.addedAt || '', syncStatus: e.syncStatus
+                }; });
+                _expenses.sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
+                localStorage.setItem('clinic_expenses', JSON.stringify(_expenses));
+            }
+
+            CONFIG.demoMode = false;
+            updateConnectionStatus(true);
+            try { localStorage.setItem('medistock_cache', JSON.stringify({ medicines, bills, purchases, serverTreatments })); } catch(e) {}
+            refreshUI();
+            setTimeout(function(){
+                if(typeof renderPatientsTable==='function') renderPatientsTable();
+                if(typeof updatePatientStats==='function') updatePatientStats();
+                if(typeof renderAppointments==='function') renderAppointments();
+                if(typeof renderExpenses==='function' && API.isOwner()) renderExpenses();
+                if(typeof renderCancelledBills==='function') renderCancelledBills();
+            }, 100);
+            if (!_firstLoadDone) { _firstLoadDone = true; showToast('✅ Data loaded from Google Sheets', 'success'); }
+            if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets();
         }
 
         // ── DASHBOARD CALENDAR ───────────────────────────────────
         var _dashCalYear  = new Date().getFullYear();
         var _dashCalMonth = new Date().getMonth(); // 0-based
-        var _dashSelDate  = new Date().toISOString().split('T')[0];
+        var _dashSelDate  = new Date().toLocaleDateString('en-CA');
 
         function renderDashCalendar() {
             var today   = new Date();
-            var todayStr = today.toISOString().split('T')[0];
+            var todayStr = today.toLocaleDateString('en-CA');
             var first   = new Date(_dashCalYear, _dashCalMonth, 1);
             var last    = new Date(_dashCalYear, _dashCalMonth + 1, 0);
             var months  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -723,7 +780,7 @@
             if (!list) return;
 
             var d = new Date(dateStr + 'T12:00:00');
-            var isToday = dateStr === new Date().toISOString().split('T')[0];
+            var isToday = dateStr === new Date().toLocaleDateString('en-CA');
             if (dateLabel) {
                 dateLabel.textContent = d.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}) + (isToday?' — Today':'');
             }
@@ -770,17 +827,6 @@
         // ── END DASHBOARD CALENDAR ────────────────────────────────
 
         // LOAD DEMO DATA
-        function loadDemoData() {
-            medicines = [
-                { id: 1, name: 'Amoxicillin 500mg', stock: 50, price: 25, costPrice: 12, expiry: '2025-12-31' },
-                { id: 2, name: 'Ibuprofen 200mg', stock: 100, price: 15, costPrice: 6, expiry: '2025-11-30' },
-                { id: 3, name: 'Paracetamol 500mg', stock: 80, price: 10, costPrice: 4, expiry: '2025-10-31' }
-            ];
-            bills = [];
-            purchases = [];
-            refreshUI();
-        }
-
         // UPDATE CONNECTION STATUS
         function updateConnectionStatus(isConnected) {
             const indicator = document.getElementById('statusIndicator');
@@ -809,7 +855,7 @@
 
         // DASHBOARD
         function updateDashboard() {
-            const today = new Date().toISOString().split('T')[0];
+            const today = new Date().toLocaleDateString('en-CA');
             let todayRevenue = 0;
             let todayProfit = 0;
 
@@ -833,10 +879,12 @@
                 }
             });
 
+            // Dental treatment income (receipts) is revenue with no medicine cost
+            (serverTreatments || []).forEach(t => { if (String(t.date).split('T')[0] === today) { const a = parseFloat(t.amount) || 0; todayRevenue += a; todayProfit += a; } });
             document.getElementById('todayRevenue').textContent = todayRevenue.toFixed(2);
             document.getElementById('todayProfit').textContent = todayProfit.toFixed(2);
 
-            const lowStock = medicines.filter(m => m.stock < 10).length;
+            const lowStock = medicines.filter(m => m.stock < (parseFloat(m.minStock) || 10)).length;
             document.getElementById('lowStockCount').textContent = lowStock;
 
             const expiring = medicines.filter(m => {
@@ -856,9 +904,9 @@
             const cards = document.getElementById('recentBillsCards');
             const rows = recent.map(bill => `
                 <tr>
-                    <td style="font-size:11px;font-family:monospace;">${bill.billId}</td>
-                    <td>${bill.patientName}</td>
-                    <td>${bill.doctor || '-'}</td>
+                    <td style="font-size:11px;font-family:monospace;">${esc(bill.billNo || bill.billId)}</td>
+                    <td>${esc(bill.patientName)}</td>
+                    <td>${esc(bill.doctor || '-')}</td>
                     <td style="font-weight:700;">₹${parseFloat(bill.total||0).toFixed(2)}</td>
                     <td style="white-space:nowrap;">${bill.date}</td>
                 </tr>
@@ -869,11 +917,11 @@
                 cards.innerHTML = recent.map(bill => `
                     <div class="m-card" style="border-left-color:${isCBfn(bill.billId)?'#2c5aa0':'#27ae60'}">
                         <div class="m-card-row">
-                            <div class="m-card-title">${bill.patientName||'—'}</div>
+                            <div class="m-card-title">${esc(bill.patientName||'—')}</div>
                             <div class="m-card-val">₹${parseFloat(bill.total||0).toFixed(2)}</div>
                         </div>
-                        <div class="m-card-meta">👨‍⚕️ ${bill.doctor||'—'} &nbsp;|&nbsp; 📅 ${bill.date||''}</div>
-                        <div class="m-card-meta" style="font-size:11px;color:#aaa;">${bill.billId}</div>
+                        <div class="m-card-meta">👨‍⚕️ ${esc(bill.doctor||'—')} &nbsp;|&nbsp; 📅 ${esc(bill.date||'')}</div>
+                        <div class="m-card-meta" style="font-size:11px;color:#aaa;">${esc(bill.billNo || bill.billId)}</div>
                     </div>
                 `).join('');
             }
@@ -895,7 +943,8 @@
 
         function addMedicineToCart() {
             const medicineId = document.getElementById('medicineSelect').value;
-            const qty = parseInt(document.getElementById('medicineQty').value);
+            const qty = Number(document.getElementById('medicineQty').value);
+            if (!Number.isInteger(qty) || qty < 1) { showToast('Quantity must be a whole number (1 or more)', 'warning'); return; }
 
             if (!medicineId) {
                 showToast('Please select a medicine', 'warning');
@@ -908,12 +957,12 @@
                 return;
             }
 
-            if (qty > medicine.stock) {
-                showToast(`Only ${medicine.stock} units available`, 'warning');
+            const existing = cart.find(c => String(c.id) === String(medicineId));
+            const already = existing ? existing.qty : 0;
+            if (qty + already > medicine.stock) {
+                showToast(`Only ${medicine.stock} unexpired units available` + (already ? ` (${already} already in cart)` : ''), 'warning');
                 return;
             }
-
-            const existing = cart.find(c => String(c.id) === String(medicineId));
             if (existing) {
                 existing.qty += qty;
             } else {
@@ -937,8 +986,8 @@
             const tbody = document.getElementById('cartBody');
             tbody.innerHTML = cart.map((item, idx) => `
                 <tr>
-                    <td>${item.name}</td>
-                    <td><input type="number" value="${item.qty}" min="1" onchange="updateCartQty(${idx}, this.value)"></td>
+                    <td>${esc(item.name)}</td>
+                    <td><input type="number" value="${item.qty}" min="1" step="1" inputmode="numeric" onchange="updateCartQty(${idx}, this.value)"></td>
                     <td>₹${item.price}</td>
                     <td>₹${(item.qty * item.price).toFixed(2)}</td>
                     <td><button class="btn-danger btn-small" onclick="removeFromCart(${idx})">Remove</button></td>
@@ -947,7 +996,11 @@
         }
 
         function updateCartQty(idx, qty) {
-            cart[idx].qty = parseInt(qty);
+            const n = Number(qty), item = cart[idx];
+            const med = medicines.find(m => String(m.id) === String(item.id));
+            if (!Number.isInteger(n) || n < 1) { showToast('Quantity must be a whole number (1 or more)', 'warning'); renderCart(); return; }
+            if (med && n > med.stock) { showToast(`Only ${med.stock} units available`, 'warning'); renderCart(); return; }
+            item.qty = n;
             renderCart();
             recalc();
             updateReceipt();
@@ -960,9 +1013,18 @@
             updateReceipt();
         }
 
+        function maxDiscountPct() { return currentRole === 'owner' ? 100 : (isFinite(CONFIG.staffMaxDiscountPct) ? CONFIG.staffMaxDiscountPct : 10); }
+        function clampDiscount() {
+            const el = document.getElementById('discountPct');
+            let v = parseFloat(el.value) || 0, max = maxDiscountPct();
+            if (v < 0) v = 0;
+            if (v > max) { v = max; showToast(`Maximum discount allowed is ${max}%`, 'warning'); }
+            if (String(v) !== el.value) el.value = v;
+            return v;
+        }
         function recalc() {
             const subtotal = cart.reduce((sum, item) => sum + (item.qty * item.price), 0);
-            const discountPct = parseFloat(document.getElementById('discountPct').value) || 0;
+            const discountPct = clampDiscount();
             const discount = (subtotal * discountPct) / 100;
             const grandTotal = subtotal - discount;
 
@@ -1046,7 +1108,7 @@ Thank you! Visit again.`;
             _selectedPayMode = 'Cash';
 
             const subtotal = cart.reduce((s, i) => s + i.qty * i.price, 0);
-            const discountPct = parseFloat(document.getElementById('discountPct').value) || 0;
+            const discountPct = clampDiscount();
             const discount = (subtotal * discountPct) / 100;
             const total = subtotal - discount;
 
@@ -1123,7 +1185,7 @@ Thank you! Visit again.`;
 
             // Build UPI deep link
             const upiLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${total.toFixed(2)}&cu=INR&tn=${encodeURIComponent('Dental')}`;
-            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&ecc=M&data=${encodeURIComponent(upiLink)}`;
+            const qrUrl = qrDataUrl(upiLink, 5);
 
             document.getElementById('upiQrImg').src = qrUrl;
             document.getElementById('upiAmountDisplay').textContent = '₹' + total.toFixed(2);
@@ -1462,10 +1524,10 @@ Thank you! Visit again.`;
             const billId = 'BILL-' + Date.now();
             const today = new Date().toLocaleDateString('en-CA');
             const subtotal = cart.reduce((sum, item) => sum + (item.qty * item.price), 0);
-            const costTotal = cart.reduce((sum, item) => sum + (item.qty * item.costPrice), 0);
-            const discountPct = parseFloat(document.getElementById('discountPct').value) || 0;
-            const discount = (subtotal * discountPct) / 100;
-            const total = subtotal - discount;
+            const costTotal = cart.reduce((sum, item) => sum + (item.qty * (parseFloat(item.costPrice) || 0)), 0);
+            const discountPct = clampDiscount();
+            const discount = Math.round(subtotal * discountPct) / 100;
+            const total = Math.round((subtotal - discount) * 100) / 100;
 
             const billData = {
                 billId: billId,
@@ -1489,8 +1551,8 @@ Thank you! Visit again.`;
                 }))
             };
 
-            // ✅ SAVE LOCALLY IMMEDIATELY — no waiting for Sheets
-            bills.push({...billData});
+            // Show the bill immediately; its status changes to ✅ saved once the server confirms it.
+            bills.push({...billData, syncStatus: 'saving'});
             updateBillsTable();
             updateDashboard();
 
@@ -1504,7 +1566,7 @@ Thank you! Visit again.`;
             hideSaving();
             document.getElementById('saveBillBtn').disabled = false;
             document.getElementById('printBillBtn').disabled = false;
-            showToast(`✅ Bill saved! Payment: ${paymentInfo.mode}. Syncing...`, 'success');
+            showToast(`🧾 Bill created · ${paymentInfo.mode}. Saving to server…`, 'info');
 
             if (shouldPrint) printBill();
             document.getElementById('whatsappBtn').style.display = 'block';
@@ -1522,38 +1584,58 @@ Thank you! Visit again.`;
             recalc();
             updateReceipt();
 
-            // 🔄 SYNC TO GOOGLE SHEETS IN BACKGROUND (user not blocked)
-            try {
-                const params = new URLSearchParams();
-                params.append('action', 'saveBill');
-                params.append('billId', billId);
-                params.append('patientName', billData.patientName);
-                params.append('doctor', billData.doctor || '');
-                params.append('phone', billData.phone || '');
-                params.append('date', today);
-                params.append('subtotal', subtotal.toFixed(2));
-                params.append('discount', discount.toFixed(2));
-                params.append('total', total.toFixed(2));
-                params.append('costTotal', costTotal.toFixed(2));
-                params.append('paymentMode', paymentInfo.mode);
-                params.append('paymentRef', paymentInfo.ref || '');
-                params.append('items', JSON.stringify(billData.items));
+            // 🔄 SAVE ON THE SERVER — it re-checks prices, totals, discount and stock (FEFO)
+            setBillSyncStatus('saving');
+            API.call('saveBill', {
+                billId: billId, patientName: billData.patientName, doctor: billData.doctor || '', phone: billData.phone || '',
+                date: today, subtotal: subtotal.toFixed(2), discount: discount.toFixed(2), total: total.toFixed(2),
+                paymentMode: paymentInfo.mode, paymentRef: paymentInfo.ref || '',
+                cashAmount: paymentInfo.mode === 'Split' ? (paymentInfo.cash || 0) : '', upiAmount: paymentInfo.mode === 'Split' ? (paymentInfo.upi || 0) : '',
+                items: JSON.stringify(billData.items)
+            }).then(res => applyBillSaveResult(billId, res, billData.items));
+        }
 
-                fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
-                    .then(r => r.json())
-                    .then(result => {
-                        if (result.success) {
-                            showToast('☁️ Synced to Google Sheets!', 'success');
-                        } else {
-                            showToast('⚠️ Saved locally, Sheets sync failed: ' + (result.error || ''), 'warning');
-                        }
-                    })
-                    .catch(err => {
-                        showToast('⚠️ Saved locally, Sheets offline', 'warning');
-                    });
-            } catch(e) {
-                showToast('⚠️ Saved locally, Sheets offline', 'warning');
+        // One place that turns the server's answer into what staff see.
+        function applyBillSaveResult(billId, res, items) {
+            const b = bills.find(x => x.billId === billId);
+            if (res && res.success) {
+                if (b) { b.syncStatus = 'saved'; if (res.billNo) b.billNo = res.billNo; if (res.costTotal !== undefined && currentRole === 'owner') b.costTotal = res.costTotal; }
+                setBillSyncStatus('saved', res.billNo);
+                showToast('☁️ Saved on server' + (res.billNo ? ' · ' + res.billNo : ''), 'success');
+                if (res.warnings && res.warnings.length) showToast('⚠️ ' + res.warnings.join(' · '), 'warning');
+            } else if (res && res.queued) {
+                if (b) b.syncStatus = 'pending';
+                setBillSyncStatus('pending');
+                showToast('📴 Bill kept on this device — it will be sent automatically', 'warning');
+            } else {
+                if (b) { b.syncStatus = 'failed'; b.syncError = res && res.error; }
+                setBillSyncStatus('failed', res && res.error);
+                // undo the on-screen stock change; the server did not record this sale
+                (items || []).forEach(it => { const m = medicines.find(x => String(x.id) === String(it.medicineId)); if (m) m.stock += it.qty; });
+                bills = bills.filter(x => x.billId !== billId);
+                alert('❌ This bill was NOT saved.\n\nReason: ' + ((res && res.error) || 'unknown') + '\n\nNothing was recorded on the server. Please correct and bill again.');
             }
+            updateBillsTable(); updateDashboard(); updateInventoryTable(); updateMedicineSelect();
+        }
+        window.applyBillSaveResult = applyBillSaveResult;
+
+        function setBillSyncStatus(state, info) {
+            let el = document.getElementById('bsSyncStatus');
+            const anchor = document.getElementById('bsBillId');
+            if (!el && anchor && anchor.parentNode) {
+                el = document.createElement('div'); el.id = 'bsSyncStatus';
+                el.style.cssText = 'margin:6px 0 10px;padding:8px 12px;border-radius:8px;font-weight:700;font-size:13px;text-align:center;';
+                anchor.parentNode.insertBefore(el, anchor.nextSibling);
+            }
+            if (!el) return;
+            const S = {
+                saving:  ['#fff8e1', '#b7770d', '⏳ Saving on server…'],
+                saved:   ['#e8f8ee', '#1e8449', '✅ Saved on server' + (info ? ' · Bill No ' + info : '')],
+                pending: ['#fff3e0', '#e67e22', '📴 Saved on this device — will sync when online'],
+                failed:  ['#fdecea', '#c0392b', '❌ NOT saved: ' + (info || 'rejected by server')]
+            }[state];
+            el.style.background = S[0]; el.style.color = S[1]; el.textContent = S[2];
+            if (state === 'saved' && info && anchor) anchor.textContent = info;
         }
 
         function printBill() {
@@ -1597,14 +1679,20 @@ Thank you! Visit again.`;
             const tbody = document.getElementById('inventoryBody');
             const cards = document.getElementById('inventoryCards');
             const stockColor = s => s <= 0 ? '#e74c3c' : s <= 10 ? '#f39c12' : '#27ae60';
+            const expTag = med => (med.expiredStock > 0 ? `<div style="font-size:11px;color:#8e44ad;font-weight:700;">+${med.expiredStock} expired</div>` : '');
+            const nb = med => (med.batches && med.batches.length > 1 ? ` <span style="font-size:11px;color:#888;">(${med.batches.length} batches)</span>` : '');
             tbody.innerHTML = medicines.map(med => `
                 <tr>
-                    <td><strong>${med.name}</strong></td>
-                    <td style="color:${stockColor(med.stock)};font-weight:700;">${med.stock}</td>
+                    <td><strong>${esc(med.name)}</strong>${nb(med)}</td>
+                    <td style="color:${stockColor(med.stock)};font-weight:700;">${med.stock}${expTag(med)}</td>
                     <td>₹${med.price}</td>
                     <td>₹${med.costPrice}</td>
-                    <td style="white-space:nowrap;">${med.expiry}</td>
-                    <td><button class="btn-danger btn-small" onclick="deleteMedicine(${med.id})">Delete</button></td>
+                    <td style="white-space:nowrap;">${esc(med.expiry)}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn-primary btn-small" onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
+                        <button class="btn-primary btn-small" style="background:#16a085;" onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
+                        <button class="btn-danger btn-small" onclick="deleteMedicine('${esc(med.id)}')" title="Hide (history kept)">🗑️</button>
+                    </td>
                 </tr>
             `).join('');
             if (cards) {
@@ -1612,15 +1700,17 @@ Thank you! Visit again.`;
                     const sc = stockColor(med.stock);
                     return `<div class="m-card" style="border-left-color:${sc}">
                         <div class="m-card-row">
-                            <div class="m-card-title">${med.name}</div>
-                            <div style="font-size:20px;font-weight:900;color:${sc};">${med.stock}</div>
+                            <div class="m-card-title">${esc(med.name)}${nb(med)}</div>
+                            <div style="font-size:20px;font-weight:900;color:${sc};">${med.stock}${expTag(med)}</div>
                         </div>
                         <div class="m-card-row">
                             <div class="m-card-meta">💰 Sell: ₹${med.price} &nbsp;|&nbsp; Buy: ₹${med.costPrice}</div>
-                            <div class="m-card-meta">📅 ${med.expiry}</div>
+                            <div class="m-card-meta">📅 ${esc(med.expiry)}</div>
                         </div>
                         <div class="m-card-actions">
-                            <button style="background:#e74c3c;" onclick="deleteMedicine(${med.id})">🗑️ Delete</button>
+                            <button style="background:#2c5aa0;" onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
+                            <button style="background:#16a085;" onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
+                            <button style="background:#e74c3c;" onclick="deleteMedicine('${esc(med.id)}')">🗑️</button>
                         </div>
                     </div>`;
                 }).join('') : '<div style="text-align:center;color:#aaa;padding:20px;">No medicines in inventory.</div>';
@@ -1647,7 +1737,7 @@ Thank you! Visit again.`;
 
             // Save locally immediately
             const tempId = Date.now();
-            medicines.push({ id: tempId, name, price, costPrice, stock, expiry });
+            medicines.push({ id: tempId, name, price, costPrice, stock, expiry, __temp: true });
             closeModal('addMedicineModal');
             updateInventoryTable();
             updateMedicineSelect();
@@ -1677,7 +1767,7 @@ Thank you! Visit again.`;
                             // Update local ID to real Sheets ID
                             const med = medicines.find(m => String(m.id) === String(tempId));
                             if (med) {
-                                med.id = result.medicineId;
+                                med.id = result.medicineId; delete med.__temp;
                                 // Refresh dropdowns so they use the real Sheets ID
                                 updateMedicineSelect();
                                 updateInventoryTable();
@@ -1694,24 +1784,11 @@ Thank you! Visit again.`;
         }
 
         async function deleteMedicine(id) {
-            if (!confirm('Are you sure you want to delete this medicine?\nThis cannot be undone.')) return;
-
-            medicines = medicines.filter(m => m.id !== id);
-            updateInventoryTable();
-            updateMedicineSelect();
-            showToast('🗑️ Medicine deleted', 'success');
-
-            try {
-                const params = new URLSearchParams();
-                params.append('action', 'deleteMedicine');
-                params.append('id', id);
-                await fetch(CONFIG.apiUrl + '?' + params.toString(), {
-                    method: 'GET',
-                    redirect: 'follow'
-                });
-            } catch(err) {
-                console.error('Delete medicine sync error:', err);
-            }
+            const med = medicines.find(m => String(m.id) === String(id));
+            if (!confirm(`Hide "${med ? med.name : id}" from the medicine list?\n\nPast bills keep it. You can't undo this from the app.`)) return;
+            const res = await API.call('deleteMedicine', { id: id }, { noQueue: true });
+            if (res.success) { medicines = medicines.filter(m => String(m.id) !== String(id)); updateInventoryTable(); updateMedicineSelect(); showToast('🗑️ Medicine hidden', 'success'); }
+            else showToast('❌ ' + (res.error || 'Could not remove'), 'error');
         }
 
         // PURCHASES
@@ -1720,9 +1797,9 @@ Thank you! Visit again.`;
             const cards = document.getElementById('purchasesCards');
             tbody.innerHTML = purchases.map((p, i) => `
                 <tr>
-                    <td style="white-space:nowrap;">${p.date}</td>
-                    <td>${p.supplier}</td>
-                    <td><strong>${p.medicineName}</strong></td>
+                    <td style="white-space:nowrap;">${esc(p.date)}</td>
+                    <td>${esc(p.supplier)}${p.invoiceNo ? `<div style="font-size:11px;color:#888;">Inv ${esc(p.invoiceNo)}</div>` : ''}</td>
+                    <td><strong>${esc(p.medicineName)}</strong>${p.batchNo || p.expiry ? `<div style="font-size:11px;color:#888;">Batch ${esc(p.batchNo || '—')} · Exp ${esc(p.expiry || '—')}</div>` : ''}</td>
                     <td style="text-align:center;">${p.qty}</td>
                     <td>₹${p.costPrice}</td>
                     <td style="font-weight:700;">₹${(p.qty * p.costPrice).toFixed(2)}</td>
@@ -1733,10 +1810,10 @@ Thank you! Visit again.`;
                 cards.innerHTML = purchases.length ? purchases.slice().reverse().map((p, i) => `
                     <div class="m-card">
                         <div class="m-card-row">
-                            <div class="m-card-title">${p.medicineName}</div>
+                            <div class="m-card-title">${esc(p.medicineName)}</div>
                             <div class="m-card-val">₹${(p.qty * p.costPrice).toFixed(2)}</div>
                         </div>
-                        <div class="m-card-meta">🏪 ${p.supplier} &nbsp;|&nbsp; 📦 Qty: ${p.qty}</div>
+                        <div class="m-card-meta">🏪 ${esc(p.supplier)} &nbsp;|&nbsp; 📦 Qty: ${p.qty}${p.batchNo ? ' &nbsp;|&nbsp; Batch ' + esc(p.batchNo) : ''}${p.expiry ? ' · Exp ' + esc(p.expiry) : ''}</div>
                         <div class="m-card-meta">💰 Cost: ₹${p.costPrice}/unit &nbsp;|&nbsp; 📅 ${p.date}</div>
                         <div class="m-card-actions" style="margin-top:8px;">
                             <button style="background:#e74c3c;" onclick="deletePurchase('${p.id||''}')">🗑️ Delete</button>
@@ -1747,21 +1824,15 @@ Thank you! Visit again.`;
         }
 
         async function deletePurchase(id) {
-            if (!id) { showToast('Cannot delete — no ID on this record', 'warning'); return; }
-            if (!confirm('Delete this purchase record? This cannot be undone.')) return;
-            purchases = purchases.filter(p => (p.id||'') !== id);
-            localStorage.setItem('purchases', JSON.stringify(purchases));
-            updatePurchasesTable();
-            showToast('🗑️ Purchase deleted', 'success');
-            if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) return;
-            try {
-                const params = new URLSearchParams();
-                params.append('action', 'deletePurchase');
-                params.append('id', id);
-                const res = await fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' }).then(r => r.json());
-                if (res.success) showToast('☁️ Removed from Google Sheets', 'success');
-                else showToast('⚠️ Deleted locally — Sheets sync failed', 'warning');
-            } catch(err) { showToast('⚠️ Deleted locally only — no internet?', 'warning'); }
+            if (!id) { showToast('Cannot cancel — no ID on this record', 'warning'); return; }
+            const reason = (prompt('Cancel this purchase entry?\n\nIts stock is removed again (only possible if none of it was sold). The record is kept as CANCELLED.\n\nReason (required):') || '').trim();
+            if (!reason) return;
+            if (reason.length < 3) { showToast('Please type a proper reason', 'warning'); return; }
+            showSaving();
+            const res = await API.call('cancelPurchase', { id: id, reason: reason }, { noQueue: true });
+            hideSaving();
+            if (res.success) { showToast('✖ Purchase cancelled · stock updated', 'success'); loadData(); }
+            else showToast('❌ ' + (res.error || 'Could not cancel'), 'error');
         }
 
         function openAddPurchaseModal() {
@@ -1770,6 +1841,7 @@ Thank you! Visit again.`;
             document.getElementById('purchaseMedicine').value = '';
             document.getElementById('purchaseQty').value = '1';
             document.getElementById('purchaseCostPrice').value = '';
+            ['purchaseBatchNo','purchaseExpiry','purchaseInvoiceNo','purchaseMrp','purchaseFreeQty'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
             document.getElementById('addPurchaseModal').classList.add('active');
         }
 
@@ -1777,13 +1849,18 @@ Thank you! Visit again.`;
             const date = document.getElementById('purchaseDate').value;
             const supplier = document.getElementById('purchaseSupplier').value.trim();
             const medicineId = document.getElementById('purchaseMedicine').value;
-            const qty = parseInt(document.getElementById('purchaseQty').value);
+            const qty = Number(document.getElementById('purchaseQty').value);
             const costPrice = parseFloat(document.getElementById('purchaseCostPrice').value);
+            const gv = id => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+            const batchNo = gv('purchaseBatchNo'), expiry = gv('purchaseExpiry'), invoiceNo = gv('purchaseInvoiceNo');
+            const mrp = gv('purchaseMrp'), freeQty = Number(gv('purchaseFreeQty') || 0);
 
-            if (!date || !supplier || !medicineId || !qty || !costPrice) {
-                showToast('Fill all fields', 'warning');
+            if (!date || !supplier || !medicineId || !qty || !(costPrice >= 0) || !expiry) {
+                showToast('Fill date, supplier, medicine, quantity, cost and expiry', 'warning');
                 return;
             }
+            if (!Number.isInteger(qty) || qty < 1 || !Number.isInteger(freeQty) || freeQty < 0) { showToast('Quantities must be whole numbers', 'warning'); return; }
+            if (expiry < todayLocal() && !confirm('This batch is already EXPIRED (' + expiry + '). It will be stored but never sold. Continue?')) return;
 
             // Try ID match first (string-safe)
             let medicine = medicines.find(m => String(m.id) === String(medicineId));
@@ -1806,9 +1883,11 @@ Thank you! Visit again.`;
 
             showSaving();
 
-            // Save locally immediately
-            purchases.push({ id: 'PUR-' + Date.now(), date, supplier, medicineId: medicine.id, medicineName: medicine.name, qty, costPrice });
-            medicine.stock = (medicine.stock || 0) + qty;
+            if (String(medicine.id).length >= 13 && medicine.__temp) { showToast('This medicine is still being saved — try again in a moment', 'warning'); return; }
+            // Save locally immediately (same ID is sent to the server)
+            const purchaseId = newId('PUR');
+            purchases.push({ id: purchaseId, date, supplier, medicineId: medicine.id, medicineName: medicine.name, qty: qty + freeQty, costPrice, batchNo, expiry, invoiceNo });
+            if (expiry >= todayLocal()) medicine.stock = (medicine.stock || 0) + qty + freeQty;
 
             // Reset form fields for next entry
             document.getElementById('purchaseSupplier').value = '';
@@ -1828,20 +1907,26 @@ Thank you! Visit again.`;
             try {
                 const params = new URLSearchParams();
                 params.append('action', 'addPurchase');
+                params.append('id', purchaseId);
                 params.append('date', date);
                 params.append('supplier', supplier);
-                params.append('medicineId', medicineId);
+                params.append('medicineId', medicine.id);
                 params.append('medicineName', medicine.name);
                 params.append('qty', qty);
+                params.append('freeQty', freeQty);
                 params.append('costPrice', costPrice);
+                params.append('batchNo', batchNo);
+                params.append('expiry', expiry);
+                params.append('invoiceNo', invoiceNo);
+                params.append('mrp', mrp);
 
                 fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
                     .then(r => r.json())
                     .then(result => {
                         if (result.success) {
-                            showToast('☁️ Purchase synced to Sheets!', 'success');
+                            showToast('☁️ Purchase saved · batch ' + (batchNo || 'added'), 'success'); loadData();
                         } else {
-                            showToast('⚠️ Saved locally, Sheets sync failed', 'warning');
+                            showToast('❌ Purchase NOT saved: ' + (result.error || 'rejected'), 'error'); loadData();
                         }
                     })
                     .catch(() => showToast('⚠️ Saved locally, Sheets offline', 'warning'));
@@ -1879,7 +1964,7 @@ Thank you! Visit again.`;
 
                 const medNames = items.map(i => {
                     const m = medicines.find(x => String(x.id)===String(i.medicineId));
-                    return i.medicineName||(m?m.name:null)||i.name||'—';
+                    return esc(i.medicineName||(m?m.name:null)||i.name||'—');
                 });
 
                 // ── Desktop table row ──
@@ -1893,18 +1978,20 @@ Thank you! Visit again.`;
                     ? medNames.map((n,i2)=>`<span style="display:inline-block;background:#e8f0fe;color:#2c5aa0;border-radius:4px;padding:2px 7px;margin:2px;font-size:12px;">${n} ×${items[i2].qty}</span>`).join('')
                     : '<span style="color:#aaa;font-size:12px;">—</span>';
 
+                const syncBadge = syncBadgeHtml(bill.syncStatus, bill.syncError);
+                const cancelBtn = currentRole === 'owner' ? `<button class="btn-danger btn-small" onclick="cancelBillUI('${esc(bill.billId)}')" title="Cancel bill (kept in records)" style="margin-left:4px;">✖</button>` : '';
                 tableRows += `<tr>
-                    <td style="font-size:11px;font-family:monospace;">${bill.billId}</td>
+                    <td style="font-size:11px;font-family:monospace;">${esc(bill.billNo || bill.billId)}${syncBadge}</td>
                     <td>${typeBadge}</td>
-                    <td>${bill.patientName||'—'}</td>
-                    <td>${bill.doctor||'—'}</td>
+                    <td>${esc(bill.patientName||'—')}</td>
+                    <td>${esc(bill.doctor||'—')}</td>
                     <td style="max-width:200px;">${trInfo}${medBadges}</td>
                     <td style="font-weight:700;">₹${parseFloat(bill.total||0).toFixed(2)}</td>
                     <td><span style="background:${payColor};color:${payText};border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600;">${bill.paymentMode||'—'}</span></td>
                     <td style="white-space:nowrap;">${bill.date||'—'}</td>
                     <td style="white-space:nowrap;">
                         <button class="btn-primary btn-small" onclick="${printFn}" style="margin-right:4px;">🖨️ Print</button>
-                        <button class="btn-primary btn-small" onclick="${waFn}" style="background:#25d366;">📲 WA</button>
+                        <button class="btn-primary btn-small" onclick="${waFn}" style="background:#25d366;">📲 WA</button>${cancelBtn}
                     </td>
                 </tr>`;
 
@@ -1917,7 +2004,7 @@ Thank you! Visit again.`;
                 cardHtml += `<div class="bill-card ${isCB?'bc-cb':'bc-ph'}">
                     <div class="bill-card-top">
                         <div>
-                            <div class="bill-card-name">${bill.patientName||'—'}</div>
+                            <div class="bill-card-name">${esc(bill.patientName||'—')}${syncBadge}</div>
                             <span style="background:${isCB?'#e8f0fe':'#e8f8ee'};color:${typeColor};border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;">${typeLabel}</span>
                         </div>
                         <div style="text-align:right;">
@@ -1925,18 +2012,54 @@ Thank you! Visit again.`;
                             <div style="font-size:11px;color:#888;">${bill.date||''}</div>
                         </div>
                     </div>
-                    <div class="bill-card-meta">👨‍⚕️ ${bill.doctor||'—'} &nbsp;|&nbsp; <span class="pay-badge" style="background:${payColor};color:${payText};">${bill.paymentMode||'—'}</span></div>
+                    <div class="bill-card-meta">👨‍⚕️ ${esc(bill.doctor||'—')} &nbsp;|&nbsp; <span class="pay-badge" style="background:${payColor};color:${payText};">${bill.paymentMode||'—'}</span></div>
                     ${trLine}
                     ${medLine?`<div class="bill-card-meta">💊 ${medLine}</div>`:''}
                     <div class="bill-card-actions" style="margin-top:10px;">
                         <button class="bc-print-btn" onclick="${printFn}">🖨️ Print</button>
                         <button class="bc-wa-btn" onclick="${waFn}">📲 WhatsApp</button>
+                        ${currentRole === 'owner' ? `<button class="bc-print-btn" style="background:#e74c3c;" onclick="cancelBillUI('${esc(bill.billId)}')">✖ Cancel</button>` : ''}
                     </div>
                 </div>`;
             });
 
             if(tbody)    tbody.innerHTML    = tableRows + __lazyMore('bills', __allBills.length, sorted.length, 9);
             if(cardsEl)  cardsEl.innerHTML  = cardHtml + __lazyMore('bills', __allBills.length, sorted.length);
+        }
+
+        function syncBadgeHtml(status, err) {
+            if (status === 'pending' || status === 'saving') return ' <span title="Waiting to reach the server" style="background:#fff3e0;color:#e67e22;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">⏳ pending</span>';
+            if (status === 'failed') return ' <span title="' + esc(err || '') + '" style="background:#fdecea;color:#c0392b;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">❌ not saved</span>';
+            return '';
+        }
+
+        // Cancelled bills: kept for the record, excluded from revenue.
+        function renderCancelledBills() {
+            const page = document.getElementById('allbills'); if (!page || currentRole !== 'owner') return;
+            let wrap = document.getElementById('cancelledBillsWrap');
+            if (!wrap) { wrap = document.createElement('details'); wrap.id = 'cancelledBillsWrap'; wrap.style.cssText = 'margin-top:18px;background:#fff;border-radius:10px;padding:12px 16px;'; page.appendChild(wrap); }
+            const list = cancelledBills.slice().reverse();
+            wrap.innerHTML = `<summary style="cursor:pointer;font-weight:700;color:#c0392b;">✖ Cancelled bills (${list.length}) — not counted in revenue</summary>` +
+                (list.length ? `<div class="tbl-wrap"><table class="table" style="margin-top:10px;"><thead><tr><th>Bill</th><th>Patient</th><th>Total</th><th>Date</th><th>Cancelled</th><th>Reason</th></tr></thead><tbody>` +
+                list.map(b => `<tr><td style="font-family:monospace;font-size:11px;">${esc(b.billNo || b.billId)}</td><td>${esc(b.patientName)}</td><td>₹${(+b.total||0).toFixed(2)}</td><td>${esc(b.date)}</td><td>${esc(b.cancelledAt||'')} · ${esc(b.cancelledBy||'')}</td><td>${esc(b.cancelReason||'')}</td></tr>`).join('') +
+                `</tbody></table></div>` : '<p style="color:#888;margin-top:8px;">None.</p>');
+        }
+
+        async function cancelBillUI(billId) {
+            const b = bills.find(x => x.billId === billId); if (!b) return;
+            const reason = (prompt(`Cancel bill ${b.billNo || billId} (${b.patientName}, ₹${(+b.total||0).toFixed(2)})?
+
+The bill is kept in the records as CANCELLED and removed from revenue.
+
+Reason (required):`) || '').trim();
+            if (!reason) return;
+            if (reason.length < 3) { showToast('Please type a proper reason', 'warning'); return; }
+            const restore = confirm('Return the medicines on this bill to stock?\n\nOK = yes, the medicines came back\nCancel = no (e.g. already used)');
+            showSaving();
+            const res = await API.call('cancelBill', { billId: billId, reason: reason, restoreStock: restore }, { noQueue: true });
+            hideSaving();
+            if (res.success) { showToast('✖ Bill cancelled' + (restore ? ' · stock restored' : ''), 'success'); loadData(); }
+            else showToast('❌ ' + (res.error || 'Could not cancel'), 'error');
         }
 
         // Filter bills by patient name search
@@ -1950,32 +2073,10 @@ Thank you! Visit again.`;
             bills = saved;
         }
 
-        async function deleteBill(billId) {
-            if (!confirm('Are you sure you want to delete Bill: ' + billId + '?\nThis cannot be undone.')) return;
+        // Old "delete" now means cancel (records are never erased)
+        function deleteBill(billId) { return cancelBillUI(billId); }
 
-            // Remove from local state immediately
-            bills = bills.filter(b => b.billId !== billId);
-            updateBillsTable();
-            updateDashboard();
-            showToast('🗑️ Bill deleted', 'success');
-
-            // Also delete from Google Sheets
-            try {
-                const params = new URLSearchParams();
-                params.append('action', 'deleteBill');
-                params.append('billId', billId);
-                await fetch(CONFIG.apiUrl + '?' + params.toString(), {
-                    method: 'GET',
-                    redirect: 'follow'
-                });
-            } catch(err) {
-                console.error('Delete sync error:', err);
-            }
-        }
-
-
-        // Universal print helper — works for local files
-        function closePrintModal() {
+                function closePrintModal() {
             const m = document.getElementById('__printModal');
             const s = document.getElementById('__printModalStyle');
             if (m) m.remove();
@@ -2563,6 +2664,7 @@ Thank you! Visit again.`;
             if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) return;
             const params = new URLSearchParams();
             params.append('action', 'deletePrescription');
+            params.append('recordId', rec ? (rec.recordId||'') : '');
             params.append('savedAt', rec ? (rec.savedAt||rec.date||'') : '');
             params.append('patientName', rec ? (rec.name||'') : '');
             fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
@@ -2585,17 +2687,17 @@ Thank you! Visit again.`;
             const rxText = document.getElementById('rx_content').value || '';
             const dateStr = dateV ? new Date(dateV).toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
 
-            const record = { name, age, sex, date: dateV, dateStr, rxText, savedAt: new Date().toISOString() };
+            const record = { recordId: newId('RX'), name, age, sex, date: dateV, dateStr, rxText, savedAt: new Date().toISOString() };
             const list = getRxHistory();
             list.push(record);
             saveRxHistory(list);
             renderRxHistory();
 
             printBillHtml(buildPrescriptionHTML());
-            savePrescriptionToSheets();
+            savePrescriptionToSheets(record.recordId);
         }
 
-        function savePrescriptionToSheets() {
+        function savePrescriptionToSheets(recordId) {
             if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) return;
             const name   = document.getElementById('rx_name').value || '';
             const age    = document.getElementById('rx_age').value || '';
@@ -2605,6 +2707,7 @@ Thank you! Visit again.`;
 
             const params = new URLSearchParams();
             params.append('action', 'savePrescription');
+            params.append('recordId', recordId || '');
             params.append('date', dateV);
             params.append('patientName', name);
             params.append('age', age);
@@ -2779,6 +2882,7 @@ Thank you! Visit again.`;
             if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) return;
             const params = new URLSearchParams();
             params.append('action', 'deleteTreatmentReceipt');
+            params.append('recordId', rec ? (rec.recordId||'') : '');
             params.append('no', rec ? (rec.no||'') : '');
             params.append('savedAt', rec ? (rec.savedAt||rec.date||'') : '');
             fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
@@ -2802,18 +2906,20 @@ Thank you! Visit again.`;
             const treatmentText= document.getElementById('tr_treatment_text') ? document.getElementById('tr_treatment_text').value.trim() : '';
             const dateStr      = dateV ? new Date(dateV).toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
 
-            const record = { no, date: dateV, dateStr, patient, amount, words, treatmentText, treatments: treatmentText, savedAt: new Date().toISOString() };
+            const record = { recordId: newId('TR'), no, date: dateV, dateStr, patient, amount, words, treatmentText, treatments: treatmentText,
+                             paymentMode: (typeof _trMode !== 'undefined' ? _trMode : ''), savedAt: new Date().toISOString() };
             const list = getTreatmentHistory();
             list.push(record);
             saveTreatmentHistory(list);
             renderTreatmentHistory();
+            serverTreatments.push({ no, date: dateV || todayLocal(), patient, amount: parseFloat(amount) || 0, treatments: treatmentText, recordId: record.recordId, paymentMode: record.paymentMode, pending: true });
 
             const html = buildTreatmentReceiptHTML(true);
             printBillHtml(html);
-            saveTreatmentReceiptToSheets();
+            saveTreatmentReceiptToSheets(record.recordId, record.paymentMode);
         }
 
-        function saveTreatmentReceiptToSheets() {
+        function saveTreatmentReceiptToSheets(recordId, paymentMode) {
             if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) return;
             const no      = document.getElementById('tr_no').value || '';
             const dateV   = document.getElementById('tr_date').value || '';
@@ -2825,6 +2931,8 @@ Thank you! Visit again.`;
 
             const params = new URLSearchParams();
             params.append('action', 'saveTreatmentReceipt');
+            params.append('recordId', recordId || '');
+            params.append('paymentMode', paymentMode || '');
             params.append('receiptNo', no);
             params.append('date', dateV);
             params.append('patient', patient);
@@ -3347,7 +3455,7 @@ Thank you! Visit again.`;
             var blob = new Blob([csv], {type:'text/csv'});
             var a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'clinic_expenses_'+new Date().toISOString().split('T')[0]+'.csv';
+            a.download = 'clinic_expenses_'+new Date().toLocaleDateString('en-CA')+'.csv';
             a.click();
             showToast('📥 CSV exported!', 'success');
         }
@@ -3355,7 +3463,7 @@ Thank you! Visit again.`;
         // Set today's date as default on expenses form
         (function(){
             var d = document.getElementById('exp_date');
-            if (d) d.value = new Date().toISOString().split('T')[0];
+            if (d) d.value = new Date().toLocaleDateString('en-CA');
         })();
 
         // ══════════════════════════════════════════════════════════
@@ -3376,7 +3484,7 @@ Thank you! Visit again.`;
         function getFilteredBills() {
             const period = document.getElementById('rpt_period') ? document.getElementById('rpt_period').value : 'all';
             const now = new Date();
-            const today = now.toISOString().split('T')[0];
+            const today = now.toLocaleDateString('en-CA');
 
             // Show/hide custom range inputs
             const cr = document.getElementById('rpt_custom_range');
@@ -3407,23 +3515,32 @@ Thank you! Visit again.`;
             });
         }
 
+        // Dental treatment receipts in the selected period (same filter as bills)
+        function getFilteredTreatments() {
+            const saved = bills; bills = (serverTreatments || []).map(t => Object.assign({}, t, { total: parseFloat(t.amount) || 0 }));
+            try { return getFilteredBills(); } finally { bills = saved; }
+        }
         function renderKPIs(filtered) {
-            const totalRev  = filtered.reduce((s,b) => s + (parseFloat(b.total)||0), 0);
+            const pharmRev  = filtered.reduce((s,b) => s + (parseFloat(b.total)||0), 0);
+            const dentalRev = getFilteredTreatments().reduce((s,t) => s + (parseFloat(t.total)||0), 0);
+            const totalRev  = pharmRev + dentalRev;
             const totalPts  = filtered.length;
-            const avgBill   = totalPts ? totalRev / totalPts : 0;
+            const avgBill   = totalPts ? pharmRev / totalPts : 0;
             const totalDisc = filtered.reduce((s,b) => s + (parseFloat(b.discount)||0), 0);
 
             // Unique patient names
             const uniquePts = new Set(filtered.map(b => (b.patientName||'').toLowerCase().trim())).size;
 
             // Bills today
-            const today = new Date().toISOString().split('T')[0];
-            const todayRev = bills.filter(b => String(b.date).split('T')[0] === today)
-                                  .reduce((s,b) => s + (parseFloat(b.total)||0), 0);
+            const today = new Date().toLocaleDateString('en-CA');
+            const todayRev = bills.filter(b => String(b.date).split('T')[0] === today).reduce((s,b) => s + (parseFloat(b.total)||0), 0)
+                           + (serverTreatments || []).filter(t => String(t.date).split('T')[0] === today).reduce((s,t) => s + (parseFloat(t.amount)||0), 0);
 
             const kpis = [
                 { label:"Total Revenue",   value:`₹${totalRev.toLocaleString('en-IN',{maximumFractionDigits:0})}`,  color:'#2c5aa0', icon:'💰' },
-                { label:"Total Bills",     value:totalPts,                       color:'#27ae60', icon:'🧾' },
+                { label:"Pharmacy Sales",  value:`₹${pharmRev.toLocaleString('en-IN',{maximumFractionDigits:0})}`,  color:'#27ae60', icon:'💊' },
+                { label:"Dental Treatments", value:`₹${dentalRev.toLocaleString('en-IN',{maximumFractionDigits:0})}`, color:'#8e44ad', icon:'🦷' },
+                { label:"Pharmacy Bills",  value:totalPts,                       color:'#27ae60', icon:'🧾' },
                 { label:"Unique Patients", value:uniquePts,                      color:'#8e44ad', icon:'👥' },
                 { label:"Avg Bill Value",  value:`₹${avgBill.toFixed(0)}`,       color:'#e67e22', icon:'📊' },
                 { label:"Total Discounts", value:`₹${totalDisc.toFixed(0)}`,     color:'#e74c3c', icon:'🏷️' },
@@ -3444,9 +3561,9 @@ Thank you! Visit again.`;
             const buckets = {};
             for (let i = days-1; i >= 0; i--) {
                 const d = new Date(); d.setDate(d.getDate()-i);
-                buckets[d.toISOString().split('T')[0]] = 0;
+                buckets[d.toLocaleDateString('en-CA')] = 0;
             }
-            filtered.forEach(b => {
+            filtered.concat(getFilteredTreatments()).forEach(b => {
                 const d = String(b.date).split('T')[0];
                 if (buckets[d] !== undefined) buckets[d] += parseFloat(b.total)||0;
             });
@@ -3490,10 +3607,9 @@ Thank you! Visit again.`;
                 'Flap Surgery':0,'Extractions':0,'Others':0
             };
 
-            // Count from treatment receipts saved in localStorage (tr_history is the correct key)
+            // Count from treatment receipts saved in Google Sheets (all devices) for the selected period
             try {
-                const saved = JSON.parse(localStorage.getItem('tr_history') || '[]');
-                saved.forEach(r => {
+                getFilteredTreatments().forEach(r => {
                     if (r.treatments) {
                         String(r.treatments).split(',').forEach(t => {
                             const key = Object.keys(treatments).find(k => t.trim().toLowerCase().includes(k.toLowerCase()));
@@ -3503,14 +3619,15 @@ Thank you! Visit again.`;
                 });
             } catch(e) {}
 
-            // Fallback: estimate from bill count if no treatment data
+            // No invented numbers: show an empty state when there is no treatment data
             const total = Object.values(treatments).reduce((a,b)=>a+b,0);
-            const labels = total === 0
-                ? ['Consultation','Fillings','Root Canal','Extractions','Scaling','Others']
-                : Object.keys(treatments).filter(k => treatments[k] > 0);
-            const values = total === 0
-                ? [40, 20, 15, 10, 10, 5]
-                : labels.map(k => treatments[k]);
+            if (total === 0) {
+                const el = document.getElementById('rpt_treatment_chart');
+                if (el) el.innerHTML = '<div style="text-align:center;color:#999;padding:30px 10px;font-size:13px;">No treatment receipts in this period yet.</div>';
+                return;
+            }
+            const labels = Object.keys(treatments).filter(k => treatments[k] > 0);
+            const values = labels.map(k => treatments[k]);
 
             renderDonutChart('rpt_treatment_chart', labels, values,
                 ['#2c5aa0','#27ae60','#e74c3c','#f39c12','#8e44ad','#16a085','#d35400','#2980b9','#7f8c8d']);
@@ -3705,7 +3822,7 @@ Thank you! Visit again.`;
             });
 
             // Low activity days
-            const today = new Date().toISOString().split('T')[0];
+            const today = new Date().toLocaleDateString('en-CA');
             const todayBills = bills.filter(b=>String(b.date).split('T')[0]===today).length;
             if (todayBills === 0) insights.push({
                 icon:'📣', color:'#16a085',
@@ -4076,7 +4193,7 @@ Thank you! Visit again.`;
             document.getElementById('trUpiAmt').textContent='₹'+amt.toFixed(2);
             document.getElementById('trUpiIdShow').textContent=upiId;
             const lnk=`upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(upiName)}&am=${amt.toFixed(2)}&cu=INR&tn=${encodeURIComponent('Dental')}`;
-            document.getElementById('trUpiQr').src=`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(lnk)}`;
+            document.getElementById('trUpiQr').src=qrDataUrl(lnk, 5);
         } else {
             document.getElementById('trUpiWarn').style.display='block';
             document.getElementById('trUpiCard').style.display='none';
@@ -4154,25 +4271,28 @@ Thank you! Visit again.`;
         return year + '-' + String(next).padStart(4, '0');
     }
 
-    function peekNextReceiptNo() {
-        var year = new Date().getFullYear();
-        var key  = 'receipt_counter_' + year;
-        var curr = parseInt(localStorage.getItem(key) || '0');
-        return year + '-' + String(curr + 1).padStart(4, '0');
-    }
 
-    function autoFillNo(fieldId) {
+    async function autoFillNo(fieldId) {
         var el = document.getElementById(fieldId);
         if (!el) return;
-        var no = getNextReceiptNo();
+        var res = await API.call('reserveReceiptNo', {}, { noQueue: true });
+        var no;
+        if (res && res.success) no = res.receiptNo;
+        else {
+            // offline: device-tagged number that can never clash with server numbers
+            var tag = localStorage.getItem('ssdc_device_tag') || Math.random().toString(36).slice(2, 5).toUpperCase();
+            localStorage.setItem('ssdc_device_tag', tag);
+            no = getNextReceiptNo() + '-' + tag;
+            showToast('📴 Offline receipt number ' + no, 'warning');
+        }
         el.value = no;
         el.style.borderColor = '#27ae60';
         el.style.background  = '#f0fff4';
         setTimeout(function(){ el.style.borderColor = ''; el.style.background = ''; }, 1500);
-        // Trigger any relevant preview/recalc
         el.dispatchEvent(new Event('input'));
-        showToast('✅ Receipt No. ' + no + ' assigned', 'success');
+        if (res && res.success) showToast('✅ Receipt No. ' + no + ' assigned', 'success');
     }
+    function peekNextReceiptNo() { return 'tap Auto'; }
     // ── End Auto Receipt Number ──────────────────────────────────
 ;
 
@@ -4191,14 +4311,15 @@ Thank you! Visit again.`;
         var opt   = sel.options[sel.selectedIndex];
         var medId = sel.value;
         var price = parseFloat(opt.dataset.price) || 0;
-        var stock = parseInt(opt.dataset.stock)   || 9999;
+        var stock = parseInt(opt.dataset.stock); if (!isFinite(stock)) stock = 0;
         var name  = opt.dataset.name || opt.text.split('—')[0].trim();
         if (!price) {
             var med = (window.medicines||[]).find(function(m){ return String(m.id)===String(medId); });
             if (med) { price=parseFloat(med.price)||0; stock=parseInt(med.stock)||9999; name=med.name; }
         }
-        if (qty > stock) { showToast('Only ' + stock + ' in stock!', 'warning'); return; }
+        if (!Number.isInteger(qty) || qty < 1) { showToast('Quantity must be a whole number (1 or more)', 'warning'); return; }
         var existing = _cbCart.find(function(c){ return String(c.medicineId)===String(medId); });
+        if (qty + (existing ? existing.qty : 0) > stock) { showToast('Only ' + stock + ' unexpired in stock!', 'warning'); return; }
         if (existing) {
             existing.qty += qty;
             existing.amount = existing.qty * existing.price;
@@ -4429,7 +4550,7 @@ Thank you! Visit again.`;
             document.getElementById('cbUpiAmt').textContent=grand.toFixed(2);
             document.getElementById('cbUpiIdShow').textContent=upiId;
             var lnk='upi://pay?pa='+encodeURIComponent(upiId)+'&pn='+encodeURIComponent(upiName)+'&am='+grand.toFixed(2)+'&cu=INR&tn='+encodeURIComponent('Dental');
-            document.getElementById('cbUpiQr').src='https://api.qrserver.com/v1/create-qr-code/?size=200x200&data='+encodeURIComponent(lnk);
+            document.getElementById('cbUpiQr').src=qrDataUrl(lnk, 5);
         } else {
             document.getElementById('cbUpiWarn').style.display='block';
             document.getElementById('cbUpiCard').style.display='none';
@@ -4464,7 +4585,7 @@ Thank you! Visit again.`;
         var doctor  = document.getElementById('cb_doctor').value  || '';
         var phone   = document.getElementById('cb_phone').value   || '';
         var no      = document.getElementById('cb_no').value      || '';
-        var dateV   = document.getElementById('cb_date').value    || new Date().toISOString().split('T')[0];
+        var dateV   = document.getElementById('cb_date').value    || new Date().toLocaleDateString('en-CA');
         var trAmt   = parseFloat(document.getElementById('cb_tr_amount').value)||0;
         var phAmt   = _cbCart.reduce(function(s,c){return s+parseFloat(c.amount);},0);
         var grand   = trAmt + phAmt;
@@ -4482,15 +4603,17 @@ Thank you! Visit again.`;
             return s+(med?parseFloat(med.costPrice||0)*c.qty:0);
         },0);
 
+        // Pharmacy part → Bills; treatment part → TreatmentReceipts (so revenue is never counted twice)
         var localBill = {
             billId:      billId,
             patientName: patient,
             doctor:      doctor,
             phone:       phone,
             date:        dateV,
-            subtotal:    grand,
+            subtotal:    phAmt,
             discount:    0,
-            total:       grand,       // grand total = treatment + pharmacy
+            total:       phAmt,
+            syncStatus:  'saving',
             costTotal:   costTotal,   // only pharmacy has cost; treatment profit = full amount
             paymentMode: _cbMode,
             items:       _cbCart.map(function(item){ return {
@@ -4503,7 +4626,11 @@ Thank you! Visit again.`;
             }; })
         };
 
-        if(window.bills) window.bills.push(localBill);
+        if(window.bills && _cbCart.length) window.bills.push(localBill);
+        var trAmtLocal = parseFloat(document.getElementById('cb_tr_amount').value)||0;
+        var cbRecordId = newId('TR');
+        if (trAmtLocal > 0) serverTreatments.push({ no: no, date: dateV, patient: patient, doctor: doctor, amount: trAmtLocal,
+            treatments: document.getElementById('cb_tr_desc').value || '', recordId: cbRecordId, paymentMode: _cbMode, pending: true });
 
         // ── Refresh all UI immediately ───────────────────────────
         if(typeof updateDashboard     ==='function') updateDashboard();
@@ -4522,73 +4649,36 @@ Thank you! Visit again.`;
         }
 
         // ── Save to Google Sheets in background ──────────────────
-        saveCombinedBillToSheets(_cbMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no);
+        saveCombinedBillToSheets(_cbMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no, cbRecordId);
     }
 
-    function saveCombinedBillToSheets(payMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no) {
-        if(typeof CONFIG==='undefined'||!CONFIG.apiUrl||CONFIG.apiUrl.includes('YOUR_WEB_APP')){
-            showToast('⚠️ Not connected to Google Sheets — bill saved locally only','warning'); return;
-        }
+    function saveCombinedBillToSheets(payMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no, recordId) {
         var trDesc  = document.getElementById('cb_tr_desc').value  || '';
         var trAmt   = parseFloat(document.getElementById('cb_tr_amount').value)||0;
         var trWords = document.getElementById('cb_tr_words').value || '';
+        var cartItems = _cbCart.map(function(item){ return { medicineId: item.medicineId, medicineName: item.medicineName, qty: item.qty, price: item.price, amount: item.amount }; });
+        var splitCash = parseFloat((document.getElementById('cbPmSplitCash')||{}).value)||0, splitUpi = parseFloat((document.getElementById('cbPmSplitUpi')||{}).value)||0;
 
-        // ── 1. Treatment Sheet ────────────────────────────────────
+        // ── 1. Treatment receipt (dental revenue) ──
         if (trAmt > 0 || trDesc) {
-            var tp = new URLSearchParams();
-            tp.append('action',      'saveTreatmentReceipt');
-            tp.append('receiptNo',   no);
-            tp.append('date',        dateV);
-            tp.append('patient',     patient);
-            tp.append('amount',      trAmt.toFixed(2));
-            tp.append('amountWords', trWords);
-            tp.append('treatments',  trDesc);
-            fetch(CONFIG.apiUrl + '?' + tp.toString(), {method:'GET', redirect:'follow'})
-                .then(function(r){return r.json();})
-                .then(function(res){
-                    if(res.success) showToast('☁️ Treatment saved to Sheets!','success');
-                    else showToast('⚠️ Treatment sheet sync failed','warning');
-                })
-                .catch(function(){showToast('⚠️ Treatment sheet offline','warning');});
+            API.call('saveTreatmentReceipt', { recordId: recordId || newId('TR'), receiptNo: no, date: dateV, patient: patient, doctor: doctor,
+                amount: trAmt.toFixed(2), amountWords: trWords, treatments: trDesc, paymentMode: payMode }).then(function(res){
+                if (res.success) showToast('☁️ Treatment saved', 'success');
+                else if (res.queued) showToast('📴 Treatment kept on this device — will sync', 'warning');
+                else showToast('❌ Treatment NOT saved: ' + (res.error || ''), 'error');
+            });
         }
-
-        // ── 2. Bills Sheet + Bill Items Sheet + Stock deduction ───
-        if (_cbCart.length > 0) {
-            var bp = new URLSearchParams();
-            bp.append('action',      'saveBill');
-            bp.append('billId',      billId);
-            bp.append('patientName', patient);
-            bp.append('doctor',      doctor);
-            bp.append('phone',       phone);
-            bp.append('date',        dateV);
-            bp.append('subtotal',    phAmt.toFixed(2));
-            bp.append('discount',    '0');
-            bp.append('total',       phAmt.toFixed(2));
-            bp.append('costTotal',   costTotal.toFixed(2));
-            bp.append('paymentMode', payMode);
-            bp.append('paymentRef',  '');
-            bp.append('items', JSON.stringify(_cbCart.map(function(item){
-                var med=(window.medicines||[]).find(function(m){return String(m.id)===String(item.medicineId);});
-                return {
-                    medicineId:   item.medicineId,
-                    medicineName: item.medicineName,
-                    qty:          item.qty,
-                    price:        item.price,
-                    costPrice:    med?parseFloat(med.costPrice||0):0,
-                    amount:       item.amount
-                };
-            })));
-            fetch(CONFIG.apiUrl + '?' + bp.toString(), {method:'GET', redirect:'follow'})
-                .then(function(r){return r.json();})
-                .then(function(res){
-                    if(res.success) showToast('☁️ Pharmacy bill saved to Sheets!','success');
-                    else showToast('⚠️ Bill sheet sync failed: '+(res.error||''),'warning');
-                })
-                .catch(function(){showToast('⚠️ Bill sheet offline','warning');});
+        // ── 2. Pharmacy bill (server checks stock, FEFO, totals) ──
+        if (cartItems.length > 0) {
+            setBillSyncStatus && setBillSyncStatus('saving');
+            API.call('saveBill', { billId: billId, patientName: patient, doctor: doctor, phone: phone, date: dateV,
+                subtotal: phAmt.toFixed(2), discount: '0', total: phAmt.toFixed(2), paymentMode: payMode, paymentRef: '',
+                cashAmount: payMode === 'Split' ? splitCash : '', upiAmount: payMode === 'Split' ? splitUpi : '',
+                items: JSON.stringify(cartItems) }).then(function(res){ applyBillSaveResult(billId, res, cartItems); });
         }
     }
 
-    function reprintCbBillFromAllBills(billId) {
+        function reprintCbBillFromAllBills(billId) {
         // Search window.bills first
         var bill = (window.bills||[]).find(function(b){ return b.billId === billId; });
         // Then search CB history by stored billId
@@ -4889,10 +4979,10 @@ Thank you! Visit again.`;
             var sc = statusColor[p.status]||'grey';
             var idx = _patients.indexOf(p);
             return '<tr>' +
-                '<td><strong>'+p.name+'</strong>'+(p.age?' <span style="color:#aaa;font-size:12px;">('+p.age+(p.sex?' '+p.sex:'')+')' +'</span>':'')+'</td>'+
-                '<td style="white-space:nowrap;">'+( p.phone||'—')+'</td>'+
-                '<td style="white-space:nowrap;">'+(p.lastVisit||'—')+'</td>'+
-                '<td>'+(p.treatment||'—')+'</td>'+
+                '<td><strong>'+esc(p.name)+'</strong>'+(p.syncStatus==='pending'?' <span style="font-size:10px;color:#e67e22;">⏳</span>':'')+(p.age?' <span style="color:#aaa;font-size:12px;">('+esc(p.age)+(p.sex?' '+esc(p.sex):'')+')' +'</span>':'')+'</td>'+
+                '<td style="white-space:nowrap;">'+esc(p.phone||'—')+'</td>'+
+                '<td style="white-space:nowrap;">'+esc(p.lastVisit||'—')+'</td>'+
+                '<td>'+esc(p.treatment||'—')+'</td>'+
                 '<td style="font-weight:700;color:'+(parseFloat(p.balance||0)>0?'#e74c3c':'#27ae60')+'">₹'+(parseFloat(p.balance||0).toFixed(0))+'</td>'+
                 '<td><span class="patient-badge '+sc+'">'+(p.status||'Active')+'</span></td>'+
                 '<td style="white-space:nowrap;">' +
@@ -4906,10 +4996,10 @@ Thank you! Visit again.`;
                 var sc = statusColor[p.status]||'grey';
                 var balColor = parseFloat(p.balance||0)>0?'#e74c3c':'#27ae60';
                 return '<div class="m-card" style="border-left-color:'+(parseFloat(p.balance||0)>0?'#e74c3c':'#27ae60')+'">' +
-                    '<div class="m-card-row"><div class="m-card-title">'+p.name+'</div>' +
+                    '<div class="m-card-row"><div class="m-card-title">'+esc(p.name)+'</div>' +
                     '<div style="font-weight:900;color:'+balColor+';">₹'+(parseFloat(p.balance||0).toFixed(0))+'</div></div>' +
-                    '<div class="m-card-meta">📞 '+(p.phone||'—')+' &nbsp;|&nbsp; <span class="patient-badge '+sc+'">'+(p.status||'Active')+'</span></div>' +
-                    '<div class="m-card-meta">🦷 '+(p.treatment||'—')+(p.alerts?' &nbsp;⚠️ '+p.alerts:'')+'</div>' +
+                    '<div class="m-card-meta">📞 '+esc(p.phone||'—')+' &nbsp;|&nbsp; <span class="patient-badge '+sc+'">'+esc(p.status||'Active')+'</span></div>' +
+                    '<div class="m-card-meta">🦷 '+esc(p.treatment||'—')+(p.alerts?' &nbsp;⚠️ '+esc(p.alerts):'')+'</div>' +
                     '<div class="m-card-actions">' +
                         '<button style="background:#25d366;" onclick="sendWaToPatient('+idx+')">📲 WhatsApp</button>' +
                         '<button style="background:#e74c3c;" onclick="deletePatient('+idx+')">🗑️ Delete</button>' +
@@ -4935,7 +5025,7 @@ Thank you! Visit again.`;
         var name=(document.getElementById('pt_name').value||'').trim();
         var phone=(document.getElementById('pt_phone').value||'').trim();
         if(!name){ showToast('Enter patient name','warning'); return; }
-        var today = new Date().toISOString().split('T')[0];
+        var today = new Date().toLocaleDateString('en-CA');
         var patient = {
             id: 'PT-'+Date.now(),
             name:name, phone:phone,
@@ -4968,6 +5058,7 @@ Thank you! Visit again.`;
         p.append('alerts', patient.alerts);
         p.append('status', patient.status);
         p.append('lastVisit', patient.lastVisit);
+        p.append('addedOn', patient.addedOn);
         var syncUrl = CONFIG.apiUrl + '?' + p.toString(); fetch(syncUrl, {method:'GET',redirect:'follow'}).then(function(r){return r.json();}).then(function(res){if(res.success) showToast('Synced to Sheets!','success'); else showToast('Sync failed:'+(res.error||''),'warning');}).catch(function(e){showToast('Error:'+e,'warning');});
     }
 
@@ -5043,13 +5134,13 @@ Thank you! Visit again.`;
         if(!d) return;
         var cur=d.value?new Date(d.value):new Date();
         cur.setDate(cur.getDate()+dir);
-        d.value=cur.toISOString().split('T')[0];
+        d.value=cur.toLocaleDateString('en-CA');
         renderAppointments();
     }
 
     function renderAppointments(){
         var dateEl=document.getElementById('appt_date');
-        var selDate=dateEl?dateEl.value:new Date().toISOString().split('T')[0];
+        var selDate=dateEl?dateEl.value:new Date().toLocaleDateString('en-CA');
         var label=document.getElementById('appt_dateLabel');
         if(label) label.textContent=new Date(selDate+'T12:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
         var dayAppts=_appointments.filter(function(a){ return a.date===selDate; });
@@ -5113,7 +5204,7 @@ Thank you! Visit again.`;
         ['appt_patient','appt_phone','appt_reason'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
         var d=document.getElementById('appt_bookDate');
         var cd=document.getElementById('appt_date');
-        if(d) d.value=cd?cd.value:new Date().toISOString().split('T')[0];
+        if(d) d.value=cd?cd.value:new Date().toLocaleDateString('en-CA');
         var t=document.getElementById('appt_time'); if(t) t.value='';
         var dr=document.getElementById('appt_doctor'); if(dr) dr.value='';
         document.getElementById('addApptModal').classList.add('active');
@@ -5130,8 +5221,9 @@ Thank you! Visit again.`;
         var time=document.getElementById('appt_time').value;
         var date=document.getElementById('appt_bookDate').value;
         if(!patient||!time||!date){ showToast('Fill patient name, date and time','warning'); return; }
-        var existing=_appointments.find(function(a){ return a.date===date&&a.time===time&&a.status!=='Cancelled'; });
-        if(existing){ showToast('That slot is already booked!','warning'); return; }
+        var apptDoctor=document.getElementById('appt_doctor').value||'';
+        var existing=_appointments.find(function(a){ return a.date===date&&a.time===time&&a.status!=='Cancelled'&&(a.doctor||'')===apptDoctor; });
+        if(existing){ showToast('That doctor already has an appointment in this slot','warning'); return; }
         var appt = {
             id:'A'+Date.now(),
             patient:patient,
@@ -5200,7 +5292,7 @@ Thank you! Visit again.`;
     var _waSentDate  = localStorage.getItem('wa_sent_date')||'';
 
     function updateWaStats(){
-        var today=new Date().toISOString().split('T')[0];
+        var today=new Date().toLocaleDateString('en-CA');
         if(_waSentDate!==today){ _waSentCount=0; _waSentDate=today; localStorage.setItem('wa_sent_date',today); localStorage.setItem('wa_sent_today','0'); }
         var todayAppts=_appointments.filter(function(a){ return a.date===today&&a.status!=='Cancelled'; });
         var duePats=_patients.filter(function(p){ return parseFloat(p.balance||0)>0; });
@@ -5431,14 +5523,14 @@ Thank you! Visit again.`;
         if(!msg.trim()){ showToast('Message is empty','warning'); return; }
         _waSentCount++;
         localStorage.setItem('wa_sent_today',_waSentCount);
-        localStorage.setItem('wa_sent_date',new Date().toISOString().split('T')[0]);
+        localStorage.setItem('wa_sent_date',new Date().toLocaleDateString('en-CA'));
         updateWaStats();
         openWhatsApp(phone, msg);
     }
 
     function renderWaTodayList(){
         var el=document.getElementById('wa_today_list'); if(!el) return;
-        var today=new Date().toISOString().split('T')[0];
+        var today=new Date().toLocaleDateString('en-CA');
         var todayAppts=_appointments.filter(function(a){ return a.date===today&&a.status!=='Cancelled'; });
         if(!todayAppts.length){
             el.innerHTML='<div style="text-align:center;color:#aaa;padding:20px;">No appointments today.</div>';
@@ -5535,14 +5627,14 @@ Thank you! Visit again.`;
         var msg = buildApptMsg(a, type);
         _waSentCount++;
         localStorage.setItem('wa_sent_today',_waSentCount);
-        localStorage.setItem('wa_sent_date',new Date().toISOString().split('T')[0]);
+        localStorage.setItem('wa_sent_date',new Date().toLocaleDateString('en-CA'));
         updateWaStats();
         openWhatsApp(phone, msg);
         showToast('✅ Message copied! Opening WhatsApp for '+a.patient,'success');
     }
 
     function sendAllReminders(type) {
-        var today = new Date().toISOString().split('T')[0];
+        var today = new Date().toLocaleDateString('en-CA');
         var appts = (_appointments||[]).filter(function(a){ return a.date===today&&a.status!=='Cancelled'&&a.phone; });
         if (!appts.length) { showToast('No appointments with phone numbers today','warning'); return; }
         var label = type==='24h'?'24-hour':'1-hour';
@@ -5708,7 +5800,7 @@ Thank you! Visit again.`;
         closeModal('waBookingPopup');
         _waSentCount++;
         localStorage.setItem('wa_sent_today',_waSentCount);
-        localStorage.setItem('wa_sent_date',new Date().toISOString().split('T')[0]);
+        localStorage.setItem('wa_sent_date',new Date().toLocaleDateString('en-CA'));
         updateWaStats();
         openWhatsApp(phone, msg);
     }
@@ -5720,7 +5812,7 @@ Thank you! Visit again.`;
         var el = document.getElementById('wa_all_appts_list'); if (!el) return;
         var search  = (document.getElementById('wa_appt_search')||{value:''}).value.toLowerCase().trim();
         var filter  = (document.getElementById('wa_appt_filter')||{value:'all'}).value;
-        var today   = new Date().toISOString().split('T')[0];
+        var today   = new Date().toLocaleDateString('en-CA');
 
         var list = (_appointments||[]).slice().sort(function(a,b){ return b.date>a.date?1:b.date<a.date?-1:0; });
 
@@ -5845,7 +5937,7 @@ Thank you! Visit again.`;
         var msg = buildWabpMsg(tmpl, a);
         _waSentCount++;
         localStorage.setItem('wa_sent_today',_waSentCount);
-        localStorage.setItem('wa_sent_date',new Date().toISOString().split('T')[0]);
+        localStorage.setItem('wa_sent_date',new Date().toLocaleDateString('en-CA'));
         updateWaStats();
         openWhatsApp(phone, msg);
         showToast('📲 Message copied! Opening WhatsApp for '+a.patient,'success');
@@ -5865,7 +5957,7 @@ Thank you! Visit again.`;
             '📞 8688033072 | 9396522492';
         _waSentCount++;
         localStorage.setItem('wa_sent_today', _waSentCount);
-        localStorage.setItem('wa_sent_date', new Date().toISOString().split('T')[0]);
+        localStorage.setItem('wa_sent_date', new Date().toLocaleDateString('en-CA'));
         updateWaStats();
         openWhatsApp(phone, msg);
         showToast('📍 Location message opening for ' + name, 'success');
@@ -6077,6 +6169,7 @@ Thank you! Visit again.`;
     function printExamForm() {
         var d = getExamData();
         if (!d.patient) { showToast('Enter patient name first','warning'); return; }
+        d.recordId = d.recordId || newId('EF');
         // Save to history
         _efHistory.push(d);
         saveEfHistory();
@@ -6085,6 +6178,7 @@ Thank you! Visit again.`;
         if (window.CONFIG && CONFIG.apiUrl && !CONFIG.apiUrl.includes('YOUR_WEB_APP')) {
             var p = new URLSearchParams();
             p.append('action','saveExamForm');
+            p.append('recordId',     d.recordId);
             p.append('date',         d.date);
             p.append('patient',      d.patient);
             p.append('age',          d.age);
@@ -6159,6 +6253,7 @@ Thank you! Visit again.`;
         if (!CONFIG.apiUrl || CONFIG.apiUrl.includes('YOUR_WEB_APP')) return;
         var p = new URLSearchParams();
         p.append('action', 'deleteExamForm');
+        p.append('recordId', rec ? (rec.recordId||'') : '');
         p.append('savedAt', rec ? (rec.savedAt||rec.date||'') : '');
         p.append('patientName', rec ? (rec.patientName||rec.patient||'') : '');
         fetch(CONFIG.apiUrl + '?' + p.toString(), { method: 'GET', redirect: 'follow' })
@@ -7390,6 +7485,261 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     // No override needed — those functions check _getCustomTmpl() directly.
 ;
 
+;/* ══ FILE: 12-admin.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   12-admin.js — v3 screens
+   • Change password (forced on first login with a temporary password)
+   • Sync Centre: every unsynced transaction with its status + retry
+   • Owner Settings: users, billing rules, backups, audit log, data check
+   • Inventory: edit medicine, batches (FEFO order), stock adjustments,
+     stock movement history
+   ════════════════════════════════════════════════════════════════════ */
+
+// ── generic dialog ─────────────────────────────────────────────────
+function ssdcDialog(title, bodyHtml, opts) {
+    opts = opts || {};
+    closeSsdcDialog();
+    var ov = document.createElement('div');
+    ov.id = 'ssdcDialog';
+    ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', title);
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,30,45,.55);z-index:100001;display:flex;align-items:center;justify-content:center;padding:14px;';
+    ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:' + (opts.width || 560) + 'px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25);">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #eef1f5;position:sticky;top:0;background:#fff;">'
+        + '<h3 style="margin:0;color:#1e3f5a;font-size:17px;">' + title + '</h3>'
+        + (opts.locked ? '' : '<button type="button" onclick="closeSsdcDialog()" aria-label="Close" style="border:none;background:#f0f3f7;border-radius:8px;width:34px;height:34px;font-size:18px;cursor:pointer;">✕</button>')
+        + '</div><div style="padding:16px 18px;" id="ssdcDialogBody">' + bodyHtml + '</div></div>';
+    if (!opts.locked) ov.addEventListener('click', function (e) { if (e.target === ov) closeSsdcDialog(); });
+    document.body.appendChild(ov);
+    var first = ov.querySelector('input,select,textarea,button'); if (first) first.focus();   // immediately: a delayed focus could steal typing
+    return ov;
+}
+function closeSsdcDialog() { var d = document.getElementById('ssdcDialog'); if (d) d.remove(); }
+var _fld = 'width:100%;padding:10px 12px;border:1.5px solid #d5dce6;border-radius:8px;font-size:15px;margin:4px 0 12px;box-sizing:border-box;';
+var _btn = 'padding:11px 18px;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;';
+function _v(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
+function _msg(id, text, ok) { var e = document.getElementById(id); if (e) { e.textContent = text; e.style.color = ok ? '#1e8449' : '#c0392b'; } }
+
+// ── change password ────────────────────────────────────────────────
+function openChangePassword(forced) {
+    if (document.getElementById('cpOld')) return;      // already open — never wipe what the user is typing
+    ssdcDialog(forced ? '🔑 Set your own password' : '🔑 Change password',
+        (forced ? '<p style="background:#fff8e1;border-radius:8px;padding:10px 12px;font-size:14px;color:#7a5b00;margin:0 0 12px;">You logged in with a temporary password. Choose your own password to continue.</p>' : '')
+        + '<label for="cpOld">Current password</label><input id="cpOld" type="password" autocomplete="current-password" style="' + _fld + '">'
+        + '<label for="cpNew">New password <small style="color:#888;">(at least 8 characters)</small></label><input id="cpNew" type="password" autocomplete="new-password" style="' + _fld + '">'
+        + '<label for="cpNew2">Repeat new password</label><input id="cpNew2" type="password" autocomplete="new-password" style="' + _fld + '">'
+        + '<div id="cpMsg" style="min-height:20px;font-size:14px;margin-bottom:8px;" aria-live="polite"></div>'
+        + '<div style="display:flex;gap:10px;"><button type="button" onclick="submitChangePassword(' + (forced ? 'true' : 'false') + ')" style="' + _btn + 'background:#2c5aa0;color:#fff;flex:1;">Save password</button>'
+        + (forced ? '<button type="button" onclick="closeSsdcDialog();doLogout();" style="' + _btn + 'background:#eef1f5;color:#333;">Log out</button>' : '') + '</div>',
+        { locked: !!forced, width: 440 });
+}
+async function submitChangePassword(forced) {
+    var oldP = document.getElementById('cpOld').value, n1 = document.getElementById('cpNew').value, n2 = document.getElementById('cpNew2').value;
+    if (n1.length < 8) return _msg('cpMsg', 'New password must be at least 8 characters');
+    if (n1 !== n2) return _msg('cpMsg', 'The two new passwords do not match');
+    _msg('cpMsg', 'Saving…', true);
+    var res = await API.call('changePassword', { oldPassword: oldP, newPassword: n1 }, { noQueue: true });
+    if (!res.success) return _msg('cpMsg', res.error || 'Could not change password');
+    var s = API.session; if (s && s.user) { s.user.mustChangePassword = false; API.saveSession(s); }
+    closeSsdcDialog();
+    showToast('✅ Password changed', 'success');
+    if (forced) { initApp(); API.queue.flush(); }
+}
+
+// ── sync centre ────────────────────────────────────────────────────
+function openSyncCentre() {
+    var q = API.queue.list();
+    var rows = q.length ? q.map(function (it) {
+        var st = it.status === 'failed'
+            ? '<span style="color:#c0392b;font-weight:700;">❌ Not saved</span><div style="font-size:12px;color:#c0392b;">' + esc(it.error) + '</div>'
+            : '<span style="color:#e67e22;font-weight:700;">⏳ Waiting</span>' + (it.error ? '<div style="font-size:12px;color:#888;">' + esc(it.error) + '</div>' : '');
+        return '<tr><td style="font-size:12px;white-space:nowrap;">' + new Date(it.at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + '</td>'
+            + '<td>' + esc(API.queue.summary(it)) + '</td><td>' + st + '</td><td style="white-space:nowrap;">'
+            + '<button type="button" class="btn-primary btn-small" onclick="API.queue.retry(\'' + it.reqId + '\').then(openSyncCentre)">↻ Retry</button>'
+            + (currentRole === 'owner' ? ' <button type="button" class="btn-danger btn-small" onclick="if(confirm(\'Discard this unsynced item? It will NOT be saved.\')){API.queue.discard(\'' + it.reqId + '\');openSyncCentre();}">Discard</button>' : '')
+            + '</td></tr>';
+    }).join('') : '<tr><td colspan="4" style="text-align:center;color:#888;padding:18px;">✅ Everything is synced.</td></tr>';
+    ssdcDialog('☁️ Sync Centre',
+        '<p style="margin:0 0 10px;font-size:14px;color:#555;">' + (navigator.onLine === false ? '📴 This device is offline.' : '🟢 Online.')
+        + ' Last synced: ' + (API.lastSync ? new Date(API.lastSync).toLocaleTimeString('en-IN') : '—') + '</p>'
+        + '<div class="tbl-wrap"><table class="table"><thead><tr><th>When</th><th>What</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+        + '<button type="button" onclick="API.queue.flush(true).then(openSyncCentre)" style="' + _btn + 'background:#2c5aa0;color:#fff;margin-top:12px;">↻ Sync now</button>', { width: 720 });
+}
+
+// ── owner settings panels ──────────────────────────────────────────
+function renderAdminPanels() {
+    var page = document.getElementById('settings'); if (!page) return;
+    var box = document.getElementById('adminPanels');
+    if (!box) { box = document.createElement('div'); box.id = 'adminPanels'; page.appendChild(box); }
+    if (currentRole !== 'owner') { box.innerHTML = ''; return; }
+    var card = 'background:#fff;padding:20px;border-radius:8px;margin-top:20px;';
+    box.innerHTML =
+        '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">👥 Users &amp; passwords</h3><div id="admUsers">Loading…</div>'
+        + '<details style="margin-top:12px;"><summary style="cursor:pointer;font-weight:700;">➕ Add a staff/owner login</summary><div style="max-width:420px;margin-top:10px;">'
+        + '<label for="nuName">Username</label><input id="nuName" style="' + _fld + '" placeholder="e.g. reception2" autocomplete="off">'
+        + '<label for="nuDisp">Display name</label><input id="nuDisp" style="' + _fld + '" placeholder="e.g. Reception (evening)">'
+        + '<label for="nuRole">Role</label><select id="nuRole" style="' + _fld + '"><option value="STAFF">Staff</option><option value="OWNER">Owner</option></select>'
+        + '<label for="nuPass">Temporary password (they change it at first login)</label><input id="nuPass" style="' + _fld + '" autocomplete="off">'
+        + '<div id="nuMsg" style="min-height:18px;font-size:14px;" aria-live="polite"></div><button type="button" onclick="admCreateUser()" style="' + _btn + 'background:#2c5aa0;color:#fff;">Create login</button></div></details>'
+        + '<p style="font-size:13px;color:#777;margin:12px 0 0;">Forgot the owner password? In Apps Script run <code>emergencyResetOwnerPassword</code> — a temporary password is e-mailed to the clinic Google account.</p></div>'
+
+        + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">🧾 Billing rules</h3>'
+        + '<label for="admMaxDisc">Maximum discount staff may give (%)</label><input id="admMaxDisc" type="number" min="0" max="100" step="1" style="' + _fld + 'max-width:160px;" value="' + (isFinite(CONFIG.staffMaxDiscountPct) ? CONFIG.staffMaxDiscountPct : 10) + '">'
+        + '<div id="admRuleMsg" style="min-height:18px;font-size:14px;"></div><button type="button" onclick="admSaveRules()" style="' + _btn + 'background:#2c5aa0;color:#fff;">Save rule</button></div>'
+
+        + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">💾 Backups</h3><div id="admBackups">Loading…</div>'
+        + '<button type="button" onclick="admBackupNow()" style="' + _btn + 'background:#27ae60;color:#fff;margin-top:10px;">💾 Back up now</button>'
+        + '<p style="font-size:13px;color:#777;margin:10px 0 0;">Automatic: daily ~2 AM (14 kept), weekly (8), monthly (12) in Google Drive folder “SSDC Backups”. Every backup is checked row-by-row; you get an e-mail if one fails.</p></div>'
+
+        + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">🔎 Data check</h3><p style="font-size:14px;color:#555;margin:0 0 10px;">Looks for duplicate bills/medicines, stock that doesn\'t match its batches, and broken links.</p>'
+        + '<button type="button" onclick="admValidate()" style="' + _btn + 'background:#8e44ad;color:#fff;">Run check</button><div id="admValidate" style="margin-top:10px;"></div></div>'
+
+        + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">🛡️ Audit log <small style="font-weight:400;color:#888;">(who did what, latest first)</small></h3>'
+        + '<input id="admAuditFilter" placeholder="🔍 Filter (user, action, bill…)" oninput="admRenderAudit()" style="' + _fld + 'max-width:320px;"><div id="admAudit">Loading…</div></div>';
+    admLoadUsers(); admLoadBackups(); admLoadAudit();
+}
+async function admLoadUsers() {
+    var res = await API.call('listUsers'), el = document.getElementById('admUsers'); if (!el) return;
+    if (!res.success) { el.textContent = res.error || 'Could not load users'; return; }
+    el.innerHTML = '<div class="tbl-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>'
+        + res.users.map(function (u) {
+            return '<tr><td><b>' + esc(u.username) + '</b><div style="font-size:12px;color:#888;">' + esc(u.displayName) + '</div></td><td>' + esc(u.role) + '</td><td>'
+                + (u.active ? (u.locked ? '🔒 Locked (wrong passwords)' : (u.mustChangePassword ? '⏳ Must set password' : '✅ Active')) : '⛔ Disabled') + '</td><td style="font-size:12px;">' + esc(u.lastLogin || '—') + '</td><td style="white-space:nowrap;">'
+                + '<button type="button" class="btn-primary btn-small" onclick="admResetPw(\'' + esc(u.username) + '\')">Reset password</button> '
+                + '<button type="button" class="btn-small ' + (u.active ? 'btn-danger' : 'btn-primary') + '" onclick="admSetActive(\'' + esc(u.username) + '\',' + (!u.active) + ')">' + (u.active ? 'Disable' : 'Enable') + '</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+}
+async function admCreateUser() {
+    var res = await API.call('createUser', { username: _v('nuName'), displayName: _v('nuDisp'), role: _v('nuRole'), password: _v('nuPass') }, { noQueue: true });
+    if (!res.success) return _msg('nuMsg', res.error);
+    _msg('nuMsg', '✅ Login created. Give them the temporary password.', true);
+    ['nuName', 'nuDisp', 'nuPass'].forEach(function (id) { document.getElementById(id).value = ''; });
+    admLoadUsers(); admLoadAudit();
+}
+async function admResetPw(username) {
+    var p = (prompt('New TEMPORARY password for "' + username + '" (min 8 characters).\nThey will be asked to change it at next login, and are logged out everywhere now.') || '').trim();
+    if (!p) return;
+    var res = await API.call('resetUserPassword', { username: username, newPassword: p }, { noQueue: true });
+    showToast(res.success ? '✅ Temporary password set for ' + username : '❌ ' + res.error, res.success ? 'success' : 'error');
+    admLoadUsers(); admLoadAudit();
+}
+async function admSetActive(username, active) {
+    if (!active && !confirm('Disable "' + username + '"? They are logged out immediately and cannot log in.')) return;
+    var res = await API.call('setUserActive', { username: username, active: active }, { noQueue: true });
+    showToast(res.success ? (active ? '✅ Enabled ' : '⛔ Disabled ') + username : '❌ ' + res.error, res.success ? 'success' : 'error');
+    admLoadUsers(); admLoadAudit();
+}
+async function admSaveRules() {
+    var v = parseFloat(_v('admMaxDisc'));
+    if (!(v >= 0 && v <= 100)) return _msg('admRuleMsg', 'Enter a number from 0 to 100');
+    var res = await API.call('saveSettings', { settingKey: 'staff_max_discount_pct', settingValue: String(v) }, { noQueue: true });
+    if (res.success) { CONFIG.staffMaxDiscountPct = v; _msg('admRuleMsg', '✅ Saved — staff can give up to ' + v + '%', true); } else _msg('admRuleMsg', res.error);
+}
+async function admLoadBackups() {
+    var res = await API.call('listBackups'), el = document.getElementById('admBackups'); if (!el) return;
+    if (!res.success) { el.textContent = res.error || 'Could not load backups'; return; }
+    var last = res.last;
+    el.innerHTML = (last ? '<p style="margin:0 0 8px;font-size:14px;">Last backup: <b>' + esc(last.at) + '</b> ' + (last.verified ? '✅ verified' : '❌ ' + esc((last.problems || []).join('; '))) + '</p>' : '<p style="margin:0 0 8px;">No backup yet.</p>')
+        + (res.backups.length ? '<details><summary style="cursor:pointer;">Show ' + res.backups.length + ' backup(s)</summary><ul style="margin:8px 0 0;padding-left:18px;font-size:13px;">'
+        + res.backups.map(function (b) { return '<li><a href="' + esc(b.url) + '" target="_blank" rel="noopener">' + esc(b.name) + '</a></li>'; }).join('') + '</ul></details>' : '');
+}
+async function admBackupNow() {
+    showToast('💾 Backing up… (may take ~20 seconds)', 'info');
+    var res = await API.call('backupNow', {}, { noQueue: true });
+    showToast(res.success ? '✅ Backup done and verified' : '❌ Backup failed: ' + res.error, res.success ? 'success' : 'error');
+    admLoadBackups(); admLoadAudit();
+}
+async function admValidate() {
+    var el = document.getElementById('admValidate'); el.textContent = 'Checking…';
+    var res = await API.call('validateData');
+    if (!res.success) { el.textContent = res.error; return; }
+    el.innerHTML = res.count ? '<p style="color:#c0392b;font-weight:700;margin:0 0 6px;">' + res.count + ' issue(s) found:</p><ul style="margin:0;padding-left:18px;font-size:13px;">'
+        + res.issues.map(function (i) { return '<li>' + esc(i) + '</li>'; }).join('') + '</ul>' : '<p style="color:#1e8449;font-weight:700;margin:0;">✅ No problems found.</p>';
+}
+var _auditEntries = [];
+async function admLoadAudit() {
+    var res = await API.call('getAuditLog', { limit: 500 });
+    _auditEntries = res.success ? res.entries : [];
+    admRenderAudit(res.success ? '' : (res.error || 'Could not load'));
+}
+function admRenderAudit(err) {
+    var el = document.getElementById('admAudit'); if (!el) return;
+    if (err) { el.textContent = err; return; }
+    var f = _v('admAuditFilter').toLowerCase();
+    var list = _auditEntries.filter(function (e) { return !f || (e.user + ' ' + e.action + ' ' + e.target + ' ' + e.details + ' ' + e.result).toLowerCase().indexOf(f) !== -1; }).slice(0, 200);
+    var col = { OK: '#1e8449', WARN: '#e67e22', FAILED: '#c0392b', DENIED: '#c0392b', ERROR: '#c0392b' };
+    el.innerHTML = '<div class="tbl-wrap" style="max-height:420px;overflow:auto;"><table class="table" style="font-size:13px;"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Record</th><th>Details</th><th>Result</th></tr></thead><tbody>'
+        + list.map(function (e) {
+            return '<tr><td style="white-space:nowrap;">' + esc(e.at) + '</td><td>' + esc(e.user) + '</td><td>' + esc(e.action) + '</td><td style="font-family:monospace;font-size:11px;">' + esc(e.target)
+                + '</td><td>' + esc(e.details) + '</td><td style="color:' + (col[e.result] || '#333') + ';font-weight:700;">' + esc(e.result) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+}
+
+// ── inventory: edit medicine ───────────────────────────────────────
+function openEditMedicine(id) {
+    var m = medicines.find(function (x) { return String(x.id) === String(id); }); if (!m) return;
+    ssdcDialog('✏️ Edit ' + esc(m.name),
+        '<label for="emName">Name</label><input id="emName" style="' + _fld + '" value="' + esc(m.name) + '">'
+        + '<div style="display:flex;gap:10px;"><div style="flex:1;"><label for="emPrice">Selling price ₹</label><input id="emPrice" type="number" step="0.01" min="0" style="' + _fld + '" value="' + m.price + '"></div>'
+        + '<div style="flex:1;"><label for="emCost">Cost price ₹</label><input id="emCost" type="number" step="0.01" min="0" style="' + _fld + '" value="' + (m.costPrice || 0) + '"></div></div>'
+        + '<label for="emMin">Low-stock alert below</label><input id="emMin" type="number" step="1" min="0" style="' + _fld + 'max-width:160px;" value="' + (m.minStock || 10) + '">'
+        + '<p style="font-size:13px;color:#777;margin:0 0 12px;">Stock and expiry change only through purchases or <b>📦 Stock</b> adjustments, so every change is recorded.</p>'
+        + '<div id="emMsg" style="min-height:18px;font-size:14px;"></div>'
+        + '<button type="button" onclick="saveEditMedicine(\'' + esc(m.id) + '\')" style="' + _btn + 'background:#2c5aa0;color:#fff;">Save changes</button>', { width: 480 });
+}
+async function saveEditMedicine(id) {
+    var price = parseFloat(_v('emPrice')), cost = parseFloat(_v('emCost'));
+    if (!_v('emName') || !(price >= 0) || !(cost >= 0)) return _msg('emMsg', 'Check name and prices');
+    if (price < cost && !confirm('Selling price is below cost price. Save anyway?')) return;
+    var res = await API.call('updateMedicine', { id: id, name: _v('emName'), price: price, costPrice: cost, minStock: _v('emMin') }, { noQueue: true });
+    if (!res.success) return _msg('emMsg', res.error);
+    closeSsdcDialog(); showToast('✅ Medicine updated', 'success'); loadData();
+}
+
+// ── inventory: batches + adjustments + movement history ───────────
+var ADJ_LABELS = { DAMAGED: 'Damaged / broken (−)', EXPIRED: 'Expired — remove from shelf (−)', PURCHASE_RETURN: 'Returned to supplier (−)',
+    CUSTOMER_RETURN: 'Returned by patient (+)', OPENING: 'Opening stock found (+)', ADJUSTMENT: 'Stock count correction (+ or −)' };
+function openStockDialog(id) {
+    var m = medicines.find(function (x) { return String(x.id) === String(id); }); if (!m) return;
+    var today = todayLocal(), batches = (m.batches || []);
+    var bRows = batches.length ? batches.map(function (b, i) {
+        var expired = b.expiry && b.expiry < today;
+        var days = b.expiry ? Math.ceil((new Date(b.expiry) - new Date(today)) / 86400000) : null;
+        var tag = expired ? '<span style="color:#8e44ad;font-weight:700;">EXPIRED</span>' : (days !== null && days <= 90 ? '<span style="color:#e67e22;font-weight:700;">' + days + ' days</span>' : '');
+        return '<tr><td>' + (expired ? '' : (i === batches.filter(function (x) { return x.expiry && x.expiry < today; }).length ? '<b title="Sold first (FEFO)">▶</b> ' : '')) + esc(b.batchNo || '—') + '</td><td>' + esc(b.expiry || '—') + ' ' + tag + '</td><td><b>' + b.qty + '</b></td><td>₹' + (b.cost || 0) + '</td><td style="font-size:12px;">' + esc(b.supplier || '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="5" style="color:#888;text-align:center;">No batch details (refresh after upgrade).</td></tr>';
+    ssdcDialog('📦 ' + esc(m.name),
+        '<p style="margin:0 0 8px;font-size:14px;">Sellable: <b>' + m.stock + '</b>' + (m.expiredStock ? ' · <span style="color:#8e44ad;">Expired (not sellable): <b>' + m.expiredStock + '</b></span>' : '') + ' · Sold in order of expiry (▶ = next).</p>'
+        + '<div class="tbl-wrap"><table class="table"><thead><tr><th>Batch</th><th>Expiry</th><th>Qty</th><th>Cost</th><th>Supplier</th></tr></thead><tbody>' + bRows + '</tbody></table></div>'
+        + '<h4 style="margin:16px 0 8px;color:#1e3f5a;">Record a stock change</h4>'
+        + '<label for="adjType">Type</label><select id="adjType" style="' + _fld + '">' + Object.keys(ADJ_LABELS).map(function (k) { return '<option value="' + k + '">' + ADJ_LABELS[k] + '</option>'; }).join('') + '</select>'
+        + '<div style="display:flex;gap:10px;"><div style="flex:1;"><label for="adjQty">Quantity</label><input id="adjQty" type="number" step="1" style="' + _fld + '" placeholder="e.g. 5 (or −5 for correction)"></div>'
+        + '<div style="flex:1;"><label for="adjBatch">Batch</label><select id="adjBatch" style="' + _fld + '"><option value="">Automatic (FEFO)</option>'
+        + batches.map(function (b) { return '<option value="' + esc(b.batchId) + '">' + esc(b.batchNo || b.batchId) + ' · ' + esc(b.expiry || '') + ' · ' + b.qty + '</option>'; }).join('') + '</select></div></div>'
+        + '<label for="adjReason">Reason (required)</label><input id="adjReason" style="' + _fld + '" placeholder="e.g. strip torn while unpacking">'
+        + '<div id="adjMsg" style="min-height:18px;font-size:14px;"></div>'
+        + '<button type="button" onclick="submitStockAdjust(\'' + esc(m.id) + '\')" style="' + _btn + 'background:#16a085;color:#fff;">Save stock change</button>'
+        + '<details style="margin-top:16px;" ontoggle="if(this.open)loadMovements(\'' + esc(m.id) + '\')"><summary style="cursor:pointer;font-weight:700;">📜 Stock history</summary><div id="mvList" style="margin-top:8px;">Loading…</div></details>',
+        { width: 680 });
+}
+async function submitStockAdjust(id) {
+    var type = _v('adjType'), qty = Number(_v('adjQty')), reason = _v('adjReason');
+    if (!Number.isInteger(qty) || qty === 0) return _msg('adjMsg', 'Enter a whole number (not 0)');
+    if (reason.length < 3) return _msg('adjMsg', 'Please write a reason');
+    var res = await API.call('adjustStock', { medicineId: id, type: type, qty: qty, batchId: _v('adjBatch'), reason: reason }, { noQueue: true });
+    if (!res.success) return _msg('adjMsg', res.error);
+    closeSsdcDialog(); showToast('✅ Stock updated · now ' + res.stock, 'success'); loadData();
+}
+async function loadMovements(id) {
+    var res = await API.call('getStockMovements', { medicineId: id, limit: 100 }), el = document.getElementById('mvList'); if (!el) return;
+    if (!res.success) { el.textContent = res.error; return; }
+    el.innerHTML = res.movements.length ? '<div class="tbl-wrap" style="max-height:300px;overflow:auto;"><table class="table" style="font-size:13px;"><thead><tr><th>When</th><th>Type</th><th>Qty</th><th>Ref</th><th>By</th><th>Reason</th></tr></thead><tbody>'
+        + res.movements.map(function (m) {
+            return '<tr><td style="white-space:nowrap;">' + esc(m.at) + '</td><td>' + esc(m.type) + '</td><td style="font-weight:700;color:' + (m.qty < 0 ? '#c0392b' : '#1e8449') + ';">' + (m.qty > 0 ? '+' : '') + m.qty
+                + '</td><td style="font-family:monospace;font-size:11px;">' + esc(m.ref) + '</td><td>' + esc(m.user) + '</td><td>' + esc(m.reason) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<p style="color:#888;">No movements yet.</p>';
+}
+;
+
 ;/* ══ FILE: 99-speed.js ══════════════════════════════════════════════ */
 /* ════════════════════════════════════════════════════════════════════
    99-speed.js — loads LAST. Makes the app feel instant:
@@ -7461,28 +7811,20 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     };
   });
 
-  // ── First-time setup: Apps Script link (kept off GitHub) ──────────
-  function hasApiUrl() {
-    try { return !!(JSON.parse(localStorage.getItem('medistock_config') || '{}').apiUrl); }
-    catch (e) { return false; }
-  }
-  function askApiUrl() {
-    var url = (prompt('First-time setup on this device:\n\nPaste your Google Apps Script Web App link\n(ends with /exec).\nYou only need to do this once per phone/computer.') || '').trim();
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) {
-      if (url) alert('That does not look like an Apps Script link (https://script.google.com/macros/s/.../exec). You can set it later in Settings.');
-      return;
-    }
-    var cfg = {};
-    try { cfg = JSON.parse(localStorage.getItem('medistock_config') || '{}'); } catch (e) {}
-    cfg.apiUrl = url;
-    localStorage.setItem('medistock_config', JSON.stringify(cfg));
-  }
-  if (typeof window.initApp === 'function') {
-    var _init = window.initApp;
-    window.initApp = function () {
-      if (!hasApiUrl()) askApiUrl();
-      return _init.apply(this, arguments);
+  // ── Pages that load their own data when opened ──
+  if (typeof window.showPage === 'function') {
+    var _show2 = window.showPage;
+    window.showPage = function (page) {
+      var r = _show2.apply(this, arguments);
+      if (page === 'settings' && typeof renderAdminPanels === 'function') renderAdminPanels();
+      if (page === 'allbills' && typeof renderCancelledBills === 'function') renderCancelledBills();
+      return r;
     };
+  }
+
+  // ── Reopened app with a live session (same tab) → continue without logging in again ──
+  if (window.API && API.user() && typeof startSession === 'function') {
+    try { startSession(API.user()); } catch (e) { console.error(e); }
   }
 
   // ── Service worker ────────────────────────────────────────────────

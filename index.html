@@ -1569,6 +1569,7 @@
   padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,.2);
   cursor: pointer; display: none; }
 
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     </style>
     <script>// Fix for mobile Safari 100vh including address bar
     function _setVh() {
@@ -1597,10 +1598,13 @@
                 <button class="role-tab active" id="tabOwner" onclick="selectRole('owner')">👑 Owner</button>
                 <button class="role-tab" id="tabStaff" onclick="selectRole('staff')">👨&zwnj;⚕️ Staff</button>
             </div>
-            <select class="login-input" id="loginUsername" style="cursor:pointer;"><option value="">-- Select Username --</option><option value="owner">owner</option><option value="staff">staff</option></select>
-            <input class="login-input" type="password" id="loginPassword" placeholder="Password" onkeydown="if(event.key==='Enter') doLogin()">
+            <label for="loginUsername" class="sr-only">Username</label>
+            <input class="login-input" id="loginUsername" list="loginUserList" value="owner" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Username">
+            <datalist id="loginUserList"><option value="owner"><option value="staff"></datalist>
+            <label for="loginPassword" class="sr-only">Password</label>
+            <input class="login-input" type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
             <button class="login-btn" onclick="doLogin()">🔐 Login</button>
-            <div class="login-error" id="loginError">❌ Incorrect username or password</div>
+            <div class="login-error" id="loginError" role="alert" aria-live="assertive">❌ Incorrect username or password</div>
         </div>
     </div>
     <div class="container">
@@ -1666,10 +1670,11 @@
             </nav>
 
             <div class="sidebar-footer">
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
                     <span>API Status:</span>
                     <div class="status-indicator" id="statusIndicator"></div>
                 </div>
+                <div id="syncStatusLine" onclick="openSyncCentre()" title="Open Sync Centre" style="font-size:11px;opacity:.9;margin-bottom:10px;cursor:pointer;">● Online</div>
                 <!-- Bluetooth Printer Status -->
                 <div id="btPrinterBar" onclick="openBtPrinterPanel()" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,0.1);border-radius:8px;cursor:pointer;transition:background 0.2s;" title="Bluetooth Printer">
                     <span id="btPrinterIcon" style="font-size:16px;">🖨️</span>
@@ -1677,7 +1682,8 @@
                     <div id="btStatusDot" style="width:10px;height:10px;border-radius:50%;background:#e74c3c;animation:pulse 2s infinite;flex-shrink:0;"></div>
                 </div>
                 Sri Sai Speciality Dental Care<br>
-                v1.0 © 2024
+                v3.0 · secure
+                <button class="logout-btn" onclick="openChangePassword(false)" style="margin-bottom:6px;background:rgba(255,255,255,0.12);">🔑 Change password</button>
                 <button class="logout-btn" onclick="doLogout()">🚪 Logout</button>
             </div>
         </div>
@@ -2930,7 +2936,7 @@ Kharmanghat
                             <label>Web App URL</label>
                             <input type="text" id="apiUrl" placeholder="Paste your Web App URL here">
                             <small style="color: var(--text-light); display: block; margin-top: 5px;">
-                                Find this in Google Apps Script → Deploy → Web App. For UPI auto-detection: add a "checkUpiPayment" action to your Apps Script that reads the latest bank SMS forwarded to a Sheet row.
+                                Find this in Google Apps Script → Deploy → Manage deployments → Web app URL (ends with /exec). Saved on this device only.
                             </small>
                         </div>
                         <button class="btn-primary" onclick="saveSettings()">💾 Save Settings</button>
@@ -3018,8 +3024,32 @@ Kharmanghat
                 <input type="number" id="purchaseQty" value="1">
             </div>
             <div class="form-group">
-                <label>Cost Price per Unit</label>
-                <input type="number" id="purchaseCostPrice" step="0.01">
+                <label for="purchaseCostPrice">Cost Price per Unit</label>
+                <input type="number" id="purchaseCostPrice" step="0.01" min="0">
+            </div>
+            <div style="display:flex;gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label for="purchaseBatchNo">Batch No</label>
+                    <input type="text" id="purchaseBatchNo" placeholder="on the strip / box">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label for="purchaseExpiry">Expiry date *</label>
+                    <input type="date" id="purchaseExpiry">
+                </div>
+            </div>
+            <div style="display:flex;gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label for="purchaseFreeQty">Free qty</label>
+                    <input type="number" id="purchaseFreeQty" min="0" step="1" placeholder="0">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label for="purchaseMrp">MRP ₹</label>
+                    <input type="number" id="purchaseMrp" min="0" step="0.01">
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="purchaseInvoiceNo">Supplier invoice no</label>
+                <input type="text" id="purchaseInvoiceNo" placeholder="prevents entering the same invoice twice">
             </div>
             <div style="display: flex; gap: 10px;">
                 <button class="btn-success" onclick="savePurchase()" style="flex: 1;">Save</button>

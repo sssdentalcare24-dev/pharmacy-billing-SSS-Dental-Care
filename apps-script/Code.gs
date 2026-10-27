@@ -505,6 +505,8 @@ function handle_(req) {
     if (res && res.success !== false) {
       bumpDataVersion_();
       if (reqId) c.put('RQ_' + reqId, JSON.stringify(res), 21600);
+    } else if (res && (res.code === 'VALIDATION' || res.code === 'DUPLICATE')) {
+      audit_(s, action, req.billId || req.id || req.recordId || '', res.error, 'REJECTED');   // possible mistake or tampering
     }
     return res;
   } catch (err) {
