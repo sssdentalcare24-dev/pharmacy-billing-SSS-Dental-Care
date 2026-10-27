@@ -1,12 +1,12 @@
-# SSDC Billing — Android app (Capacitor 8)
+# Sri Sai Speciality Dental Care — Android app (Capacitor 8)
 
 The clinic website, packaged as an Android app. Same features, same login, same Google Sheets (same Apps Script). The app's files live on the phone, so it opens instantly and works offline (bills sync when the internet is back).
 
 | | |
 |---|---|
-| App name | SSDC Billing |
+| App name | Sri Sai Speciality Dental Care |
 | App ID | `in.srisaidentalcare.billing` |
-| Version | 3.1.0 (code 4) |
+| Version | 3.1.1 (code 5) |
 | Android | 7.0 and newer (minSdk 24, targetSdk 36) |
 
 ## What is different inside the app

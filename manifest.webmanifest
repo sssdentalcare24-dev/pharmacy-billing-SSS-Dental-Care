@@ -1,6 +1,6 @@
 {
-  "name": "Sri Sai Speciality Dental Care — Billing",
-  "short_name": "SSDC Billing",
+  "name": "Sri Sai Speciality Dental Care",
+  "short_name": "Sri Sai Speciality Dental Care",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

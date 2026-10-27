@@ -64,7 +64,7 @@ npm run sync             (copies the website into the app: www/ → Android asse
 
 Then build the signed APK the same way as last time — Android Studio → **Build → Generate Signed App Bundle / APK… → APK** (details in `android-app/README.md`), or `android\gradlew.bat assembleRelease` with JDK 21.
 
-- Version is **3.1.0 (code 4)**. If `android-app/android/keystore.properties` contains a `versionCode` line, set it to **4** or higher — Android refuses to install an update with the same code.
+- Version is **3.1.1 (code 5)**; the app is called **Sri Sai Speciality Dental Care** on the phone. If `android-app/android/keystore.properties` contains a `versionCode` line, set it to **5** or higher — Android refuses to install an update with the same code.
 - Install the new APK over the old one (same signing key → data and login are kept).
 - On the phone, try: Bluetooth thermal print, A4 print / Save as PDF, 📷 barcode scan (Android asks for the camera once), invoice photo, WhatsApp link.
 

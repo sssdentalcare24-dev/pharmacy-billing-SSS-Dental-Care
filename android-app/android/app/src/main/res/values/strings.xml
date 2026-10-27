@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">SSDC Billing</string>
-    <string name="title_activity_main">SSDC Billing</string>
+    <string name="app_name">Sri Sai Speciality Dental Care</string>
+    <string name="title_activity_main">Sri Sai Speciality Dental Care</string>
     <string name="package_name">in.srisaidentalcare.billing</string>
     <string name="custom_url_scheme">in.srisaidentalcare.billing</string>
 </resources>
