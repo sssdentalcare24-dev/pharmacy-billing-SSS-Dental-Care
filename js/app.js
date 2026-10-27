@@ -22,6 +22,8 @@
   // ── shared helpers ────────────────────────────────────────────────
   var ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   window.esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ESC[c]; }); };
+  // CSV cell: quoted, inner quotes doubled, and text starting with = + - @ cannot run as a spreadsheet formula
+  window.csvQ = function (v) { var t = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
   window.todayLocal = function () { return new Date().toLocaleDateString('en-CA'); };   // YYYY-MM-DD in clinic's local time
   window.newId = function (prefix) { return prefix + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7).toUpperCase(); };
   window.qrDataUrl = function (text, cell) {          // local QR (no third-party website)
@@ -328,7 +330,7 @@
   window.__lazyMore = function (key, total, shown, colspan) {
     if (shown >= total) return '';
     setTimeout(observe, 0);
-    var btn = '<button type="button" class="lazy-more" data-lazy="' + key + '" onclick="__lazyLoadMore(\'' + key + '\')">⬇ Show more (' + (total - shown) + ' more)</button>';
+    var btn = '<button type="button" class="lazy-more" data-lazy="' + key + '" data-onclick="__lazyLoadMore(\'' + key + '\')">⬇ Show more (' + (total - shown) + ' more)</button>';
     return colspan ? '<tr class="lazy-more-row"><td colspan="' + colspan + '">' + btn + '</td></tr>' : '<div class="lazy-more-wrap">' + btn + '</div>';
   };
   window.__lazyLoadMore = function (key) {
@@ -461,6 +463,269 @@
   };
 })();
 ;
+
+;/* ══ FILE: 00c-safe-handlers.js ══════════════════════════════════════════════ */
+/* Safe event handlers — lets the Content-Security-Policy forbid inline JavaScript.
+   Buttons and inputs carry their action in data-on<event> attributes (e.g. data-onclick holding submitBill()) …
+   instead of the old inline onclick attribute. The browser never runs those attributes as code. This file reads them
+   and carries them out with a small interpreter that only understands a narrow shape:
+     • calls to the app's own functions (fn(), API.queue.flush(true), x.then(fn)) with simple arguments
+     • strings, numbers, true/false/null, this, this.value, event, event.key, event.target === this
+     • if (…) …, a ? b : c, &&, ||, !, ===, !==
+     • setting el.value / el.checked / el.style.* on an element
+   It never uses eval or new Function, refuses the browser's own functions (except a short list such
+   as print and confirm) and refuses dangerous property names. Even if some text ever slipped through
+   escaping, an injected attribute could at most call an existing app function after a click. */
+(function () {
+  'use strict';
+  var BLOCKED_PROPS = { constructor: 1, __proto__: 1, prototype: 1, call: 1, apply: 1, bind: 1,
+    __defineGetter__: 1, __defineSetter__: 1, __lookupGetter__: 1, __lookupSetter__: 1,
+    innerHTML: 1, outerHTML: 1, insertAdjacentHTML: 1, srcdoc: 1, href: 1, src: 1, action: 1,
+    location: 1, cookie: 1, write: 1, writeln: 1 };
+  var BLOCKED_GLOBALS = { eval: 1, Function: 1, setTimeout: 1, setInterval: 1, fetch: 1,
+    XMLHttpRequest: 1, importScripts: 1, location: 1, open: 1, opener: 1, parent: 1, top: 1, frames: 1,
+    localStorage: 1, sessionStorage: 1, indexedDB: 1, Worker: 1, WebSocket: 1, navigator: 1 };
+  var ELEMENT_SETTABLE = { value: 1, checked: 1, disabled: 1, hidden: 1, selectedIndex: 1, open: 1 };
+
+  function isNative(fn) {
+    try { return /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(fn)); }
+    catch (e) { return true; }
+  }
+  function nativeAllowed(fn) {
+    var ok = [window.print, window.confirm, window.alert, document.getElementById];
+    if (window.Event) ok.push(Event.prototype.stopPropagation, Event.prototype.preventDefault);
+    if (window.HTMLElement) ok.push(HTMLElement.prototype.focus, HTMLElement.prototype.blur, HTMLElement.prototype.click);
+    if (window.HTMLInputElement) ok.push(HTMLInputElement.prototype.select);
+    if (window.Promise) ok.push(Promise.prototype.then, Promise.prototype.catch);
+    for (var i = 0; i < ok.length; i++) if (ok[i] === fn) return true;
+    return false;
+  }
+
+  /* ── tokenizer ── */
+  function tokenize(src) {
+    var out = [], i = 0, n = src.length, c, m;
+    var re = /^(===|!==|==|!=|&&|\|\||[(){}.,;?:!=\-\[\]])/;
+    while (i < n) {
+      c = src[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (c === '"' || c === "'") {
+        var q = c, s = '', j = i + 1;
+        while (j < n && src[j] !== q) {
+          if (src[j] === '\\') {
+            var e = src[j + 1];
+            s += e === 'n' ? '\n' : e === 't' ? '\t' : e;
+            j += 2;
+          } else s += src[j++];
+        }
+        if (j >= n) throw new SyntaxError('unterminated string');
+        out.push({ t: 'str', v: s }); i = j + 1; continue;
+      }
+      m = /^\d+(\.\d+)?/.exec(src.slice(i));
+      if (m) { out.push({ t: 'num', v: parseFloat(m[0]) }); i += m[0].length; continue; }
+      m = /^[A-Za-z_$][\w$]*/.exec(src.slice(i));
+      if (m) { out.push({ t: 'id', v: m[0] }); i += m[0].length; continue; }
+      m = re.exec(src.slice(i));
+      if (m) { out.push({ t: 'p', v: m[0] }); i += m[0].length; continue; }
+      throw new SyntaxError('unexpected "' + c + '"');
+    }
+    return out;
+  }
+
+  /* ── parser → small syntax tree ── */
+  function parse(src) {
+    var tk = tokenize(src), pos = 0;
+    function peek(v) { var t = tk[pos]; return t && (v === undefined || t.v === v) && (t.t === 'p' || t.t === 'id') ? t : null; }
+    function eat(v) { var t = tk[pos]; if (!t || t.v !== v || t.t === 'str') throw new SyntaxError('expected ' + v); pos++; return t; }
+    function program(endTok) {
+      var list = [];
+      while (pos < tk.length && !(endTok && peek(endTok))) {
+        if (peek(';')) { pos++; continue; }
+        list.push(statement());
+        if (pos < tk.length && !peek(';') && !(endTok && peek(endTok))) {
+          // allow `if(x) a() b()` style only when separated by ; — otherwise it's an error
+          if (list[list.length - 1].k !== 'if') throw new SyntaxError('expected ;');
+        }
+      }
+      return list;
+    }
+    function block() { eat('{'); var b = program('}'); eat('}'); return { k: 'block', body: b }; }
+    function statement() {
+      var t = tk[pos];
+      if (t.t === 'id' && t.v === 'if') {
+        pos++; eat('('); var cond = expr(); eat(')');
+        var then = peek('{') ? block() : statement(), other = null;
+        if (peek('else')) { pos++; other = peek('{') ? block() : statement(); }
+        return { k: 'if', cond: cond, then: then, other: other };
+      }
+      if (t.t === 'id' && t.v === 'return') {
+        pos++;
+        var val = (pos < tk.length && !peek(';') && !peek('}')) ? expr() : null;
+        return { k: 'return', val: val };
+      }
+      if (t.t === 'p' && t.v === '{') return block();
+      var lhs = expr();
+      if (peek('=')) {
+        pos++;
+        if (lhs.k !== 'member') throw new SyntaxError('can only set a property');
+        return { k: 'assign', target: lhs, val: expr() };
+      }
+      return { k: 'expr', e: lhs };
+    }
+    function expr() {
+      var c = orExpr();
+      if (peek('?')) { pos++; var a = expr(); eat(':'); var b = expr(); return { k: 'cond', c: c, a: a, b: b }; }
+      return c;
+    }
+    function orExpr() { var l = andExpr(); while (peek('||')) { pos++; l = { k: 'or', l: l, r: andExpr() }; } return l; }
+    function andExpr() { var l = eqExpr(); while (peek('&&')) { pos++; l = { k: 'and', l: l, r: eqExpr() }; } return l; }
+    function eqExpr() {
+      var l = unary();
+      while (peek('===') || peek('!==') || peek('==') || peek('!=')) { var op = tk[pos++].v; l = { k: 'cmp', op: op, l: l, r: unary() }; }
+      return l;
+    }
+    function unary() {
+      if (peek('!')) { pos++; return { k: 'not', e: unary() }; }
+      if (peek('-')) { pos++; return { k: 'neg', e: unary() }; }
+      return postfix();
+    }
+    function postfix() {
+      var e = primary();
+      for (;;) {
+        if (peek('.')) {
+          pos++; var t = tk[pos++];
+          if (!t || t.t !== 'id') throw new SyntaxError('expected name');
+          e = { k: 'member', obj: e, name: t.v };
+        } else if (peek('(')) {
+          pos++; var args = [];
+          if (!peek(')')) { args.push(expr()); while (peek(',')) { pos++; args.push(expr()); } }
+          eat(')'); e = { k: 'call', fn: e, args: args };
+        } else return e;
+      }
+    }
+    function primary() {
+      var t = tk[pos++];
+      if (!t) throw new SyntaxError('unexpected end');
+      if (t.t === 'str' || t.t === 'num') return { k: 'lit', v: t.v };
+      if (t.t === 'p' && t.v === '(') { var e = expr(); eat(')'); return e; }
+      if (t.t === 'id') {
+        if (t.v === 'true') return { k: 'lit', v: true };
+        if (t.v === 'false') return { k: 'lit', v: false };
+        if (t.v === 'null') return { k: 'lit', v: null };
+        if (t.v === 'undefined') return { k: 'lit', v: undefined };
+        if (t.v === 'this') return { k: 'this' };
+        if (t.v === 'event') return { k: 'event' };
+        if (t.v === 'function' || t.v === 'new' || t.v === 'import' || t.v === 'class') throw new SyntaxError(t.v + ' not allowed');
+        return { k: 'name', name: t.v };
+      }
+      throw new SyntaxError('unexpected ' + t.v);
+    }
+    var prog = program(null);
+    if (pos !== tk.length) throw new SyntaxError('unexpected ' + tk[pos].v);
+    return prog;
+  }
+
+  /* ── evaluator ── */
+  function RETURN(v) { this.v = v; }
+  function getProp(obj, name) {
+    if (BLOCKED_PROPS[name]) throw new Error('blocked property ' + name);
+    if (obj === null || obj === undefined) throw new TypeError('cannot read ' + name + ' of ' + obj);
+    var v = obj[name];
+    if (v === window || v === document.defaultView) return window;
+    return v;
+  }
+  function checkValue(v) {
+    if (typeof v === 'function' && isNative(v) && !nativeAllowed(v)) throw new Error('browser function not allowed');
+    return v;
+  }
+  function ev(node, ctx) {
+    switch (node.k) {
+      case 'lit': return node.v;
+      case 'this': return ctx.el;
+      case 'event': return ctx.ev;
+      case 'name':
+        if (BLOCKED_GLOBALS[node.name]) throw new Error('blocked name ' + node.name);
+        if (node.name === 'window') return window;
+        if (node.name === 'document') return document;
+        if (!(node.name in window)) throw new ReferenceError(node.name + ' is not defined');
+        return window[node.name];
+      case 'member': return getProp(ev(node.obj, ctx), node.name);
+      case 'call': {
+        var self = undefined, fn;
+        if (node.fn.k === 'member') { self = ev(node.fn.obj, ctx); fn = getProp(self, node.fn.name); }
+        else fn = ev(node.fn, ctx);
+        if (typeof fn !== 'function') throw new TypeError('not a function');
+        if (isNative(fn) && !nativeAllowed(fn)) throw new Error('browser function not allowed');
+        var args = node.args.map(function (a) { return checkValue(ev(a, ctx)); });
+        return fn.apply(self, args);
+      }
+      case 'cond': return ev(node.c, ctx) ? ev(node.a, ctx) : ev(node.b, ctx);
+      case 'or': return ev(node.l, ctx) || ev(node.r, ctx);
+      case 'and': return ev(node.l, ctx) && ev(node.r, ctx);
+      case 'not': return !ev(node.e, ctx);
+      case 'neg': return -ev(node.e, ctx);
+      case 'cmp': {
+        var l = ev(node.l, ctx), r = ev(node.r, ctx);
+        /* eslint-disable eqeqeq */
+        return node.op === '===' ? l === r : node.op === '!==' ? l !== r : node.op === '==' ? l == r : l != r;
+      }
+    }
+    throw new Error('bad node');
+  }
+  function run(list, ctx) {
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (s.k === 'expr') ev(s.e, ctx);
+      else if (s.k === 'block') run(s.body, ctx);
+      else if (s.k === 'if') {
+        if (ev(s.cond, ctx)) run([s.then], ctx); else if (s.other) run([s.other], ctx);
+      } else if (s.k === 'return') throw new RETURN(s.val ? ev(s.val, ctx) : undefined);
+      else if (s.k === 'assign') {
+        var obj = ev(s.target.obj, ctx), name = s.target.name, val = ev(s.val, ctx);
+        var isStyle = window.CSSStyleDeclaration && obj instanceof CSSStyleDeclaration;
+        var isEl = window.Element && obj instanceof Element;
+        if (BLOCKED_PROPS[name] || !(isStyle || (isEl && ELEMENT_SETTABLE[name]))) throw new Error('cannot set ' + name);
+        if (typeof val === 'function' || (val && typeof val === 'object')) throw new Error('can only set simple values');
+        obj[name] = val;
+      }
+    }
+  }
+
+  var cache = Object.create(null);
+  function compile(code) {
+    if (!(code in cache)) cache[code] = parse(code);
+    return cache[code];
+  }
+  function exec(code, el, e) {
+    var prog;
+    try { prog = compile(code); }
+    catch (err) { console.error('[ssdc] bad handler "' + code + '": ' + err.message); return; }
+    try { run(prog, { el: el, ev: e }); }
+    catch (err) {
+      if (err instanceof RETURN) { if (err.v === false && e && e.cancelable) e.preventDefault(); return; }
+      // report like an inline handler error would, without stopping other handlers
+      setTimeout(function () { throw err; }, 0);
+    }
+  }
+
+  var BUBBLING = ['click', 'dblclick', 'input', 'change', 'keydown', 'keyup', 'submit', 'touchend', 'touchstart', 'paste'];
+  function dispatch(e) {
+    var attr = 'data-on' + e.type, node = e.target;
+    if (node && node.nodeType !== 1) node = node.parentElement;
+    while (node && node !== document) {
+      if (node.nodeType === 1 && node.hasAttribute(attr)) {
+        if (!(node.disabled && e.type === 'click')) exec(node.getAttribute(attr), node, e);
+        if (e.cancelBubble) break;   // event.stopPropagation() was called
+      }
+      node = node.parentElement;
+    }
+  }
+  BUBBLING.forEach(function (type) { document.addEventListener(type, dispatch, false); });
+  /* Only user-driven events. Events that fire by themselves (load, error, focus via autofocus,
+     toggle on an already-open <details>) are deliberately NOT supported, so injected markup
+     could never run anything without the user clicking or typing. */
+
+  window.SafeHandlers = { parse: parse, exec: exec };
+})();
 
 ;/* ══ FILE: 01-core.js ══════════════════════════════════════════════ */
 /* Sri Sai Speciality Dental Care — billing app. Split from the original single index.html. */
@@ -886,7 +1151,7 @@
                 if (dateStr === todayStr)    cls += ' today';
                 else if (dateStr === _dashSelDate) cls += ' selected';
                 if (apptDates[dateStr])      cls += ' has-appt';
-                html += '<div class="' + cls + '" onclick="dashCalSelect(\'' + dateStr + '\')">' + d + '</div>';
+                html += '<div class="' + cls + '" data-onclick="dashCalSelect(\'' + dateStr + '\')">' + d + '</div>';
             }
 
             // Fill remaining cells
@@ -939,14 +1204,14 @@
                 var isCancelled = a.status === 'Cancelled';
                 var phone = (String(a.phone||'')).replace(/[^\d]/g,'');
                 if (phone.length===10) phone = '91'+phone;
-                var waBtn = phone ? '<button class="dash-appt-wa" onclick="sendDashApptWa(\''+a.id+'\')">📲</button>' : '';
+                var waBtn = phone ? '<button class="dash-appt-wa" data-onclick="sendDashApptWa(\''+esc(a.id)+'\')">📲</button>' : '';
                 return '<div class="dash-appt-slot' + (isCancelled?' cancelled':'') + '">' +
-                    '<span class="dash-appt-time">' + a.time + '</span>' +
+                    '<span class="dash-appt-time">' + esc(a.time) + '</span>' +
                     '<div style="flex:1;min-width:0;">' +
-                        '<div class="dash-appt-name">' + a.patient + '</div>' +
-                        (a.doctor?'<div style="font-size:11px;color:#888;">'+a.doctor+'</div>':'') +
+                        '<div class="dash-appt-name">' + esc(a.patient) + '</div>' +
+                        (a.doctor?'<div style="font-size:11px;color:#888;">'+esc(a.doctor)+'</div>':'') +
                     '</div>' +
-                    (a.reason?'<span class="dash-appt-tag'+(isCancelled?' cancelled':'')+'">'+a.reason+'</span>':'') +
+                    (a.reason?'<span class="dash-appt-tag'+(isCancelled?' cancelled':'')+'">'+esc(a.reason)+'</span>':'') +
                     (isCancelled?'<span class="dash-appt-tag cancelled">Cancelled</span>':waBtn) +
                     '</div>';
             }).join('');
@@ -1046,7 +1311,7 @@
                     <td>${esc(bill.patientName)}</td>
                     <td>${esc(bill.doctor || '-')}</td>
                     <td style="font-weight:700;">₹${parseFloat(bill.total||0).toFixed(2)}</td>
-                    <td style="white-space:nowrap;">${bill.date}</td>
+                    <td style="white-space:nowrap;">${esc(bill.date)}</td>
                 </tr>
             `).join('');
             tbody.innerHTML = rows;
@@ -1125,10 +1390,10 @@
             tbody.innerHTML = cart.map((item, idx) => `
                 <tr>
                     <td>${esc(item.name)}</td>
-                    <td><input type="number" value="${item.qty}" min="1" step="1" inputmode="numeric" onchange="updateCartQty(${idx}, this.value)"></td>
+                    <td><input type="number" value="${item.qty}" min="1" step="1" inputmode="numeric" data-onchange="updateCartQty(${idx}, this.value)"></td>
                     <td>₹${item.price}</td>
                     <td>₹${(item.qty * item.price).toFixed(2)}</td>
-                    <td><button class="btn-danger btn-small" onclick="removeFromCart(${idx})">Remove</button></td>
+                    <td><button class="btn-danger btn-small" data-onclick="removeFromCart(${idx})">Remove</button></td>
                 </tr>
             `).join('');
         }
@@ -1570,11 +1835,11 @@ Thank you! Visit again.`;
   <div class="banner">
     <span class="tick">✅</span>
     <h1>${b.balanceDue > 0.009 ? 'Bill Saved' : 'Payment Done!'}</h1>
-    <div class="mode">${modeLabel}</div>
+    <div class="mode">${esc(modeLabel)}</div>
   </div>
   <div class="body">
-    <div id="__ph" data-patient="${(b.patientName||'').replace(/"/g,'&quot;')}" data-doctor="${(b.doctor||'').replace(/"/g,'&quot;')}" data-date="${b.date||''}" data-billid="${b.billId||''}" data-total="${parseFloat(b.total||0).toFixed(2)}" data-subtotal="${parseFloat(b.subtotal||0).toFixed(2)}" data-discount="${parseFloat(b.discount||0).toFixed(2)}" data-mode="${b.paymentMode||'Cash'}" data-paid="${(+(b.paidAmount !== undefined ? b.paidAmount : b.total) || 0).toFixed(2)}" data-due="${(+b.balanceDue || 0).toFixed(2)}" data-items="${encodeURIComponent(JSON.stringify((b.items||[]).map(function(i){return{name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount};})))}" style="display:none"></div>
-    <div class="bill-id">${b.billId}</div>
+    <div id="__ph" data-patient="${esc(b.patientName||'')}" data-doctor="${esc(b.doctor||'')}" data-date="${esc(b.date||'')}" data-billid="${esc(b.billId||'')}" data-total="${parseFloat(b.total||0).toFixed(2)}" data-subtotal="${parseFloat(b.subtotal||0).toFixed(2)}" data-discount="${parseFloat(b.discount||0).toFixed(2)}" data-mode="${esc(b.paymentMode||'Cash')}" data-paid="${(+(b.paidAmount !== undefined ? b.paidAmount : b.total) || 0).toFixed(2)}" data-due="${(+b.balanceDue || 0).toFixed(2)}" data-items="${encodeURIComponent(JSON.stringify((b.items||[]).map(function(i){return{name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount};})))}" style="display:none"></div>
+    <div class="bill-id">${esc(b.billId)}</div>
     <div class="clinic-header">
       <div class="name">🦷 Sri Sai Speciality Dental Care</div>
       <div class="sub">${CONFIG ? (CONFIG.clinicAddress || '') : ''}</div>
@@ -1864,10 +2129,10 @@ Thank you! Visit again.`;
                     <td>₹${med.costPrice}</td>
                     <td style="white-space:nowrap;">${esc(med.expiry)}</td>
                     <td style="white-space:nowrap;">
-                        <button class="btn-primary btn-small" onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
-                        <button class="btn-primary btn-small" style="background:#16a085;" onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
+                        <button class="btn-primary btn-small" data-onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
+                        <button class="btn-primary btn-small" style="background:#16a085;" data-onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
                         ${hist(med)}
-                        <button class="btn-danger btn-small" onclick="deleteMedicine('${esc(med.id)}')" title="Hide (history kept)">🗑️</button>
+                        <button class="btn-danger btn-small" data-onclick="deleteMedicine('${esc(med.id)}')" title="Hide (history kept)">🗑️</button>
                     </td>
                 </tr>
             `).join('');
@@ -1884,10 +2149,10 @@ Thank you! Visit again.`;
                             <div class="m-card-meta">📅 ${esc(med.expiry)}</div>
                         </div>
                         <div class="m-card-actions">
-                            <button style="background:#2c5aa0;" onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
-                            <button style="background:#16a085;" onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
+                            <button style="background:#2c5aa0;" data-onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
+                            <button style="background:#16a085;" data-onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
                             ${(window.V31 && V31.enabled()) ? `<button style="background:#7f8c8d;" data-act="batchHistory" data-id="${esc(med.id)}">📜 History</button>` : ''}
-                            <button style="background:#e74c3c;" onclick="deleteMedicine('${esc(med.id)}')">🗑️</button>
+                            <button style="background:#e74c3c;" data-onclick="deleteMedicine('${esc(med.id)}')">🗑️</button>
                         </div>
                     </div>`;
                 }).join('') : '<div style="text-align:center;color:#aaa;padding:20px;">No medicines in inventory.</div>';
@@ -1983,7 +2248,7 @@ Thank you! Visit again.`;
                     <td style="text-align:center;">${p.qty}</td>
                     <td>₹${p.costPrice}</td>
                     <td style="font-weight:700;">₹${(p.qty * p.costPrice).toFixed(2)}</td>
-                    <td><button class="btn-danger btn-small" onclick="deletePurchase('${p.id||i}')">🗑️</button></td>
+                    <td><button class="btn-danger btn-small" data-onclick="deletePurchase('${esc(p.id||i)}')">🗑️</button></td>
                 </tr>
             `).join('');
             if (cards) {
@@ -1994,9 +2259,9 @@ Thank you! Visit again.`;
                             <div class="m-card-val">₹${(p.qty * p.costPrice).toFixed(2)}</div>
                         </div>
                         <div class="m-card-meta">🏪 ${esc(p.supplier)} &nbsp;|&nbsp; 📦 Qty: ${p.qty}${p.batchNo ? ' &nbsp;|&nbsp; Batch ' + esc(p.batchNo) : ''}${p.expiry ? ' · Exp ' + esc(p.expiry) : ''}</div>
-                        <div class="m-card-meta">💰 Cost: ₹${p.costPrice}/unit &nbsp;|&nbsp; 📅 ${p.date}</div>
+                        <div class="m-card-meta">💰 Cost: ₹${esc(p.costPrice)}/unit &nbsp;|&nbsp; 📅 ${esc(p.date)}</div>
                         <div class="m-card-actions" style="margin-top:8px;">
-                            <button style="background:#e74c3c;" onclick="deletePurchase('${p.id||''}')">🗑️ Delete</button>
+                            <button style="background:#e74c3c;" data-onclick="deletePurchase('${esc(p.id||'')}')">🗑️ Delete</button>
                         </div>
                     </div>
                 `).join('') : '<div style="text-align:center;color:#aaa;padding:20px;">No purchases yet.</div>';
@@ -2136,8 +2401,8 @@ Thank you! Visit again.`;
                 if (typeof items === 'string') { try { items = JSON.parse(items); } catch(e) { items = []; } }
 
                 const isCB = bill.billId && String(bill.billId).startsWith('CB-');
-                const printFn = isCB ? `reprintCbBillFromAllBills('${bill.billId}')` : `reprrintBill('${bill.billId}')`;
-                const waFn    = isCB ? `shareWhatsAppCb('${bill.billId}')` : `shareWhatsApp('${bill.billId}')`;
+                const printFn = isCB ? `reprintCbBillFromAllBills('${esc(bill.billId)}')` : `reprrintBill('${esc(bill.billId)}')`;
+                const waFn    = isCB ? `shareWhatsAppCb('${esc(bill.billId)}')` : `shareWhatsApp('${esc(bill.billId)}')`;
 
                 const payColor = bill.paymentMode==='Cash'?'#e8f8ee':bill.paymentMode==='UPI'?'#fff3e0':bill.paymentMode==='Card'?'#e8f0fe':'#fce4ec';
                 const payText  = bill.paymentMode==='Cash'?'#27ae60':bill.paymentMode==='UPI'?'#e67e22':bill.paymentMode==='Card'?'#2c5aa0':'#c0392b';
@@ -2152,14 +2417,14 @@ Thank you! Visit again.`;
                     ? `<span style="background:#e8f0fe;color:#2c5aa0;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;">🧾 Bill Summary</span>`
                     : `<span style="background:#e8f8ee;color:#27ae60;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;">💊 Pharmacy</span>`;
                 const trInfo = (isCB && bill.trDesc)
-                    ? `<div><span style="background:#f0f4ff;color:#1e3f5a;border-radius:4px;padding:2px 7px;font-size:12px;">🦷 ${bill.trDesc.substring(0,35)}${bill.trDesc.length>35?'...':''}</span></div>`
+                    ? `<div><span style="background:#f0f4ff;color:#1e3f5a;border-radius:4px;padding:2px 7px;font-size:12px;">🦷 ${esc(bill.trDesc.substring(0,35))}${bill.trDesc.length>35?'...':''}</span></div>`
                     : '';
                 const medBadges = medNames.length
                     ? medNames.map((n,i2)=>`<span style="display:inline-block;background:#e8f0fe;color:#2c5aa0;border-radius:4px;padding:2px 7px;margin:2px;font-size:12px;">${n} ×${items[i2].qty}</span>`).join('')
                     : '<span style="color:#aaa;font-size:12px;">—</span>';
 
                 const syncBadge = syncBadgeHtml(bill.syncStatus, bill.syncError);
-                const cancelBtn = currentRole === 'owner' ? `<button class="btn-danger btn-small" onclick="cancelBillUI('${esc(bill.billId)}')" title="Cancel bill (kept in records)" style="margin-left:4px;">✖</button>` : '';
+                const cancelBtn = currentRole === 'owner' ? `<button class="btn-danger btn-small" data-onclick="cancelBillUI('${esc(bill.billId)}')" title="Cancel bill (kept in records)" style="margin-left:4px;">✖</button>` : '';
                 tableRows += `<tr>
                     <td style="font-size:11px;font-family:monospace;">${esc(bill.billNo || bill.billId)}${syncBadge}</td>
                     <td>${typeBadge}</td>
@@ -2168,10 +2433,10 @@ Thank you! Visit again.`;
                     <td style="max-width:200px;">${trInfo}${medBadges}</td>
                     <td style="font-weight:700;">₹${parseFloat(bill.total||0).toFixed(2)}</td>
                     <td><span style="background:${payColor};color:${payText};border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600;">${esc(bill.paymentMode||'—')}</span>${window.V31 ? V31.money.billBadges(bill) : ''}</td>
-                    <td style="white-space:nowrap;">${bill.date||'—'}</td>
+                    <td style="white-space:nowrap;">${esc(bill.date||'—')}</td>
                     <td style="white-space:nowrap;">
-                        ${window.V31 ? V31.money.billButton(bill) : ''}<button class="btn-primary btn-small" onclick="${printFn}" style="margin-right:4px;">🖨️ Print</button>
-                        <button class="btn-primary btn-small" onclick="${waFn}" style="background:#25d366;">📲 WA</button>${cancelBtn}
+                        ${window.V31 ? V31.money.billButton(bill) : ''}<button class="btn-primary btn-small" data-onclick="${printFn}" style="margin-right:4px;">🖨️ Print</button>
+                        <button class="btn-primary btn-small" data-onclick="${waFn}" style="background:#25d366;">📲 WA</button>${cancelBtn}
                     </td>
                 </tr>`;
 
@@ -2179,7 +2444,7 @@ Thank you! Visit again.`;
                 const typeLabel = isCB ? '🧾 Bill Summary' : '💊 Pharmacy';
                 const typeColor = isCB ? '#2c5aa0' : '#27ae60';
                 const medLine   = medNames.length ? medNames.map((n,i2)=>`${n} ×${items[i2].qty}`).join(', ') : '';
-                const trLine    = (isCB && bill.trDesc) ? `<div class="bill-card-meta">🦷 ${bill.trDesc.substring(0,50)}${bill.trDesc.length>50?'...':''}</div>` : '';
+                const trLine    = (isCB && bill.trDesc) ? `<div class="bill-card-meta">🦷 ${esc(bill.trDesc.substring(0,50))}${bill.trDesc.length>50?'...':''}</div>` : '';
 
                 cardHtml += `<div class="bill-card ${isCB?'bc-cb':'bc-ph'}">
                     <div class="bill-card-top">
@@ -2189,16 +2454,16 @@ Thank you! Visit again.`;
                         </div>
                         <div style="text-align:right;">
                             <div class="bill-card-total">₹${parseFloat(bill.total||0).toFixed(2)}</div>
-                            <div style="font-size:11px;color:#888;">${bill.date||''}</div>
+                            <div style="font-size:11px;color:#888;">${esc(bill.date||'')}</div>
                         </div>
                     </div>
                     <div class="bill-card-meta">👨‍⚕️ ${esc(bill.doctor||'—')} &nbsp;|&nbsp; <span class="pay-badge" style="background:${payColor};color:${payText};">${esc(bill.paymentMode||'—')}</span>${window.V31 ? V31.money.billBadges(bill) : ''}</div>
                     ${trLine}
                     ${medLine?`<div class="bill-card-meta">💊 ${medLine}</div>`:''}
                     <div class="bill-card-actions" style="margin-top:10px;">
-                        ${window.V31 && V31.money.billButton(bill) ? `<button class="bc-print-btn" style="background:#8e44ad;" data-act="billDetail" data-type="BILL" data-id="${esc(bill.billId)}">💰 Payments</button>` : ''}<button class="bc-print-btn" onclick="${printFn}">🖨️ Print</button>
-                        <button class="bc-wa-btn" onclick="${waFn}">📲 WhatsApp</button>
-                        ${currentRole === 'owner' ? `<button class="bc-print-btn" style="background:#e74c3c;" onclick="cancelBillUI('${esc(bill.billId)}')">✖ Cancel</button>` : ''}
+                        ${window.V31 && V31.money.billButton(bill) ? `<button class="bc-print-btn" style="background:#8e44ad;" data-act="billDetail" data-type="BILL" data-id="${esc(bill.billId)}">💰 Payments</button>` : ''}<button class="bc-print-btn" data-onclick="${printFn}">🖨️ Print</button>
+                        <button class="bc-wa-btn" data-onclick="${waFn}">📲 WhatsApp</button>
+                        ${currentRole === 'owner' ? `<button class="bc-print-btn" style="background:#e74c3c;" data-onclick="cancelBillUI('${esc(bill.billId)}')">✖ Cancel</button>` : ''}
                     </div>
                 </div>`;
             });
@@ -2350,6 +2615,14 @@ Reason (required):`) || '').trim();
             if (!dlg) return;
             dlg.classList.remove('open');
             setTimeout(function(){ dlg.style.display='none'; }, 300);
+        }
+
+        function __thermalPrintNow() {
+            __closeThermalPreview();
+            setTimeout(function(){
+                if (window._btPrinter && window._btPrinter.connected) _doThermalPrint(__pendingPrintHtml || '');
+                else openBtPrinterPanel(true);
+            }, 200);
         }
 
         function __showThermalPreview(html) {
@@ -2670,8 +2943,8 @@ Reason (required):`) || '').trim();
             var btnBar = document.createElement('div');
             btnBar.className = 'no-print';
             btnBar.style.cssText = 'display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #2c5aa0;position:sticky;top:0;background:white;z-index:2;';
-            btnBar.innerHTML = '<button onclick="window.print()" style="padding:12px 28px;background:#2c5aa0;color:white;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;touch-action:manipulation;">🖨️ Print / Save PDF</button>' +
-                '<button onclick="closePrintModal()" style="padding:12px 20px;background:#e74c3c;color:white;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;touch-action:manipulation;">✕ Close</button>';
+            btnBar.innerHTML = '<button data-onclick="window.print()" style="padding:12px 28px;background:#2c5aa0;color:white;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;touch-action:manipulation;">🖨️ Print / Save PDF</button>' +
+                '<button data-onclick="closePrintModal()" style="padding:12px 20px;background:#e74c3c;color:white;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;touch-action:manipulation;">✕ Close</button>';
             var billDiv = document.createElement('div');
             billDiv.innerHTML = html;
             modal.appendChild(btnBar); modal.appendChild(billDiv);
@@ -2684,9 +2957,9 @@ Reason (required):`) || '').trim();
 
         // ══ PRESCRIPTION ══════════════════════════════════════
         function buildPrescriptionHTML() {
-            const name   = document.getElementById('rx_name').value || '';
-            const age    = document.getElementById('rx_age').value || '';
-            const sex    = document.getElementById('rx_sex').value || '';
+            const name   = esc(document.getElementById('rx_name').value || '');
+            const age    = esc(document.getElementById('rx_age').value || '');
+            const sex    = esc(document.getElementById('rx_sex').value || '');
             const dateV  = document.getElementById('rx_date').value || '';
             const rxText = document.getElementById('rx_content').value || '';
             const dateStr = dateV ? new Date(dateV).toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'}) : '___________';
@@ -2808,9 +3081,9 @@ Reason (required):`) || '').trim();
                         <div style="font-size:12px;color:#555;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(preview || '-')}</div>
                     </div>
                     <div style="display:flex;gap:8px;flex-shrink:0;">
-                        <button onclick="loadRxRecord(${idx})" style="background:#2c5aa0;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">✏️ Edit</button>
-                        <button onclick="reprintRxRecord(${idx})" style="background:#27ae60;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🖨️ Print</button>
-                        <button onclick="deleteRxRecord(${idx})" style="background:#e74c3c;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🗑️</button>
+                        <button data-onclick="loadRxRecord(${idx})" style="background:#2c5aa0;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">✏️ Edit</button>
+                        <button data-onclick="reprintRxRecord(${idx})" style="background:#27ae60;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🖨️ Print</button>
+                        <button data-onclick="deleteRxRecord(${idx})" style="background:#e74c3c;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🗑️</button>
                     </div>
                 </div>`;
             }).join('');
@@ -3025,14 +3298,14 @@ Reason (required):`) || '').trim();
                 const idx = list.length - 1 - ri;
                 return `<div style="border:1px solid #e0e8f5;border-radius:8px;padding:12px 14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8faff;">
                     <div>
-                        <div style="font-weight:700;color:var(--primary);font-size:14px;">Receipt No. ${r.no || '-'} &nbsp;|&nbsp; ${r.patient || '-'}</div>
-                        <div style="font-size:12px;color:#777;margin-top:3px;">Date: ${r.dateStr || '-'} &nbsp;|&nbsp; Rs. ${r.amount || '-'}</div>
+                        <div style="font-weight:700;color:var(--primary);font-size:14px;">Receipt No. ${esc(r.no || '-')} &nbsp;|&nbsp; ${esc(r.patient || '-')}</div>
+                        <div style="font-size:12px;color:#777;margin-top:3px;">Date: ${esc(r.dateStr || '-')} &nbsp;|&nbsp; Rs. ${esc(r.amount || '-')}</div>
                         <div style="font-size:12px;color:#555;margin-top:3px;">${r.treatments || '-'}</div>
                     </div>
                     <div style="display:flex;gap:8px;flex-shrink:0;">
-                        <button onclick="loadTreatmentRecord(${idx})" style="background:#2c5aa0;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">✏️ Edit</button>
-                        <button onclick="reprintTreatmentRecord(${idx})" style="background:#27ae60;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🖨️ Print</button>
-                        <button onclick="deleteTreatmentRecord(${idx})" style="background:#e74c3c;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🗑️</button>
+                        <button data-onclick="loadTreatmentRecord(${idx})" style="background:#2c5aa0;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">✏️ Edit</button>
+                        <button data-onclick="reprintTreatmentRecord(${idx})" style="background:#27ae60;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🖨️ Print</button>
+                        <button data-onclick="deleteTreatmentRecord(${idx})" style="background:#e74c3c;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">🗑️</button>
                     </div>
                 </div>`;
             }).join('');
@@ -3158,7 +3431,7 @@ Reason (required):`) || '').trim();
                 const med = medicines.find(m => String(m.id) === String(item.medicineId));
                 const medName = med ? med.name : (item.medicineName || item.name || 'Unknown');
                 return '<tr style="background:'+(i%2===0?'#fff':'#f8f9fa')+'">' +
-                    '<td style="padding:7px 10px;border-bottom:1px solid #eee;">'+medName+'</td>' +
+                    '<td style="padding:7px 10px;border-bottom:1px solid #eee;">'+esc(medName)+'</td>' +
                     '<td style="padding:7px 6px;text-align:center;border-bottom:1px solid #eee;">'+item.qty+'</td>' +
                     '<td style="padding:7px 6px;text-align:right;border-bottom:1px solid #eee;">&#8377;'+parseFloat(item.price).toFixed(2)+'</td>' +
                     '<td style="padding:7px 10px;text-align:right;border-bottom:1px solid #eee;font-weight:700;">&#8377;'+parseFloat(item.amount).toFixed(2)+'</td>' +
@@ -3198,15 +3471,15 @@ Reason (required):`) || '').trim();
                     +'" data-mode="'+(bill.paymentMode||'Cash')
                     +'" data-items="'+encodeURIComponent(JSON.stringify(items.map(function(i){ return {name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount}; })))
                     +'" style="display:none"></div>' +
-                '<div class="bid">'+bill.billId+'</div>' +
+                '<div class="bid">'+esc(bill.billId)+'</div>' +
                 '<div class="hdr"><h2>&#x1F9B7; '+CONFIG.clinicName+'</h2>' +
                 '<p>'+(CONFIG.clinicAddress||'')+'</p>' +
                 '<p>'+(CONFIG.clinicPhone?'&#128222; '+CONFIG.clinicPhone:'')+'</p></div>' +
                 '<div class="info">' +
-                '<div><div class="lbl">Patient</div><div class="val">'+(bill.patientName||'—')+'</div></div>' +
-                '<div><div class="lbl">Doctor</div><div class="val">'+(bill.doctor||'—')+'</div></div>' +
-                '<div><div class="lbl">Date</div><div class="val" style="font-weight:500">'+(bill.date||'—')+'</div></div>' +
-                '<div><div class="lbl">Payment</div><div class="val" style="font-weight:500">'+(bill.paymentMode||'—')+'</div></div>' +
+                '<div><div class="lbl">Patient</div><div class="val">'+esc(bill.patientName||'—')+'</div></div>' +
+                '<div><div class="lbl">Doctor</div><div class="val">'+esc(bill.doctor||'—')+'</div></div>' +
+                '<div><div class="lbl">Date</div><div class="val" style="font-weight:500">'+esc(bill.date||'—')+'</div></div>' +
+                '<div><div class="lbl">Payment</div><div class="val" style="font-weight:500">'+esc(bill.paymentMode||'—')+'</div></div>' +
                 '</div>' +
                 '<table><thead><tr><th>Medicine</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>' +
                 '<tbody>'+itemRows+'</tbody></table>' +
@@ -3303,7 +3576,7 @@ Reason (required):`) || '').trim();
             let csvContent = "Medicine Name,Total Qty,Total Revenue,Total Cost,Total Profit,Transactions,Profit Margin %\n";
             Object.values(medicineStats).forEach(stat => {
                 const margin = stat.totalRevenue > 0 ? ((stat.totalProfit / stat.totalRevenue) * 100).toFixed(2) : 0;
-                csvContent += `"${stat.name}",${stat.totalQty},${stat.totalRevenue.toFixed(2)},${stat.totalCost.toFixed(2)},${stat.totalProfit.toFixed(2)},${stat.transactions},${margin}%\n`;
+                csvContent += `${csvQ(stat.name)},${stat.totalQty},${stat.totalRevenue.toFixed(2)},${stat.totalCost.toFixed(2)},${stat.totalProfit.toFixed(2)},${stat.transactions},${margin}%\n`;
             });
 
             downloadReport(csvContent, 'Medicine-wise-Report.csv');
@@ -3337,7 +3610,7 @@ Reason (required):`) || '').trim();
                 .forEach(stat => {
                     const profit = stat.totalRevenue - stat.totalCost;
                     const margin = stat.totalRevenue > 0 ? ((profit/stat.totalRevenue)*100).toFixed(1)+'%' : 'N/A';
-                    csvContent += `"${stat.supplier}",${stat.transactions},${stat.totalQty},${stat.totalCost.toFixed(2)},${stat.totalRevenue.toFixed(2)},${profit.toFixed(2)},${margin},"${Array.from(stat.medicines).join(', ')}"\n`;
+                    csvContent += `${csvQ(stat.supplier)},${stat.transactions},${stat.totalQty},${stat.totalCost.toFixed(2)},${stat.totalRevenue.toFixed(2)},${profit.toFixed(2)},${margin},${csvQ(Array.from(stat.medicines).join(', '))}\n`;
                 });
 
             downloadReport(csvContent, 'Supplier-wise-Report.csv');
@@ -3603,7 +3876,7 @@ Reason (required):`) || '').trim();
                     var color = catColors[cat] || '#95a5a6';
                     return '<div style="margin-bottom:8px;">' +
                         '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">' +
-                            '<span style="font-weight:700;">'+cat+'</span>' +
+                            '<span style="font-weight:700;">'+esc(cat)+'</span>' +
                             '<span>₹'+breakdown[cat].toFixed(2)+' <span style="color:#888;">('+pct+'%)</span></span>' +
                         '</div>' +
                         '<div style="height:8px;background:#f0f0f0;border-radius:4px;overflow:hidden;">' +
@@ -3626,16 +3899,16 @@ Reason (required):`) || '').trim();
                     '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
                         '<div style="flex:1;min-width:0;">' +
                             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">' +
-                                '<span style="background:'+color+'22;color:'+color+';border-radius:6px;padding:2px 8px;font-size:11px;font-weight:800;">'+e.category+'</span>' +
-                                '<span style="font-size:11px;color:#888;">'+e.date+'</span>' +
-                                '<span style="font-size:11px;color:#888;">'+modeIcon+' '+e.mode+'</span>' +
+                                '<span style="background:'+color+'22;color:'+color+';border-radius:6px;padding:2px 8px;font-size:11px;font-weight:800;">'+esc(e.category)+'</span>' +
+                                '<span style="font-size:11px;color:#888;">'+esc(e.date)+'</span>' +
+                                '<span style="font-size:11px;color:#888;">'+modeIcon+' '+esc(e.mode)+'</span>' +
                             '</div>' +
-                            (e.vendor ? '<div style="font-size:13px;font-weight:700;color:#333;margin-bottom:2px;">'+e.vendor+'</div>' : '') +
-                            (e.notes  ? '<div style="font-size:12px;color:#666;">'+e.notes+'</div>' : '') +
+                            (e.vendor ? '<div style="font-size:13px;font-weight:700;color:#333;margin-bottom:2px;">'+esc(e.vendor)+'</div>' : '') +
+                            (e.notes  ? '<div style="font-size:12px;color:#666;">'+esc(e.notes)+'</div>' : '') +
                         '</div>' +
                         '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">' +
                             '<div style="font-size:18px;font-weight:800;color:'+color+';">₹'+e.amount.toFixed(2)+'</div>' +
-                            '<button onclick="deleteExpense(\''+e.id+'\')" style="padding:4px 10px;background:#fdecea;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;touch-action:manipulation;">🗑️ Delete</button>' +
+                            '<button data-onclick="deleteExpense(\''+esc(e.id)+'\')" style="padding:4px 10px;background:#fdecea;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;touch-action:manipulation;">🗑️ Delete</button>' +
                         '</div>' +
                     '</div>' +
                 '</div>';
@@ -3646,7 +3919,7 @@ Reason (required):`) || '').trim();
             if (_expenses.length === 0) { showToast('No expenses to export','warning'); return; }
             var csv = 'Date,Category,Amount,Vendor,Notes,Payment Mode\n';
             _expenses.forEach(function(e){
-                csv += '"'+e.date+'","'+e.category+'",'+e.amount.toFixed(2)+',"'+(e.vendor||'')+'","'+(e.notes||'')+'","'+(e.mode||'')+'"\n';
+                csv += csvQ(e.date)+','+csvQ(e.category)+','+e.amount.toFixed(2)+','+csvQ(e.vendor)+','+csvQ(e.notes)+','+csvQ(e.mode)+'\n';
             });
             var blob = new Blob([csv], {type:'text/csv'});
             var a = document.createElement('a');
@@ -3774,7 +4047,7 @@ Reason (required):`) || '').trim();
                 const y  = h - bh - 5;
                 const col = val > 0 ? '#2c5aa0' : '#e8edf5';
                 return `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" fill="${col}" rx="2">
-                    <title>${date}: ₹${val.toFixed(0)}</title></rect>`;
+                    <title>${esc(date)}: ₹${val.toFixed(0)}</title></rect>`;
             }).join('');
 
             // Y axis labels
@@ -3859,7 +4132,7 @@ Reason (required):`) || '').trim();
             document.getElementById('rpt_doctor_chart').innerHTML = sorted.map(([doc, rev], i) => `
                 <div style="margin-bottom:10px;">
                     <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
-                        <span style="font-weight:600;color:#2c3e50;">${doc}</span>
+                        <span style="font-weight:600;color:#2c3e50;">${esc(doc)}</span>
                         <span style="color:#27ae60;font-weight:700;">₹${rev.toLocaleString('en-IN',{maximumFractionDigits:0})}</span>
                     </div>
                     <div style="background:#f0f4ff;border-radius:4px;height:10px;width:100%;">
@@ -3886,13 +4159,13 @@ Reason (required):`) || '').trim();
                 const yi2 = cy + ri * Math.sin(startAngle);
                 return `<path d="M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${ri},${ri} 0 ${large},0 ${xi1},${yi1} Z"
                     fill="${colors[i%colors.length]}" stroke="white" stroke-width="2">
-                    <title>${labels[i]}: ${v} (${Math.round((v/total)*100)}%)</title></path>`;
+                    <title>${esc(labels[i])}: ${v} (${Math.round((v/total)*100)}%)</title></path>`;
             }).join('');
 
             const legend = labels.map((l, i) => `
                 <div style="display:flex;align-items:center;gap:5px;font-size:11px;margin-bottom:4px;">
                     <span style="width:10px;height:10px;background:${colors[i%colors.length]};border-radius:2px;flex-shrink:0;"></span>
-                    <span style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;">${l}</span>
+                    <span style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px;">${esc(l)}</span>
                     <span style="margin-left:auto;font-weight:700;color:#2c3e50;">${Math.round((values[i]/total)*100)}%</span>
                 </div>`).join('');
 
@@ -3929,7 +4202,7 @@ Reason (required):`) || '').trim();
                     </tr>
                     ${sorted.map(([name,s],i)=>`
                     <tr style="border-bottom:1px solid #f0f0f0;${i%2?'background:#fafafa':''}">
-                        <td style="padding:7px 8px;color:#2c3e50;font-weight:500;">${name}</td>
+                        <td style="padding:7px 8px;color:#2c3e50;font-weight:500;">${esc(name)}</td>
                         <td style="padding:7px 8px;text-align:center;color:#7f8c8d;">${s.qty}</td>
                         <td style="padding:7px 8px;text-align:right;color:#27ae60;font-weight:700;">₹${s.rev.toFixed(0)}</td>
                     </tr>`).join('')}
@@ -3983,7 +4256,7 @@ Reason (required):`) || '').trim();
             if (topMode) insights.push({
                 icon:'💳', color:'#2c5aa0',
                 title:'Top Payment Mode',
-                text:`<b>${topMode[0]}</b> is your most used payment method (${topMode[1]} transactions). Ensure UPI QR codes are clearly visible at reception.`
+                text:`<b>${esc(topMode[0])}</b> is your most used payment method (${topMode[1]} transactions). Ensure UPI QR codes are clearly visible at reception.`
             });
 
             // Avg bill insight
@@ -4092,7 +4365,7 @@ Reason (required):`) || '').trim();
                     return `
                     <div style="margin-bottom:12px;">
                         <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:5px;">
-                            <span style="font-weight:700;color:#2c3e50;font-size:14px;">${sup}</span>
+                            <span style="font-weight:700;color:#2c3e50;font-size:14px;">${esc(sup)}</span>
                             <span style="white-space:nowrap;display:flex;gap:16px;align-items:center;">
                                 <span style="color:#e67e22;font-weight:700;">₹${s.cost.toLocaleString('en-IN',{maximumFractionDigits:0})} cost</span>
                                 ${s.revenue>0?`<span style="background:${mColor}18;color:${mColor};padding:3px 10px;border-radius:20px;font-weight:800;font-size:12px;">${margin.toFixed(1)}% margin</span>`:'<span style="color:#aaa;font-size:12px;">No sales yet</span>'}
@@ -4124,7 +4397,7 @@ Reason (required):`) || '').trim();
                         const mColor = margin===null?'#aaa':margin>=30?'#27ae60':margin>=10?'#e67e22':'#e74c3c';
                         return `
                         <tr style="border-bottom:1px solid #f5f5f5;${i%2?'background:#fafafa':'background:white'}">
-                            <td style="padding:11px 12px;font-weight:700;font-size:13px;color:#2c3e50;">${sup}</td>
+                            <td style="padding:11px 12px;font-weight:700;font-size:13px;color:#2c3e50;">${esc(sup)}</td>
                             <td style="padding:11px 12px;text-align:center;color:#7f8c8d;">${s.txns}</td>
                             <td style="padding:11px 12px;text-align:right;color:#e74c3c;font-weight:700;">₹${s.cost.toFixed(0)}</td>
                             <td style="padding:11px 12px;text-align:right;color:#2c5aa0;font-weight:700;">${s.revenue>0?'₹'+s.revenue.toFixed(0):'<span style="color:#ccc;">—</span>'}</td>
@@ -4260,7 +4533,7 @@ Reason (required):`) || '').trim();
                         const mColor = s.margin===null?'#aaa':s.margin>=30?'#27ae60':s.margin>=10?'#e67e22':'#e74c3c';
                         return `
                         <tr style="border-bottom:1px solid #f0f0f0;${i%2?'background:#fafafa':'background:white'}">
-                            <td style="padding:11px 14px;font-weight:600;color:#2c3e50;">${name}</td>
+                            <td style="padding:11px 14px;font-weight:600;color:#2c3e50;">${esc(name)}</td>
                             <td style="padding:11px 14px;text-align:center;color:#7f8c8d;">${s.qty}</td>
                             <td style="padding:11px 14px;text-align:right;color:#e74c3c;font-weight:700;">₹${s.cost.toFixed(0)}</td>
                             <td style="padding:11px 14px;text-align:right;color:#2c5aa0;font-weight:700;">${s.revenue>0?'₹'+s.revenue.toFixed(0):'<span style="color:#ccc;">—</span>'}</td>
@@ -4295,7 +4568,7 @@ Reason (required):`) || '').trim();
             let csv = 'Date,Supplier,Medicine,Qty,Cost Price,Total Cost\n';
             purchases.forEach(p => {
                 const d = String(p.date||'').split('T')[0];
-                csv += `"${d}","${normSupplier(p.supplier)}","${normMedicine(p.medicineName)}",${p.qty||0},${parseFloat(p.costPrice||0).toFixed(2)},${purchaseCost(p).toFixed(2)}\n`;
+                csv += `${csvQ(d)},${csvQ(normSupplier(p.supplier))},${csvQ(normMedicine(p.medicineName))},${p.qty||0},${parseFloat(p.costPrice||0).toFixed(2)},${purchaseCost(p).toFixed(2)}\n`;
             });
 
             // Supplier summary with margins
@@ -4311,7 +4584,7 @@ Reason (required):`) || '').trim();
             Object.entries(supStats).sort((a,b)=>b[1].cost-a[1].cost).forEach(([s,v]) => {
                 const profit = v.revenue - v.cost;
                 const margin = v.revenue > 0 ? ((profit/v.revenue)*100).toFixed(1)+'%' : 'N/A';
-                csv += `"${s}",${v.cost.toFixed(2)},${v.revenue.toFixed(2)},${profit.toFixed(2)},${margin}\n`;
+                csv += `${csvQ(s)},${v.cost.toFixed(2)},${v.revenue.toFixed(2)},${profit.toFixed(2)},${margin}\n`;
             });
 
             // Medicine summary with margins
@@ -4327,7 +4600,7 @@ Reason (required):`) || '').trim();
                 const rev    = medRevenue[m] || 0;
                 const profit = rev - v.cost;
                 const margin = rev > 0 ? ((profit/rev)*100).toFixed(1)+'%' : 'N/A';
-                csv += `"${m}",${v.qty},${v.cost.toFixed(2)},${rev.toFixed(2)},${profit.toFixed(2)},${margin}\n`;
+                csv += `${csvQ(m)},${v.qty},${v.cost.toFixed(2)},${rev.toFixed(2)},${profit.toFixed(2)},${margin}\n`;
             });
 
             downloadReport(csv, 'Purchase-wise-Report.csv');
@@ -4341,7 +4614,7 @@ Reason (required):`) || '').trim();
                 if (!saved.length) { showToast('No treatment receipts saved yet', 'warning'); return; }
                 let csv = 'Receipt No,Date,Patient,Amount,Treatments\n';
                 saved.forEach(r => {
-                    csv += `"${r.no||''}","${r.date||''}","${r.patient||''}","${r.amount||''}","${r.treatments||''}"\n`;
+                    csv += `${csvQ(r.no||'')},${csvQ(r.date||'')},${csvQ(r.patient||'')},${csvQ(r.amount||'')},${csvQ(r.treatments||'')}\n`;
                 });
                 downloadReport(csv, 'Treatment-Receipts-Report.csv');
                 showToast('✅ Treatment report downloaded!', 'success');
@@ -4380,7 +4653,7 @@ Reason (required):`) || '').trim();
         document.getElementById('trSplitSt').textContent='';
         document.getElementById('trSplitSt').style.background='#f8f9fa';
         document.getElementById('trQuickChips').innerHTML=[100,200,500,1000,2000].map(v=>
-            `<button class="tr-chip" onclick="document.getElementById('trPmTendered').value=${v};calcTrChange();">₹${v}</button>`).join('');
+            `<button class="tr-chip" data-onclick="document.getElementById('trPmTendered').value=${v};calcTrChange();">₹${v}</button>`).join('');
         const upiId=(typeof CONFIG!=='undefined'?CONFIG.upiId:'')||'';
         const upiName=(typeof CONFIG!=='undefined'?CONFIG.upiName:'')||'Sri Sai Dental';
         if (upiId.trim()) {
@@ -4558,11 +4831,11 @@ Reason (required):`) || '').trim();
         for (var i = 0; i < _cbCart.length; i++) {
             var item = _cbCart[i];
             rows += '<tr class="' + (i%2===0?'':'cb-row-alt') + '">' +
-                '<td class="cb-td">' + item.medicineName + '</td>' +
+                '<td class="cb-td">' + esc(item.medicineName) + '</td>' +
                 '<td class="cb-td cb-td-c">' + item.qty + '</td>' +
                 '<td class="cb-td cb-td-r">₹' + item.price.toFixed(2) + '</td>' +
                 '<td class="cb-td cb-td-r cb-td-bold">₹' + item.amount.toFixed(2) + '</td>' +
-                '<td class="cb-td cb-td-c"><button class="cb-rm-btn" onclick="removeCbCartItem(' + i + ')">✕</button></td>' +
+                '<td class="cb-td cb-td-c"><button class="cb-rm-btn" data-onclick="removeCbCartItem(' + i + ')">✕</button></td>' +
                 '</tr>';
         }
         tbody.innerHTML = rows;
@@ -4599,11 +4872,11 @@ Reason (required):`) || '').trim();
     }
 
     function buildCombinedBillHTML() {
-        var no      = document.getElementById('cb_no').value      || '___________';
+        var no      = esc(document.getElementById('cb_no').value      || '___________');
         var dateV   = document.getElementById('cb_date').value    || '';
-        var patient = document.getElementById('cb_patient').value || '______________________________';
-        var doctor  = document.getElementById('cb_doctor').value  || '—';
-        var phone   = document.getElementById('cb_phone').value   || '';
+        var patient = esc(document.getElementById('cb_patient').value || '______________________________');
+        var doctor  = esc(document.getElementById('cb_doctor').value  || '—');
+        var phone   = esc(document.getElementById('cb_phone').value   || '');
         var trDesc  = document.getElementById('cb_tr_desc').value || '';
         var trAmt   = parseFloat(document.getElementById('cb_tr_amount').value)||0;
         var words   = document.getElementById('cb_tr_words').value|| '';
@@ -4612,12 +4885,12 @@ Reason (required):`) || '').trim();
         var grand   = trAmt+phAmt;
 
         var trDescHtml = trDesc
-            ? trDesc.split('\n').map(function(l){return '<div style="padding:4px 0;border-bottom:1px dotted #bbb;">'+(l.trim()||'&nbsp;')+'</div>';}).join('')
+            ? trDesc.split('\n').map(function(l){return '<div style="padding:4px 0;border-bottom:1px dotted #bbb;">'+(esc(l.trim())||'&nbsp;')+'</div>';}).join('')
             : '<div style="padding:4px 0;border-bottom:1px dotted #bbb;">&nbsp;</div><div style="padding:4px 0;border-bottom:1px dotted #bbb;">&nbsp;</div><div style="padding:4px 0;border-bottom:1px dotted #bbb;">&nbsp;</div>';
 
         var medRows = _cbCart.length>0 ? _cbCart.map(function(item,i){
             return '<tr style="background:'+(i%2===0?'#fff':'#f8f9fa')+';">' +
-                '<td style="padding:7px 10px;border-bottom:1px solid #eee;">'+item.medicineName+'</td>' +
+                '<td style="padding:7px 10px;border-bottom:1px solid #eee;">'+esc(item.medicineName)+'</td>' +
                 '<td style="padding:7px 6px;text-align:center;border-bottom:1px solid #eee;">'+item.qty+'</td>' +
                 '<td style="padding:7px 6px;text-align:right;border-bottom:1px solid #eee;">&#8377;'+parseFloat(item.price).toFixed(2)+'</td>' +
                 '<td style="padding:7px 10px;text-align:right;border-bottom:1px solid #eee;font-weight:600;">&#8377;'+parseFloat(item.amount).toFixed(2)+'</td>' +
@@ -4642,7 +4915,7 @@ Reason (required):`) || '').trim();
         '</div>' +
         '<div class="sec-hdr">&#9658; TREATMENT</div>' +
         '<div class="tr-box">'+trDescHtml+'</div>' +
-        '<div class="tr-amt-row"><span>Treatment Amount</span><span>&#8377;'+trAmt.toFixed(2)+(words?' ('+words+')':'')+'</span></div>' +
+        '<div class="tr-amt-row"><span>Treatment Amount</span><span>&#8377;'+trAmt.toFixed(2)+(words?' ('+esc(words)+')':'')+'</span></div>' +
         '<div class="sec-hdr">&#9658; PHARMACY / MEDICINES</div>' +
         '<table class="meds"><thead><tr><th>Medicine</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>'+medRows+'</tbody></table>' +
         '<div class="summary-box"><table>' +
@@ -4745,7 +5018,7 @@ Reason (required):`) || '').trim();
         document.getElementById('cbSplitSt').textContent='';
         document.getElementById('cbSplitSt').style.background='#f8f9fa';
         document.getElementById('cbQuickChips').innerHTML=[100,200,500,1000,2000].map(function(v){
-            return '<button onclick="document.getElementById(\'cbPmTendered\').value='+v+';calcCbChange();" style="padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:white;font-size:13px;font-weight:700;cursor:pointer;">₹'+v+'</button>';
+            return '<button data-onclick="document.getElementById(\'cbPmTendered\').value='+v+';calcCbChange();" style="padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:white;font-size:13px;font-weight:700;cursor:pointer;">₹'+v+'</button>';
         }).join('');
         var upiId=(typeof CONFIG!=='undefined'?CONFIG.upiId:'')||'';
         var upiName=(typeof CONFIG!=='undefined'?CONFIG.upiName:'')||'Sri Sai Dental';
@@ -5032,16 +5305,16 @@ Reason (required):`) || '').trim();
             html += '<div class="cb-hist-item">' +
                 '<div class="cb-hist-row">' +
                     '<div class="cb-hist-info">' +
-                        '<div class="cb-hist-name">🧾 #' + (r.no||'—') + ' — ' + (r.patient||'—') + (r.doctor?' | '+r.doctor:'') + '</div>' +
+                        '<div class="cb-hist-name">🧾 #' + esc(r.no||'—') + ' — ' + esc(r.patient||'—') + (r.doctor?' | '+esc(r.doctor):'') + '</div>' +
                         '<div class="cb-hist-meta">📅 ' + (r.dateStr||r.date||'—') + '</div>' +
                         (trPreview ? '<div class="cb-hist-meta">🦷 ' + trPreview + '</div>' : '') +
                         '<div class="cb-hist-meta">💊 ' + medSummary + '</div>' +
                         '<div class="cb-hist-total">Grand Total: ₹' + parseFloat(r.grand||0).toFixed(2) + '</div>' +
                     '</div>' +
                     '<div class="cb-hist-btns">' +
-                        '<button onclick="loadCbRecord('+idx+')" style="background:#2c5aa0;">✏️ Load</button>' +
-                        '<button onclick="reprintCbRecord('+idx+')" style="background:#27ae60;">🖨️ Print</button>' +
-                        '<button onclick="deleteCbRecord('+idx+')" style="background:#e74c3c;">🗑️</button>' +
+                        '<button data-onclick="loadCbRecord('+idx+')" style="background:#2c5aa0;">✏️ Load</button>' +
+                        '<button data-onclick="reprintCbRecord('+idx+')" style="background:#27ae60;">🖨️ Print</button>' +
+                        '<button data-onclick="deleteCbRecord('+idx+')" style="background:#e74c3c;">🗑️</button>' +
                     '</div>' +
                 '</div>' +
             '</div>';
@@ -5206,8 +5479,8 @@ Reason (required):`) || '').trim();
                 (function(){ var bal = window.V31 ? V31.clinic.balanceOf(p) : parseFloat(p.balance||0); return '<td style="font-weight:700;color:'+(bal>0?'#e74c3c':'#27ae60')+'">₹'+bal.toFixed(0)+'</td>'; })()+
                 '<td><span class="patient-badge '+sc+'">'+esc(p.status||'Active')+'</span></td>'+
                 '<td style="white-space:nowrap;">' + (window.V31 ? V31.clinic.rowButtons(p) : '') +
-                    '<button onclick="sendWaToPatient('+idx+')" style="background:#25d366;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;margin-right:4px;touch-action:manipulation;">📲 WA</button>' +
-                    '<button onclick="deletePatient('+idx+')" style="background:#e74c3c;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;touch-action:manipulation;">🗑️</button>' +
+                    '<button data-onclick="sendWaToPatient('+idx+')" style="background:#25d366;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;margin-right:4px;touch-action:manipulation;">📲 WA</button>' +
+                    '<button data-onclick="deletePatient('+idx+')" style="background:#e74c3c;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;touch-action:manipulation;">🗑️</button>' +
                 '</td></tr>';
         }).join('') + __lazyMore('patients', __fullList.length, list.length, 7);
         if(cards){
@@ -5221,8 +5494,8 @@ Reason (required):`) || '').trim();
                     '<div class="m-card-meta">📞 '+esc(p.phone||'—')+' &nbsp;|&nbsp; <span class="patient-badge '+sc+'">'+esc(p.status||'Active')+'</span></div>' +
                     '<div class="m-card-meta">🦷 '+esc(p.treatment||'—')+(p.alerts?' &nbsp;⚠️ '+esc(p.alerts):'')+'</div>' +
                     '<div class="m-card-actions">' +
-                        '<button style="background:#25d366;" onclick="sendWaToPatient('+idx+')">📲 WhatsApp</button>' +
-                        '<button style="background:#e74c3c;" onclick="deletePatient('+idx+')">🗑️ Delete</button>' +
+                        '<button style="background:#25d366;" data-onclick="sendWaToPatient('+idx+')">📲 WhatsApp</button>' +
+                        '<button style="background:#e74c3c;" data-onclick="deletePatient('+idx+')">🗑️ Delete</button>' +
                     '</div></div>';
             }).join('') + __lazyMore('patients', __fullList.length, list.length);
         }
@@ -5378,15 +5651,15 @@ Reason (required):`) || '').trim();
                     var bc=appt.status==='Cancelled'?'red':appt.reason?'green':'blue';
                     if(appt.status!=='Cancelled') confirmed++;
                     else cancelled++;
-                    html+='<div class="appt-slot '+cls+'" onclick="toggleApptStatus(\''+appt.id+'\')">'+
-                        '<span class="appt-time">'+time+'</span>'+
-                        '<span class="appt-name">'+appt.patient+'</span>'+
-                        (appt.reason?'<span class="appt-badge '+bc+'">'+appt.reason+'</span>':'')+
-                        '<button onclick="event.stopPropagation();deleteAppt(\''+appt.id+'\')" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer;padding:0 4px;touch-action:manipulation;">×</button>'+
+                    html+='<div class="appt-slot '+cls+'" data-onclick="toggleApptStatus(\''+esc(appt.id)+'\')">'+
+                        '<span class="appt-time">'+esc(time)+'</span>'+
+                        '<span class="appt-name">'+esc(appt.patient)+'</span>'+
+                        (appt.reason?'<span class="appt-badge '+bc+'">'+esc(appt.reason)+'</span>':'')+
+                        '<button data-onclick="event.stopPropagation();deleteAppt(\''+esc(appt.id)+'\')" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer;padding:0 4px;touch-action:manipulation;">×</button>'+
                         '</div>';
                 } else {
-                    html+='<div class="appt-slot free" onclick="quickBookSlot(\''+selDate+'\',\''+time+'\')">'+
-                        '<span class="appt-time">'+time+'</span>'+
+                    html+='<div class="appt-slot free" data-onclick="quickBookSlot(\''+esc(selDate)+'\',\''+esc(time)+'\')">'+
+                        '<span class="appt-time">'+esc(time)+'</span>'+
                         '<span class="appt-name" style="color:#aaa;">Available — tap to book</span>'+
                         '</div>';
                 }
@@ -5404,11 +5677,11 @@ Reason (required):`) || '').trim();
                 var bc=appt.status==='Cancelled'?'red':appt.reason?'green':'blue';
                 if(appt.status!=='Cancelled') confirmed++;
                 else cancelled++;
-                extraHtml+='<div class="appt-slot '+cls+'" onclick="toggleApptStatus(\''+appt.id+'\')">'+
-                    '<span class="appt-time">'+appt.time+'</span>'+
-                    '<span class="appt-name">'+appt.patient+'</span>'+
-                    (appt.reason?'<span class="appt-badge '+bc+'">'+appt.reason+'</span>':'')+
-                    '<button onclick="event.stopPropagation();deleteAppt(\''+appt.id+'\')" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer;padding:0 4px;touch-action:manipulation;">×</button>'+
+                extraHtml+='<div class="appt-slot '+cls+'" data-onclick="toggleApptStatus(\''+esc(appt.id)+'\')">'+
+                    '<span class="appt-time">'+esc(appt.time)+'</span>'+
+                    '<span class="appt-name">'+esc(appt.patient)+'</span>'+
+                    (appt.reason?'<span class="appt-badge '+bc+'">'+esc(appt.reason)+'</span>':'')+
+                    '<button data-onclick="event.stopPropagation();deleteAppt(\''+esc(appt.id)+'\')" style="background:none;border:none;color:#aaa;font-size:16px;cursor:pointer;padding:0 4px;touch-action:manipulation;">×</button>'+
                     '</div>';
             });
             var mEl = document.getElementById('appt_morning');
@@ -5536,12 +5809,12 @@ Reason (required):`) || '').trim();
                 '<div style="font-size:12px;font-weight:700;color:#e67e22;margin-bottom:8px;">Fill appointment details:</div>' +
                 '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;" class="wa-quick-grid">' +
                 '<div><label style="font-size:12px;">Appointment Time *</label>' +
-                '<input type="text" id="wa_appt_time" placeholder="e.g. 10:30 AM" style="font-size:16px;" oninput="refreshWaMsg()"></div>' +
+                '<input type="text" id="wa_appt_time" placeholder="e.g. 10:30 AM" style="font-size:16px;" data-oninput="refreshWaMsg()"></div>' +
                 '<div><label style="font-size:12px;">Treatment / Reason</label>' +
-                '<input type="text" id="wa_appt_reason" placeholder="e.g. Scaling" oninput="refreshWaMsg()"></div>' +
+                '<input type="text" id="wa_appt_reason" placeholder="e.g. Scaling" data-oninput="refreshWaMsg()"></div>' +
                 '</div>' +
                 '<div><label style="font-size:12px;">Doctor</label>' +
-                '<select id="wa_appt_doctor" onchange="refreshWaMsg()">' +
+                '<select id="wa_appt_doctor" data-onchange="refreshWaMsg()">' +
                 '<option value="Dr. T Sai Vakula">Dr. T Sai Vakula</option>' +
                 '<option value="Dr. T Venkat Rao">Dr. T Venkat Rao</option>' +
                 '</select></div></div>';
@@ -5551,51 +5824,51 @@ Reason (required):`) || '').trim();
                 '<div style="font-size:12px;font-weight:700;color:#9b59b6;margin-bottom:8px;">Fill reschedule details:</div>' +
                 '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;" class="wa-quick-grid">' +
                 '<div><label style="font-size:12px;">Doctor</label>' +
-                '<select id="wa_rsch_doctor" onchange="refreshWaMsg()">' +
+                '<select id="wa_rsch_doctor" data-onchange="refreshWaMsg()">' +
                 '<option value="Dr. T Sai Vakula">Dr. T Sai Vakula</option>' +
                 '<option value="Dr. T Venkat Rao">Dr. T Venkat Rao</option>' +
                 '</select></div>' +
                 '<div><label style="font-size:12px;">Original Time *</label>' +
-                '<input type="text" id="wa_rsch_time" placeholder="e.g. 11:00 AM" style="font-size:16px;" oninput="refreshWaMsg()"></div>' +
+                '<input type="text" id="wa_rsch_time" placeholder="e.g. 11:00 AM" style="font-size:16px;" data-oninput="refreshWaMsg()"></div>' +
                 '</div>' +
                 '<div><label style="font-size:12px;">Suggested New Date (optional)</label>' +
-                '<input type="text" id="wa_rsch_newdate" placeholder="e.g. Tomorrow 27 May at 10 AM" oninput="refreshWaMsg()"></div></div>';
+                '<input type="text" id="wa_rsch_newdate" placeholder="e.g. Tomorrow 27 May at 10 AM" data-oninput="refreshWaMsg()"></div></div>';
         } else if (tmpl === 'confirm') {
             extraHtml =
                 '<div style="background:#e8f8ee;border-radius:8px;padding:12px;margin-bottom:4px;">' +
                 '<div style="font-size:12px;font-weight:700;color:#27ae60;margin-bottom:8px;">Fill booking details:</div>' +
                 '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;" class="wa-quick-grid">' +
-                '<div><label style="font-size:12px;">Date</label><input type="date" id="wa_conf_date" oninput="refreshWaMsg()"></div>' +
-                '<div><label style="font-size:12px;">Time *</label><input type="text" id="wa_conf_time" placeholder="e.g. 10:00 AM" style="font-size:16px;" oninput="refreshWaMsg()"></div>' +
+                '<div><label style="font-size:12px;">Date</label><input type="date" id="wa_conf_date" data-oninput="refreshWaMsg()"></div>' +
+                '<div><label style="font-size:12px;">Time *</label><input type="text" id="wa_conf_time" placeholder="e.g. 10:00 AM" style="font-size:16px;" data-oninput="refreshWaMsg()"></div>' +
                 '<div><label style="font-size:12px;">Doctor</label>' +
-                '<select id="wa_conf_doctor" onchange="refreshWaMsg()">' +
+                '<select id="wa_conf_doctor" data-onchange="refreshWaMsg()">' +
                 '<option value="Dr. T Sai Vakula">Dr. T Sai Vakula</option>' +
                 '<option value="Dr. T Venkat Rao">Dr. T Venkat Rao</option>' +
                 '</select></div></div></div>';
         } else if (tmpl === 'payment') {
             extraHtml =
                 '<div><label>Balance Amount (Rs.)</label>' +
-                '<input type="number" id="wa_pay_amount" placeholder="e.g. 500" inputmode="decimal" oninput="refreshWaMsg()"></div>';
+                '<input type="number" id="wa_pay_amount" placeholder="e.g. 500" inputmode="decimal" data-oninput="refreshWaMsg()"></div>';
         } else if (tmpl === 'followup') {
             extraHtml =
                 '<div><label>Treatment Done</label>' +
-                '<input type="text" id="wa_fu_treatment" placeholder="e.g. Root Canal" oninput="refreshWaMsg()"></div>';
+                '<input type="text" id="wa_fu_treatment" placeholder="e.g. Root Canal" data-oninput="refreshWaMsg()"></div>';
         } else if (tmpl === 'patReschedule') {
             extraHtml =
                 '<div style="background:#e8f8f5;border-radius:8px;padding:12px;margin-bottom:4px;">' +
                 '<div style="font-size:12px;font-weight:700;color:#16a085;margin-bottom:8px;">📅 New appointment details (after patient request):</div>' +
                 '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;" class="wa-quick-grid">' +
-                '<div><label style="font-size:12px;">New Date</label><input type="date" id="wa_prsch_date" oninput="refreshWaMsg()"></div>' +
-                '<div><label style="font-size:12px;">New Time *</label><input type="text" id="wa_prsch_time" placeholder="e.g. 11:00 AM" style="font-size:16px;" oninput="refreshWaMsg()"></div>' +
+                '<div><label style="font-size:12px;">New Date</label><input type="date" id="wa_prsch_date" data-oninput="refreshWaMsg()"></div>' +
+                '<div><label style="font-size:12px;">New Time *</label><input type="text" id="wa_prsch_time" placeholder="e.g. 11:00 AM" style="font-size:16px;" data-oninput="refreshWaMsg()"></div>' +
                 '<div><label style="font-size:12px;">Doctor</label>' +
-                '<select id="wa_prsch_doctor" onchange="refreshWaMsg()">' +
+                '<select id="wa_prsch_doctor" data-onchange="refreshWaMsg()">' +
                 '<option value="Dr. T Sai Vakula">Dr. T Sai Vakula</option>' +
                 '<option value="Dr. T Venkat Rao">Dr. T Venkat Rao</option>' +
                 '</select></div></div></div>';
         } else if (tmpl === 'custom') {
             extraHtml =
                 '<div><label>Your Message</label>' +
-                '<textarea id="wa_custom_msg" rows="4" style="width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;" placeholder="Type your message here..." oninput="refreshWaMsg()"></textarea></div>';
+                '<textarea id="wa_custom_msg" rows="4" style="width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;" placeholder="Type your message here..." data-oninput="refreshWaMsg()"></textarea></div>';
         }
         if (extra) extra.innerHTML = extraHtml;
         // Immediately refresh message after DOM update
@@ -5763,14 +6036,14 @@ Reason (required):`) || '').trim();
             return '<div style="border:1px solid #f0f0f0;border-radius:10px;padding:12px;margin-bottom:8px;background:#fafafa;">' +
                 '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">' +
                     '<div>' +
-                        '<div style="font-weight:700;font-size:14px;color:#1e3f5a;">'+a.patient+'</div>' +
-                        '<div style="font-size:12px;color:#777;margin-top:2px;">'+a.time+(a.reason?' — '+a.reason:'')+(a.doctor?' | '+a.doctor:'')+'</div>' +
+                        '<div style="font-weight:700;font-size:14px;color:#1e3f5a;">'+esc(a.patient)+'</div>' +
+                        '<div style="font-size:12px;color:#777;margin-top:2px;">'+esc(a.time)+(a.reason?' — '+esc(a.reason):'')+(a.doctor?' | '+esc(a.doctor):'')+'</div>' +
                         (!hasPhone?'<div style="font-size:11px;color:#e74c3c;margin-top:2px;">⚠️ No phone saved</div>':'') +
                     '</div>' +
                     '<div style="display:flex;gap:5px;flex-wrap:wrap;">' +
-                        '<button style="'+btnStyle+'background:#e67e22;" onclick="sendApptWaTemplate(\''+a.id+'\',\'24h\')">⏰ 24h</button>' +
-                        '<button style="'+btnStyle+'background:#e74c3c;" onclick="sendApptWaTemplate(\''+a.id+'\',\'1h\')">🔔 1h</button>' +
-                        '<button style="'+btnStyle+'background:#9b59b6;" onclick="sendApptWaTemplate(\''+a.id+'\',\'reschedule\')">🔄 Reschedule</button>' +
+                        '<button style="'+btnStyle+'background:#e67e22;" data-onclick="sendApptWaTemplate(\''+esc(a.id)+'\',\'24h\')">⏰ 24h</button>' +
+                        '<button style="'+btnStyle+'background:#e74c3c;" data-onclick="sendApptWaTemplate(\''+esc(a.id)+'\',\'1h\')">🔔 1h</button>' +
+                        '<button style="'+btnStyle+'background:#9b59b6;" data-onclick="sendApptWaTemplate(\''+esc(a.id)+'\',\'reschedule\')">🔄 Reschedule</button>' +
                     '</div>' +
                 '</div>' +
             '</div>';
@@ -6070,26 +6343,26 @@ Reason (required):`) || '').trim();
                 : isPast  ? '<span style="font-size:10px;background:#e2e3e5;color:#383d41;border-radius:4px;padding:1px 6px;font-weight:700;">Past</span>'
                 :           '<span style="font-size:10px;background:#d1ecf1;color:#0c5460;border-radius:4px;padding:1px 6px;font-weight:700;">⏳ Upcoming</span>';
 
-            var safeId = a.id.replace(/'/g,"\\'");
+            var safeId = esc(a.id);
 
-            return '<div onclick="waFillFromAppt(\''+safeId+'\')" style="border:1.5px solid '+borderColor+';border-radius:10px;padding:11px 12px;margin-bottom:8px;background:'+bgColor+';cursor:pointer;">' +
+            return '<div data-onclick="waFillFromAppt(\''+safeId+'\')" style="border:1.5px solid '+borderColor+';border-radius:10px;padding:11px 12px;margin-bottom:8px;background:'+bgColor+';cursor:pointer;">' +
                 '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">' +
                     '<div style="flex:1;min-width:0;">' +
-                        '<div style="font-weight:700;font-size:14px;color:#1e3f5a;margin-bottom:2px;">'+a.patient+' '+statusBadge+'</div>' +
-                        '<div style="font-size:12px;color:#555;">📅 '+dateStr+' &nbsp;🕐 '+a.time+(a.reason?' &nbsp;🦷 '+a.reason:'')+'</div>' +
-                        '<div style="font-size:12px;color:#777;margin-top:1px;">'+(a.doctor?'👨‍⚕️ '+a.doctor+' &nbsp;':'')+(!hasPhone?'<span style="color:#e74c3c;">⚠️ No phone</span>':'📞 '+a.phone)+'</div>' +
+                        '<div style="font-weight:700;font-size:14px;color:#1e3f5a;margin-bottom:2px;">'+esc(a.patient)+' '+statusBadge+'</div>' +
+                        '<div style="font-size:12px;color:#555;">📅 '+esc(dateStr)+' &nbsp;🕐 '+esc(a.time)+(a.reason?' &nbsp;🦷 '+esc(a.reason):'')+'</div>' +
+                        '<div style="font-size:12px;color:#777;margin-top:1px;">'+(a.doctor?'👨‍⚕️ '+esc(a.doctor)+' &nbsp;':'')+(!hasPhone?'<span style="color:#e74c3c;">⚠️ No phone</span>':'📞 '+esc(a.phone))+'</div>' +
                     '</div>' +
-                    '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;max-width:120px;" onclick="event.stopPropagation();">' +
+                    '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;max-width:120px;" data-onclick="event.stopPropagation();">' +
                         (hasPhone ?
-                            '<button onclick="waQuickSend(\''+safeId+'\',\'confirm\')" style="padding:5px 9px;background:#27ae60;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">✅ Confirm</button>' +
-                            '<button onclick="waQuickSend(\''+safeId+'\',\'reminder24\')" style="padding:5px 9px;background:#e67e22;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">⏰ 24h</button>' +
-                            '<button onclick="waQuickSend(\''+safeId+'\',\'reminder1h\')" style="padding:5px 9px;background:#e74c3c;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">🔔 1h</button>' +
-                            '<button onclick="waQuickSend(\''+safeId+'\',\'reschedule\')" style="padding:5px 9px;background:#9b59b6;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">🔄 Reschedule</button>' +
-                            '<button onclick="waQuickSend(\''+safeId+'\',\'patReschedule\')" style="padding:5px 9px;background:#16a085;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">📅 Pat.Rsch</button>' +
-                            '<button onclick="waOpenPopupForAppt(\''+safeId+'\')" style="padding:5px 9px;background:#2c5aa0;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">✏️ Custom</button>' +
-                            '<button onclick="sendClinicLocation(\''+safeId+'\')" style="padding:5px 9px;background:#1abc9c;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">📍 Location</button>'
+                            '<button data-onclick="waQuickSend(\''+safeId+'\',\'confirm\')" style="padding:5px 9px;background:#27ae60;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">✅ Confirm</button>' +
+                            '<button data-onclick="waQuickSend(\''+safeId+'\',\'reminder24\')" style="padding:5px 9px;background:#e67e22;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">⏰ 24h</button>' +
+                            '<button data-onclick="waQuickSend(\''+safeId+'\',\'reminder1h\')" style="padding:5px 9px;background:#e74c3c;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">🔔 1h</button>' +
+                            '<button data-onclick="waQuickSend(\''+safeId+'\',\'reschedule\')" style="padding:5px 9px;background:#9b59b6;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">🔄 Reschedule</button>' +
+                            '<button data-onclick="waQuickSend(\''+safeId+'\',\'patReschedule\')" style="padding:5px 9px;background:#16a085;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">📅 Pat.Rsch</button>' +
+                            '<button data-onclick="waOpenPopupForAppt(\''+safeId+'\')" style="padding:5px 9px;background:#2c5aa0;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">✏️ Custom</button>' +
+                            '<button data-onclick="sendClinicLocation(\''+safeId+'\')" style="padding:5px 9px;background:#1abc9c;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">📍 Location</button>'
                         : '') +
-                        '<button onclick="deleteAppointmentFromWa(\''+safeId+'\')" style="padding:5px 9px;background:#c0392b;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">🗑️ Delete</button>' +
+                        '<button data-onclick="deleteAppointmentFromWa(\''+safeId+'\')" style="padding:5px 9px;background:#c0392b;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;width:100%;">🗑️ Delete</button>' +
                     '</div>' +
                 '</div>' +
             '</div>';
@@ -6302,6 +6575,13 @@ Reason (required):`) || '').trim();
 
     function buildExamPrintHTML(d) {
         d = d || getExamData();
+        // every value typed into the exam form (or loaded from history) is shown as text, never as HTML
+        d = (function escAll(o) {
+            if (typeof o === 'string') return esc(o);
+            if (Array.isArray(o)) return o.map(escAll);
+            if (o && typeof o === 'object') { var r = {}; Object.keys(o).forEach(function (k) { r[k] = escAll(o[k]); }); return r; }
+            return o;
+        })(d);
         var dateStr = d.date ? new Date(d.date+'T12:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'}) : '_______________';
         var tpLabels = {scaling:'Scaling',filling:'Filling',crown:'Crown',rct:'Root Canal Treatment',denture:'Denture',extraction:'Extraction',implant:'Implant',braces:'Braces',surgery:'Surgery',other:'Other'};
         var allTp = ['scaling','filling','crown','rct','denture','extraction','implant','braces','surgery','other'];
@@ -6447,9 +6727,9 @@ Reason (required):`) || '').trim();
                     '<div class="ef-hist-meta">📋 '+esc(tpSummary)+'</div>' +
                 '</div>' +
                 '<div class="ef-hist-btns">' +
-                    '<button style="background:#2c5aa0;" onclick="loadEfRecord('+idx+')">✏️ Load</button>' +
-                    '<button style="background:#27ae60;" onclick="reprintEfRecord('+idx+')">🖨️ Print</button>' +
-                    '<button style="background:#e74c3c;" onclick="deleteEfRecord('+idx+')">🗑️</button>' +
+                    '<button style="background:#2c5aa0;" data-onclick="loadEfRecord('+idx+')">✏️ Load</button>' +
+                    '<button style="background:#27ae60;" data-onclick="reprintEfRecord('+idx+')">🖨️ Print</button>' +
+                    '<button style="background:#e74c3c;" data-onclick="deleteEfRecord('+idx+')">🗑️</button>' +
                 '</div>' +
             '</div>';
         }).join('');
@@ -6676,7 +6956,7 @@ Reason (required):`) || '').trim();
         var btBtn = document.getElementById('__pcdBtBtn');
         if (btBtn) {
             if (connected) {
-                btBtn.innerHTML = '🔵 Thermal Print<br><span style="font-size:11px;opacity:0.85;">80mm · '+name+'</span>';
+                btBtn.innerHTML = '🔵 Thermal Print<br><span style="font-size:11px;opacity:0.85;">80mm · '+esc(name)+'</span>';
                 btBtn.style.opacity = '1';
             } else {
                 btBtn.innerHTML = '🔵 Thermal Print<br><span style="font-size:11px;opacity:0.85;">Tap to connect first</span>';
@@ -7728,7 +8008,7 @@ function ssdcDialog(title, bodyHtml, opts) {
     ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:' + (opts.width || 560) + 'px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25);">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #eef1f5;position:sticky;top:0;background:#fff;">'
         + '<h3 style="margin:0;color:#1e3f5a;font-size:17px;">' + title + '</h3>'
-        + (opts.locked ? '' : '<button type="button" onclick="closeSsdcDialog()" aria-label="Close" style="border:none;background:#f0f3f7;border-radius:8px;width:34px;height:34px;font-size:18px;cursor:pointer;">✕</button>')
+        + (opts.locked ? '' : '<button type="button" data-onclick="closeSsdcDialog()" aria-label="Close" style="border:none;background:#f0f3f7;border-radius:8px;width:34px;height:34px;font-size:18px;cursor:pointer;">✕</button>')
         + '</div><div style="padding:16px 18px;" id="ssdcDialogBody">' + bodyHtml + '</div></div>';
     if (!opts.locked) ov.addEventListener('click', function (e) { if (e.target === ov) closeSsdcDialog(); });
     document.body.appendChild(ov);
@@ -7750,8 +8030,8 @@ function openChangePassword(forced) {
         + '<label for="cpNew">New password <small style="color:#888;">(at least 8 characters)</small></label><input id="cpNew" type="password" autocomplete="new-password" style="' + _fld + '">'
         + '<label for="cpNew2">Repeat new password</label><input id="cpNew2" type="password" autocomplete="new-password" style="' + _fld + '">'
         + '<div id="cpMsg" style="min-height:20px;font-size:14px;margin-bottom:8px;" aria-live="polite"></div>'
-        + '<div style="display:flex;gap:10px;"><button type="button" onclick="submitChangePassword(' + (forced ? 'true' : 'false') + ')" style="' + _btn + 'background:#2c5aa0;color:#fff;flex:1;">Save password</button>'
-        + (forced ? '<button type="button" onclick="closeSsdcDialog();doLogout();" style="' + _btn + 'background:#eef1f5;color:#333;">Log out</button>' : '') + '</div>',
+        + '<div style="display:flex;gap:10px;"><button type="button" data-onclick="submitChangePassword(' + (forced ? 'true' : 'false') + ')" style="' + _btn + 'background:#2c5aa0;color:#fff;flex:1;">Save password</button>'
+        + (forced ? '<button type="button" data-onclick="closeSsdcDialog();doLogout();" style="' + _btn + 'background:#eef1f5;color:#333;">Log out</button>' : '') + '</div>',
         { locked: !!forced, width: 440 });
 }
 async function submitChangePassword(forced) {
@@ -7776,15 +8056,15 @@ function openSyncCentre() {
             : '<span style="color:#e67e22;font-weight:700;">⏳ Waiting</span>' + (it.error ? '<div style="font-size:12px;color:#888;">' + esc(it.error) + '</div>' : '');
         return '<tr><td style="font-size:12px;white-space:nowrap;">' + new Date(it.at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) + '</td>'
             + '<td>' + esc(API.queue.summary(it)) + '</td><td>' + st + '</td><td style="white-space:nowrap;">'
-            + '<button type="button" class="btn-primary btn-small" onclick="API.queue.retry(\'' + it.reqId + '\').then(openSyncCentre)">↻ Retry</button>'
-            + (currentRole === 'owner' ? ' <button type="button" class="btn-danger btn-small" onclick="if(confirm(\'Discard this unsynced item? It will NOT be saved.\')){API.queue.discard(\'' + it.reqId + '\');openSyncCentre();}">Discard</button>' : '')
+            + '<button type="button" class="btn-primary btn-small" data-onclick="API.queue.retry(\'' + it.reqId + '\').then(openSyncCentre)">↻ Retry</button>'
+            + (currentRole === 'owner' ? ' <button type="button" class="btn-danger btn-small" data-onclick="if(confirm(\'Discard this unsynced item? It will NOT be saved.\')){API.queue.discard(\'' + it.reqId + '\');openSyncCentre();}">Discard</button>' : '')
             + '</td></tr>';
     }).join('') : '<tr><td colspan="4" style="text-align:center;color:#888;padding:18px;">✅ Everything is synced.</td></tr>';
     ssdcDialog('☁️ Sync Centre',
         '<p style="margin:0 0 10px;font-size:14px;color:#555;">' + (navigator.onLine === false ? '📴 This device is offline.' : '🟢 Online.')
         + ' Last synced: ' + (API.lastSync ? new Date(API.lastSync).toLocaleTimeString('en-IN') : '—') + '</p>'
         + '<div class="tbl-wrap"><table class="table"><thead><tr><th>When</th><th>What</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
-        + '<button type="button" onclick="API.queue.flush(true).then(openSyncCentre)" style="' + _btn + 'background:#2c5aa0;color:#fff;margin-top:12px;">↻ Sync now</button>', { width: 720 });
+        + '<button type="button" data-onclick="API.queue.flush(true).then(openSyncCentre)" style="' + _btn + 'background:#2c5aa0;color:#fff;margin-top:12px;">↻ Sync now</button>', { width: 720 });
 }
 
 // ── owner settings panels ──────────────────────────────────────────
@@ -7801,22 +8081,22 @@ function renderAdminPanels() {
         + '<label for="nuDisp">Display name</label><input id="nuDisp" style="' + _fld + '" placeholder="e.g. Reception (evening)">'
         + '<label for="nuRole">Role</label><select id="nuRole" style="' + _fld + '"><option value="STAFF">Staff</option><option value="OWNER">Owner</option></select>'
         + '<label for="nuPass">Temporary password (they change it at first login)</label><input id="nuPass" style="' + _fld + '" autocomplete="off">'
-        + '<div id="nuMsg" style="min-height:18px;font-size:14px;" aria-live="polite"></div><button type="button" onclick="admCreateUser()" style="' + _btn + 'background:#2c5aa0;color:#fff;">Create login</button></div></details>'
+        + '<div id="nuMsg" style="min-height:18px;font-size:14px;" aria-live="polite"></div><button type="button" data-onclick="admCreateUser()" style="' + _btn + 'background:#2c5aa0;color:#fff;">Create login</button></div></details>'
         + '<p style="font-size:13px;color:#777;margin:12px 0 0;">Forgot the owner password? In Apps Script run <code>emergencyResetOwnerPassword</code> — a temporary password is e-mailed to the clinic Google account.</p></div>'
 
         + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">🧾 Billing rules</h3>'
         + '<label for="admMaxDisc">Maximum discount staff may give (%)</label><input id="admMaxDisc" type="number" min="0" max="100" step="1" style="' + _fld + 'max-width:160px;" value="' + (isFinite(CONFIG.staffMaxDiscountPct) ? CONFIG.staffMaxDiscountPct : 10) + '">'
-        + '<div id="admRuleMsg" style="min-height:18px;font-size:14px;"></div><button type="button" onclick="admSaveRules()" style="' + _btn + 'background:#2c5aa0;color:#fff;">Save rule</button></div>'
+        + '<div id="admRuleMsg" style="min-height:18px;font-size:14px;"></div><button type="button" data-onclick="admSaveRules()" style="' + _btn + 'background:#2c5aa0;color:#fff;">Save rule</button></div>'
 
         + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">💾 Backups</h3><div id="admBackups">Loading…</div>'
-        + '<button type="button" onclick="admBackupNow()" style="' + _btn + 'background:#27ae60;color:#fff;margin-top:10px;">💾 Back up now</button>'
+        + '<button type="button" data-onclick="admBackupNow()" style="' + _btn + 'background:#27ae60;color:#fff;margin-top:10px;">💾 Back up now</button>'
         + '<p style="font-size:13px;color:#777;margin:10px 0 0;">Automatic: daily ~2 AM (14 kept), weekly (8), monthly (12) in Google Drive folder “SSDC Backups”. Every backup is checked row-by-row; you get an e-mail if one fails.</p></div>'
 
         + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">🔎 Data check</h3><p style="font-size:14px;color:#555;margin:0 0 10px;">Looks for duplicate bills/medicines, stock that doesn\'t match its batches, and broken links.</p>'
-        + '<button type="button" onclick="admValidate()" style="' + _btn + 'background:#8e44ad;color:#fff;">Run check</button><div id="admValidate" style="margin-top:10px;"></div></div>'
+        + '<button type="button" data-onclick="admValidate()" style="' + _btn + 'background:#8e44ad;color:#fff;">Run check</button><div id="admValidate" style="margin-top:10px;"></div></div>'
 
         + '<div style="' + card + '"><h3 style="margin:0 0 12px;color:var(--primary);">🛡️ Audit log <small style="font-weight:400;color:#888;">(who did what, latest first)</small></h3>'
-        + '<input id="admAuditFilter" placeholder="🔍 Filter (user, action, bill…)" oninput="admRenderAudit()" style="' + _fld + 'max-width:320px;"><div id="admAudit">Loading…</div></div>';
+        + '<input id="admAuditFilter" placeholder="🔍 Filter (user, action, bill…)" data-oninput="admRenderAudit()" style="' + _fld + 'max-width:320px;"><div id="admAudit">Loading…</div></div>';
     admLoadUsers(); admLoadBackups(); admLoadAudit();
 }
 async function admLoadUsers() {
@@ -7826,8 +8106,8 @@ async function admLoadUsers() {
         + res.users.map(function (u) {
             return '<tr><td><b>' + esc(u.username) + '</b><div style="font-size:12px;color:#888;">' + esc(u.displayName) + '</div></td><td>' + esc(u.role) + '</td><td>'
                 + (u.active ? (u.locked ? '🔒 Locked (wrong passwords)' : (u.mustChangePassword ? '⏳ Must set password' : '✅ Active')) : '⛔ Disabled') + '</td><td style="font-size:12px;">' + esc(u.lastLogin || '—') + '</td><td style="white-space:nowrap;">'
-                + '<button type="button" class="btn-primary btn-small" onclick="admResetPw(\'' + esc(u.username) + '\')">Reset password</button> '
-                + '<button type="button" class="btn-small ' + (u.active ? 'btn-danger' : 'btn-primary') + '" onclick="admSetActive(\'' + esc(u.username) + '\',' + (!u.active) + ')">' + (u.active ? 'Disable' : 'Enable') + '</button></td></tr>';
+                + '<button type="button" class="btn-primary btn-small" data-onclick="admResetPw(\'' + esc(u.username) + '\')">Reset password</button> '
+                + '<button type="button" class="btn-small ' + (u.active ? 'btn-danger' : 'btn-primary') + '" data-onclick="admSetActive(\'' + esc(u.username) + '\',' + (!u.active) + ')">' + (u.active ? 'Disable' : 'Enable') + '</button></td></tr>';
         }).join('') + '</tbody></table></div>';
 }
 async function admCreateUser() {
@@ -7906,7 +8186,7 @@ function openEditMedicine(id) {
         + '<label for="emMin">Low-stock alert below</label><input id="emMin" type="number" step="1" min="0" style="' + _fld + 'max-width:160px;" value="' + (m.minStock || 10) + '">'
         + '<p style="font-size:13px;color:#777;margin:0 0 12px;">Stock and expiry change only through purchases or <b>📦 Stock</b> adjustments, so every change is recorded.</p>'
         + '<div id="emMsg" style="min-height:18px;font-size:14px;"></div>'
-        + '<button type="button" onclick="saveEditMedicine(\'' + esc(m.id) + '\')" style="' + _btn + 'background:#2c5aa0;color:#fff;">Save changes</button>', { width: 480 });
+        + '<button type="button" data-onclick="saveEditMedicine(\'' + esc(m.id) + '\')" style="' + _btn + 'background:#2c5aa0;color:#fff;">Save changes</button>', { width: 480 });
 }
 async function saveEditMedicine(id) {
     var price = parseFloat(_v('emPrice')), cost = parseFloat(_v('emCost'));
@@ -7939,8 +8219,8 @@ function openStockDialog(id) {
         + batches.map(function (b) { return '<option value="' + esc(b.batchId) + '">' + esc(b.batchNo || b.batchId) + ' · ' + esc(b.expiry || '') + ' · ' + b.qty + '</option>'; }).join('') + '</select></div></div>'
         + '<label for="adjReason">Reason (required)</label><input id="adjReason" style="' + _fld + '" placeholder="e.g. strip torn while unpacking">'
         + '<div id="adjMsg" style="min-height:18px;font-size:14px;"></div>'
-        + '<button type="button" onclick="submitStockAdjust(\'' + esc(m.id) + '\')" style="' + _btn + 'background:#16a085;color:#fff;">Save stock change</button>'
-        + '<details style="margin-top:16px;" ontoggle="if(this.open)loadMovements(\'' + esc(m.id) + '\')"><summary style="cursor:pointer;font-weight:700;">📜 Stock history</summary><div id="mvList" style="margin-top:8px;">Loading…</div></details>',
+        + '<button type="button" data-onclick="submitStockAdjust(\'' + esc(m.id) + '\')" style="' + _btn + 'background:#16a085;color:#fff;">Save stock change</button>'
+        + '<details style="margin-top:16px;"><summary style="cursor:pointer;font-weight:700;" data-onclick="if(!this.parentNode.open)loadMovements(\'' + esc(m.id) + '\')">📜 Stock history</summary><div id="mvList" style="margin-top:8px;">Loading…</div></details>',
         { width: 680 });
 }
 async function submitStockAdjust(id) {
@@ -9224,7 +9504,7 @@ async function loadMovements(id) {
   window.openEditMedicine = function (id) {
     origEdit(id);
     if (!V.enabled()) return;
-    var m = medById(id), btn = document.querySelector('#ssdcDialogBody button[onclick^="saveEditMedicine"]'); if (!m || !btn) return;
+    var m = medById(id), btn = document.querySelector('#ssdcDialogBody button[data-onclick^="saveEditMedicine"]'); if (!m || !btn) return;
     var box = document.createElement('div');
     box.innerHTML = '<div class="v-row2">' + V.field('emBarcode', 'Barcode', '<div class="v-inline"><input id="emBarcode" class="v-in" maxlength="60" value="' + h(m.barcode || '') + '"><button type="button" class="v-btn" data-act="scanBarcode" data-target="field" data-field="emBarcode">📷</button></div>')
       + V.field('emGeneric', 'Generic name', V.input('emGeneric', 'maxlength="120" value="' + h(m.genericName || '') + '"')) + '</div>'

@@ -313,8 +313,11 @@ test('XSS: names with HTML from the server never run as code on the new screens'
     t.g.post({ action: 'saveBill', token: tok, billId: 'BILL-XSS0000001', patientName: evil, phone: '9000000001', items: JSON.stringify([{ medicineId: '1001', medicineName: 'x', qty: 1, price: 10, amount: 10 }]), subtotal: '10', discount: '0', total: '10', paymentMode: 'Credit' });
     t.g.post({ action: 'saveFollowUp', token: tok, id: 'FU-X', patientName: evil, dueDate: '2026-10-01', reason: evil });
     t.g.post({ action: 'saveSupplier', token: tok, name: evil });
+    const today = await t.page.evaluate(() => new Date().toLocaleDateString('en-CA'));
+    t.g.post({ action: 'saveAppointment', token: tok, id: 'APT-X', patient: evil, phone: '9000000001', date: today, time: '10:00', reason: evil, doctor: evil });
+    t.g.post({ action: 'saveExpense', token: tok, id: 'EXP-X', date: today, category: evil, amount: '10', vendor: evil, notes: evil });
     await t.page.evaluate(() => loadData());
-    for (const pg of ['payments', 'followups', 'suppliers', 'patients', 'allbills', 'dashboard', 'finance']) {
+    for (const pg of ['payments', 'followups', 'suppliers', 'patients', 'allbills', 'dashboard', 'finance', 'appointments', 'wareminders', 'expenses', 'reports', 'combinedbill', 'prescription', 'examform']) {
       await t.page.evaluate(p => showPage(p), pg);
       await new Promise(r => setTimeout(r, 300));
     }
@@ -322,7 +325,73 @@ test('XSS: names with HTML from the server never run as code on the new screens'
     await new Promise(r => setTimeout(r, 400));
     await t.page.evaluate(() => V31.money.openDetail('BILL', 'BILL-XSS0000001'));
     await new Promise(r => setTimeout(r, 400));
+    await t.page.evaluate(() => { try { reprrintBill('BILL-XSS0000001'); } catch (e) {} });
+    await new Promise(r => setTimeout(r, 400));
+    // nothing from the data turned into a real element anywhere on the page
+    const where = await t.page.evaluate(() => [...document.querySelectorAll('img[src="x"]')].map(i => { const p = []; let e = i; while (e && p.length < 6) { p.push(e.tagName + (e.id ? '#' + e.id : '') + (e.className ? '.' + String(e.className).split(' ')[0] : '')); e = e.parentElement; } return p.join(' < '); }));
+    assert.deepEqual(where, []);
     assert.equal(await t.page.evaluate(() => window.__xss), undefined);
     assert.deepEqual(t.errors, []);
+  } finally { await t.close(); }
+});
+
+test('CSP: inline JavaScript is blocked; every data-on handler on every screen is valid; injected handlers cannot escape', async () => {
+  const t = await v31();
+  try {
+    await t.login('owner', t.temp.owner, OWNER_PW);
+    await waitUntil(t.page, () => document.body.classList.contains('v31'));
+    const pages = await t.page.evaluate(() => [...document.querySelectorAll('.page')].map(p => p.id));
+    const bad = [], seen = new Set();
+    for (const pg of pages) {
+      await t.page.evaluate(p => showPage(p), pg);
+      await new Promise(r => setTimeout(r, 250));
+      const found = await t.page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('*').forEach(el => { for (const a of el.attributes) if (/^data-on/.test(a.name)) out.push(a.value); });
+        return out.filter(code => { try { SafeHandlers.parse(code); return false; } catch (e) { return true; } }).concat(['#' + out.length]);
+      });
+      const n = found.pop(); seen.add(pg + n);
+      bad.push(...found);
+    }
+    assert.deepEqual(bad, []);
+    // every function any handler calls exists in the (minified) app that the page really loaded
+    const { handlersFromHtml, handlersFromApp } = require('./handlers-extract');
+    const missing = await t.page.evaluate(list => {
+      const names = new Set();
+      const walk = n => { if (!n || typeof n !== 'object') return; if (n.k === 'name') names.add(n.name); Object.values(n).forEach(v => Array.isArray(v) ? v.forEach(walk) : walk(v)); };
+      list.forEach(code => SafeHandlers.parse(code).forEach(walk));
+      return [...names].filter(n => !(n in window) && n !== 'window' && n !== 'document');
+    }, handlersFromHtml().concat(handlersFromApp()));
+    assert.deepEqual(missing, []);
+    // the old inline attributes are gone from the live page too
+    assert.equal(await t.page.evaluate(() => document.querySelectorAll('[onclick],[oninput],[onchange],[onfocus],[onblur],[onkeydown],[ontoggle]').length), 0);
+
+    // stock history: <summary data-onclick> loads movements when opened
+    await t.page.evaluate(() => { showPage('inventory'); openStockDialog(medicines[0].id); });
+    await t.page.click('#ssdcDialogBody summary');
+    await waitUntil(t.page, () => /When|No movements/.test(document.getElementById('mvList').textContent));
+    await t.page.evaluate(() => closeSsdcDialog());
+
+    // Enter in the password box still works through data-onkeydown — covered by login above.
+    // Injected markup: a real inline handler is refused by the browser; data-on code outside the safe shape is refused by us.
+    t.errors.length = 0;
+    await t.page.evaluate(() => {
+      const box = document.createElement('div'); box.id = '__inj';
+      box.innerHTML = '<button id="b1" onclick="window.__pwn=1">a</button>'
+        + '<button id="b2" data-onclick="fetch(\'https://evil.example/\')">b</button>'
+        + '<button id="b3" data-onclick="saveBill.constructor(\'window.__pwn=3\')()">c</button>'
+        + '<button id="b4" data-onclick="this.innerHTML=\'x\'">d</button>'
+        + '<img id="i1" src="data:," data-onerror="window.__pwn=5" onerror="window.__pwn=6">';
+      document.body.appendChild(box);
+    });
+    for (const id of ['#b1', '#b2', '#b3', '#b4']) await t.page.click(id);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(await t.page.evaluate(() => window.__pwn), undefined);
+    assert.equal(await t.page.evaluate(() => document.getElementById('b4').textContent), 'd');
+    assert.ok(t.errors.some(e => /CSP: .*(inline event handler|Refused to execute)/.test(e)), 'browser refused the inline handler: ' + t.errors.join(' | '));
+    assert.ok(t.errors.some(e => /browser function not allowed|blocked/.test(e)), 'interpreter refused: ' + t.errors.join(' | '));
+    // an inline <script> is refused too
+    await t.page.evaluate(() => { const s = document.createElement('script'); s.textContent = 'window.__pwn=7'; document.body.appendChild(s); });
+    assert.equal(await t.page.evaluate(() => window.__pwn), undefined);
   } finally { await t.close(); }
 });

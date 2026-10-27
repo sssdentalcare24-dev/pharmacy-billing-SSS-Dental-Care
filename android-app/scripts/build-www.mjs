@@ -12,7 +12,8 @@ const www = join(app, 'www');
 
 rmSync(www, { recursive: true, force: true });
 mkdirSync(join(www, 'js'), { recursive: true });
-cpSync(join(site, 'js', 'app.js'), join(www, 'js', 'app.js'));
+if (!existsSync(join(site, 'js', 'app.min.js'))) throw new Error('js/app.min.js missing — run "npm run build" in the repository root first');
+cpSync(join(site, 'js', 'app.min.js'), join(www, 'js', 'app.min.js'));
 cpSync(join(site, 'assets'), join(www, 'assets'), { recursive: true });
 cpSync(join(site, 'manifest.webmanifest'), join(www, 'manifest.webmanifest'));
 
@@ -24,8 +25,8 @@ await build({
 });
 
 let html = readFileSync(join(site, 'index.html'), 'utf8');
-const appTag = '<script defer src="js/app.js"></script>';
-if (!html.includes(appTag)) throw new Error('index.html: app.js script tag not found');
+const appTag = '<script defer src="js/app.min.js"></script>';
+if (!html.includes(appTag)) throw new Error('index.html: app.min.js script tag not found');
 html = html
   .replace(appTag, '<script defer src="js/native.js"></script>\n    ' + appTag)          // native bridge loads first
   .replace('<head>', '<head>\n    <script>window.SSDC_APP_BUILD = true;</script>')            // app copy: no website service worker
@@ -34,4 +35,4 @@ html = html
 writeFileSync(join(www, 'index.html'), html);
 
 if (!existsSync(join(www, 'index.html'))) throw new Error('build failed');
-console.log('www/ ready: index.html, js/app.js, js/native.js, assets/');
+console.log('www/ ready: index.html, js/app.min.js, js/native.js, assets/');

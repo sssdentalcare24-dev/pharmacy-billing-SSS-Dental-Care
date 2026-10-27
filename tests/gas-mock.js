@@ -16,7 +16,15 @@ function createGas(opts = {}) {
   const mails = [];
   const logs = [];
   const triggers = [];
-  const stats = { reads: 0, writes: 0 };
+  const stats = { reads: 0, writes: 0, formulas: [] };
+  // Like Google Sheets: a leading apostrophe means "plain text" (and is not stored); text starting
+  // with = or with + / - followed by something that is not a number would be RUN as a formula.
+  function sheetValue(v) {
+    if (typeof v !== 'string' || !v) return v;
+    if (v[0] === "'") return v.slice(1);
+    if (v[0] === '=' || ((v[0] === '+' || v[0] === '-') && !/^[+-]?\d+(\.\d+)?$/.test(v))) stats.formulas.push(v);
+    return v;
+  }
   let failNextCopy = false;
 
   // ── Sheets ──
@@ -38,7 +46,7 @@ function createGas(opts = {}) {
       if (vals.length !== this.nr || vals.some(r => r.length !== this.nc)) throw new Error(`setValues size mismatch on ${this.sheet.name}: range ${this.nr}x${this.nc}, data ${vals.length}x${vals[0] && vals[0].length}`);
       vals.forEach((row, i) => row.forEach((v, j) => {
         const R = this.r - 1 + i; this.sheet.rows[R] = this.sheet.rows[R] || [];
-        this.sheet.rows[R][this.c - 1 + j] = v;
+        this.sheet.rows[R][this.c - 1 + j] = sheetValue(v);
       }));
       return this;
     }
@@ -53,7 +61,7 @@ function createGas(opts = {}) {
     getLastColumn() { let m = 0; this.rows.forEach(r => (r || []).forEach((v, j) => { if (v !== '' && v !== undefined && v !== null) m = Math.max(m, j + 1); })); return m; }
     getRange(r, c, nr = 1, nc = 1) { if (r < 1 || c < 1 || nr < 1 || nc < 1) throw new Error(`bad range ${r},${c},${nr},${nc} on ${this.name}`); return new Range(this, r, c, nr, nc); }
     getDataRange() { return new Range(this, 1, 1, Math.max(this.getLastRow(), 1), Math.max(this.getLastColumn(), 1)); }
-    appendRow(row) { stats.writes++; this.rows[this.getLastRow()] = row.slice(); return this; }
+    appendRow(row) { stats.writes++; this.rows[this.getLastRow()] = row.map(sheetValue); return this; }
     deleteRow(i) { stats.writes++; this.rows.splice(i - 1, 1); }
     setFrozenRows() {}
   }

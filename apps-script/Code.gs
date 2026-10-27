@@ -129,7 +129,7 @@ var PERMS = {
   savePatient: ANY, deletePatient: OWNER,
   saveAppointment: ANY, updateAppointmentStatus: ANY, deleteAppointment: OWNER,
   saveExamForm: ANY, deleteExamForm: OWNER,
-  saveSettings: function (s, req) { return s.r === OWNER || !!STAFF_SETTING_KEYS[String(req.settingKey || '')]; },
+  saveSettings: function (s, req) { return s.r === OWNER || !!own_(STAFF_SETTING_KEYS, String(req.settingKey || '')); },
   saveExpense: OWNER, deleteExpense: OWNER, getExpenses: OWNER,
   listUsers: OWNER, createUser: OWNER, resetUserPassword: OWNER, setUserActive: OWNER,
   getAuditLog: OWNER, backupNow: OWNER, listBackups: OWNER, validateData: OWNER,
@@ -166,6 +166,8 @@ function todayStr_() { return Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-d
 function daysAgoStr_(n) { return Utilities.formatDate(new Date(Date.now() - n * 86400000), tz_(), 'yyyy-MM-dd'); }
 function r2_(x) { return Math.round((Number(x) || 0) * 100) / 100; }
 function num_(x) { var n = parseFloat(x); return isFinite(n) ? n : 0; }
+// value of an object's OWN key (never inherited names like "constructor")
+function own_(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined; }
 function str_(x, max) { var s = (x === null || x === undefined) ? '' : String(x).trim(); return max ? s.slice(0, max) : s; }
 function uid_(prefix) { return prefix + Utilities.getUuid().replace(/-/g, '').slice(0, 12).toUpperCase(); }
 function props_() { return PropertiesService.getScriptProperties(); }
@@ -270,6 +272,17 @@ function colOf_(name, col) {
 // value of a named column in a data row (row = array from getValues)
 function cell_(name, row, col) { var c = colOf_(name, col); return c ? row[c - 1] : ''; }
 // build a full-width row array from {field: value}
+// Text that starts with = + - @ is run by Google Sheets as a FORMULA. A formula typed into a
+// patient name or note could even send sheet data to a website when the owner opens the sheet,
+// and a phone like "+91 98…" turns into #ERROR!. A leading apostrophe stores it as plain text
+// (Sheets hides the apostrophe and reads the text back unchanged). Plain numbers like -5 stay numbers.
+function sheetText_(v) {
+  if (typeof v !== 'string' || !v) return v;
+  var c = v.charAt(0);
+  if (c !== '=' && c !== '+' && c !== '-' && c !== '@') return v;
+  if (/^[+-]?\d+(\.\d+)?$/.test(v)) return v;
+  return "'" + v;
+}
 function rowFrom_(name, obj) {
   var map = hdr_(name), width = (BASE_HEADERS[name] || []).length, k;
   for (k in map) width = Math.max(width, map[k]);
@@ -281,12 +294,12 @@ function appendRows_(name, rows) {
   if (!rows.length) return;
   var sheet = sh_(name), width = 0;
   rows.forEach(function (r) { width = Math.max(width, r.length); });
-  rows = rows.map(function (r) { while (r.length < width) r.push(''); return r; });
+  rows = rows.map(function (r) { while (r.length < width) r.push(''); return r.map(sheetText_); });
   sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, width).setValues(rows);
 }
 function setCells_(name, rowIndex, obj) {   // rowIndex = 1-based sheet row
   var sheet = sh_(name);
-  for (var k in obj) { var c = colOf_(name, k); if (c) sheet.getRange(rowIndex, c, 1, 1).setValues([[obj[k]]]); }
+  for (var k in obj) { var c = colOf_(name, k); if (c) sheet.getRange(rowIndex, c, 1, 1).setValues([[sheetText_(obj[k])]]); }
 }
 function findRow_(name, colName, value) {   // → 1-based sheet row or -1
   var data = values_(name), c = colOf_(name, colName);
@@ -517,7 +530,7 @@ function emergencyResetOwnerPassword() {
 function audit_(s, action, target, details, result) {
   try {
     var sheet = sh_('AuditLog'); if (!sheet) return;
-    sheet.appendRow([nowStr_(), (s && s.u) || '', (s && s.r) || '', action, str_(target, 100), str_(details, 500), result || 'OK']);
+    sheet.appendRow([nowStr_(), (s && s.u) || '', (s && s.r) || '', action, str_(target, 100), str_(details, 500), result || 'OK'].map(sheetText_));
   } catch (e) {}
 }
 function getAuditLog_(req) {
@@ -562,13 +575,15 @@ function handle_(req) {
   if (s.mc && action !== 'changePassword' && action !== 'logout' && action !== 'whoami')
     return fail_('MUST_CHANGE_PASSWORD', 'Please set a new password first.');
 
-  var rule = PERMS[action], fn = ACTIONS[action];
+  // own properties only: names like "constructor" or "toString" must never reach built-in functions
+  var own = Object.prototype.hasOwnProperty;
+  var rule = own.call(PERMS, action) ? PERMS[action] : null, fn = own.call(ACTIONS, action) ? ACTIONS[action] : null;
   if (!rule || !fn) return fail_('UNKNOWN_ACTION', 'Unknown action: ' + action);
-  if (V31_ACTIONS[action] && !v31_()) return fail_('MIGRATION_REQUIRED', 'This needs the v3.1 server update: the owner must run migrateToV31 in Apps Script.');
+  if (own.call(V31_ACTIONS, action) && !v31_()) return fail_('MIGRATION_REQUIRED', 'This needs the v3.1 server update: the owner must run migrateToV31 in Apps Script.');
   var allowed = typeof rule === 'function' ? rule(s, req) : (rule === ANY || s.r === rule);
   if (!allowed) { audit_(s, action, req.id || req.billId || '', 'Permission denied', 'DENIED'); return fail_('FORBIDDEN', 'Only the owner can do this.'); }
 
-  if (READ_ONLY[action]) return fn(req, s);
+  if (own.call(READ_ONLY, action)) return fn(req, s);
 
   // ── writes: idempotent by request ID, serialized by lock ──
   var reqId = str_(req.reqId, 64), c = cache_();
@@ -1022,7 +1037,7 @@ function deleteMedicine_(req, s) {   // never erased: marked Inactive (keeps bil
 function addPurchase_(req, s) {
   var id = str_(req.id, 60) || uid_('PUR-');
   if (findRow_('Purchases', 'ID', id) > 0) return ok_({ id: id, duplicate: true });
-  var meds = loadMedicines_(), med = meds.map[str_(req.medicineId, 60)];
+  var meds = loadMedicines_(), med = own_(meds.map, str_(req.medicineId, 60));
   if (!med) return fail_('VALIDATION', 'Medicine not found — refresh the app and try again');
   var qty = Number(req.qty), cost = num_(req.costPrice), freeQty = num_(req.freeQty);
   if (!isFinite(qty) || qty <= 0 || Math.floor(qty) !== qty) return fail_('VALIDATION', 'Invalid quantity');
@@ -1083,7 +1098,7 @@ function adjustStock_(req, s) {
   var qty = Number(req.qty); if (!isFinite(qty) || qty === 0 || Math.floor(qty) !== qty) return fail_('VALIDATION', 'Quantity must be a whole number (not 0)');
   if (ADJ_TYPES[type] === -1 && qty > 0) qty = -qty;
   if (type !== 'ADJUSTMENT' && ADJ_TYPES[type] === 1 && qty < 0) return fail_('VALIDATION', 'Quantity must be positive for ' + type);
-  var meds = loadMedicines_(), med = meds.map[str_(req.medicineId, 60)]; if (!med) return fail_('VALIDATION', 'Medicine not found');
+  var meds = loadMedicines_(), med = own_(meds.map, str_(req.medicineId, 60)); if (!med) return fail_('VALIDATION', 'Medicine not found');
   var batches = loadBatches_(), batchId = str_(req.batchId, 40), mv = [], ref = uid_('ADJ-');
   if (qty > 0) {
     var target = batchId ? batches.filter(function (b) { return b.batchId === batchId && b.medicineId === med.id; })[0] : null;
@@ -1290,9 +1305,9 @@ function saveSettings_(req, s) {
   if (key === 'staff_max_discount_pct') { var v = parseFloat(value); if (!isFinite(v) || v < 0 || v > 100) return fail_('VALIDATION', 'Enter 0–100'); }
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === key) { sheet.getRange(i + 1, 2, 1, 2).setValues([[value, nowStr_()]]); audit_(s, 'saveSettings', key, '', 'OK'); return ok_(); }
+    if (String(data[i][0]) === key) { sheet.getRange(i + 1, 2, 1, 2).setValues([[sheetText_(value), nowStr_()]]); audit_(s, 'saveSettings', key, '', 'OK'); return ok_(); }
   }
-  sheet.appendRow([key, value, nowStr_()]);
+  sheet.appendRow([key, sheetText_(value), nowStr_()]);
   audit_(s, 'saveSettings', key, '', 'OK');
   return ok_();
 }
@@ -2020,17 +2035,17 @@ function saveSupplier_(req, s) {
   return ok_({ id: id });
 }
 function deleteSupplier_(req, s) {
-  var su = loadSuppliers_().map[str_(req.id, 60)]; if (!su) return ok_();
+  var su = own_(loadSuppliers_().map, str_(req.id, 60)); if (!su) return ok_();
   setCells_('Suppliers', su.row, { 'Status': 'Inactive', 'Updated At': nowStr_() });
   audit_(s, 'deleteSupplier', su.id, su.name + ' · marked inactive', 'OK');
   return ok_();
 }
 function recordSupplierPayment_(req, s) {
-  var su = loadSuppliers_().map[str_(req.supplierId, 60)]; if (!su) return fail_('VALIDATION', 'Supplier not found');
+  var su = own_(loadSuppliers_().map, str_(req.supplierId, 60)); if (!su) return fail_('VALIDATION', 'Supplier not found');
   var amount = r2_(req.amount); if (!(amount > 0)) return fail_('VALIDATION', 'Enter the amount paid');
   var entryId = str_(req.entryId, 60) || uid_('SL-');
   if (findRow_('SupplierLedger', 'Entry ID', entryId) > 0) return ok_({ entryId: entryId, duplicate: true });
-  var mode = PAY_MODES[String(req.mode || 'Cash').toLowerCase()] || str_(req.mode, 20) || 'Cash';
+  var mode = own_(PAY_MODES, String(req.mode || 'Cash').toLowerCase()) || str_(req.mode, 20) || 'Cash';
   if (mode === 'Credit' || mode === 'Split') return fail_('VALIDATION', 'Choose Cash, UPI, Card or Bank');
   var date = formatDate(req.date) || todayStr_(); if (date > todayStr_()) return fail_('VALIDATION', 'Date cannot be in the future');
   var b = supplierBalances_()[su.id] || {}, owed = r2_(su.opening + (b.credit || 0) - (b.debit || 0)), warnings = [];
@@ -2068,7 +2083,7 @@ function prObj_(r) {
     createdBy: String(r[12] || ''), createdAt: ts_(r[13]), status: String(r[14] || 'Active') };
 }
 function getSupplierLedger_(req) {
-  var sups = loadSuppliers_(), su = sups.map[str_(req.supplierId, 60)]; if (!su) return fail_('VALIDATION', 'Supplier not found');
+  var sups = loadSuppliers_(), su = own_(sups.map, str_(req.supplierId, 60)); if (!su) return fail_('VALIDATION', 'Supplier not found');
   var entries = values_('SupplierLedger').slice(1).filter(function (r) { return r[0] && String(r[2]) === su.id; }).map(slObj_);
   entries.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt < b.createdAt ? -1 : 1); });
   var bal = su.opening;
@@ -2115,7 +2130,7 @@ function addPurchaseInvoice_(req, s) {
   if (total < 0) return fail_('VALIDATION', 'Invoice total cannot be negative');
   if (req.total !== undefined && req.total !== '' && Math.abs(num_(req.total) - total) > 0.011) return fail_('VALIDATION', 'Invoice total does not match the lines');
   var paid = r2_(req.paidAmount); if (paid < 0 || paid > total + 0.01) return fail_('VALIDATION', 'Paid amount must be between ₹0 and the invoice total');
-  var mode = paid > 0 ? (PAY_MODES[String(req.paymentMode || 'Cash').toLowerCase()] || str_(req.paymentMode, 20) || 'Cash') : '';
+  var mode = paid > 0 ? (own_(PAY_MODES, String(req.paymentMode || 'Cash').toLowerCase()) || str_(req.paymentMode, 20) || 'Cash') : '';
   if (paid > 0 && (mode === 'Credit' || mode === 'Split')) return fail_('VALIDATION', 'Choose how the supplier was paid');
   var factor = itemsTotal > 0 ? total / itemsTotal : 1, batchRows = [], purRows = [], mv = [], dt = nowStr_();
   clean.forEach(function (c, k) {
@@ -2192,7 +2207,7 @@ function purchaseReturn_(req, s) {
   var id = str_(req.id, 60) || uid_('PRET-');
   if (findRow_('PurchaseReturns', 'Return ID', id) > 0) return ok_({ id: id, duplicate: true });
   var reason = str_(req.reason, 300); if (reason.length < 3) return fail_('VALIDATION', 'Please give a reason (e.g. expired, damaged, wrong item)');
-  var meds = loadMedicines_(), med = meds.map[str_(req.medicineId, 60)]; if (!med) return fail_('VALIDATION', 'Medicine not found');
+  var meds = loadMedicines_(), med = own_(meds.map, str_(req.medicineId, 60)); if (!med) return fail_('VALIDATION', 'Medicine not found');
   var batches = loadBatches_(), b = batches.filter(function (x) { return x.batchId === str_(req.batchId, 40) && x.medicineId === med.id; })[0];
   if (!b) return fail_('VALIDATION', 'Choose the batch being returned');
   var qty = Number(req.qty); if (!isFinite(qty) || qty <= 0 || Math.floor(qty) !== qty) return fail_('VALIDATION', 'Quantity must be a whole number');

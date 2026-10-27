@@ -8,7 +8,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#1e3f5a">
     <title>Sri Sai Speciality Dental Care</title>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; font-src 'self' data:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-1EflUClfuVlo7va6nn8R14rjuWC6tLao2kQ8UubaswM='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; font-src 'self' data:; frame-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'">
     <meta name="referrer" content="no-referrer">
     <meta name="description" content="Billing &amp; clinic management — Sri Sai Speciality Dental Care">
     <link rel="manifest" href="manifest.webmanifest">
@@ -1571,6 +1571,7 @@
   padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 700; box-shadow: 0 2px 8px rgba(0,0,0,.2);
   cursor: pointer; display: none; }
 
+    [data-focusring]:focus { border-color:#2c5aa0 !important; }
     .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     </style>
     <script>// Fix for mobile Safari 100vh including address bar
@@ -1580,7 +1581,7 @@
     _setVh();
     window.addEventListener('resize', _setVh, {passive:true});
     window.addEventListener('orientationchange', function() { setTimeout(_setVh, 200); }, {passive:true});</script>
-    <script defer src="js/app.js"></script>
+    <script defer src="js/app.min.js"></script>
 
     <style id="__printStyle">
         /* Print styles managed dynamically by printBillHtml() */
@@ -1715,15 +1716,15 @@
             <div class="login-clinic-name">Sri Sai Speciality Dental Care</div>
             <div class="login-subtitle">Please login to continue</div>
             <div class="role-tabs">
-                <button class="role-tab active" id="tabOwner" onclick="selectRole('owner')">👑 Owner</button>
-                <button class="role-tab" id="tabStaff" onclick="selectRole('staff')">👨&zwnj;⚕️ Staff</button>
+                <button class="role-tab active" id="tabOwner" data-onclick="selectRole('owner')">👑 Owner</button>
+                <button class="role-tab" id="tabStaff" data-onclick="selectRole('staff')">👨&zwnj;⚕️ Staff</button>
             </div>
             <label for="loginUsername" class="sr-only">Username</label>
             <input class="login-input" id="loginUsername" list="loginUserList" value="owner" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Username">
             <datalist id="loginUserList"><option value="owner"><option value="staff"></datalist>
             <label for="loginPassword" class="sr-only">Password</label>
-            <input class="login-input" type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
-            <button class="login-btn" onclick="doLogin()">🔐 Login</button>
+            <input class="login-input" type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" data-onkeydown="if(event.key==='Enter') doLogin()">
+            <button class="login-btn" data-onclick="doLogin()">🔐 Login</button>
             <div class="login-error" id="loginError" role="alert" aria-live="assertive">❌ Incorrect username or password</div>
         </div>
     </div>
@@ -1742,64 +1743,64 @@
             </div>
 
             <nav style="overflow-y: auto; flex: 1; min-height: 0;">
-                <div class="nav-item active owner-only" id="nav-dashboard" onclick="showPage('dashboard')">
+                <div class="nav-item active owner-only" id="nav-dashboard" data-onclick="showPage('dashboard')">
                     📊 Dashboard
                 </div>
-                <div class="nav-item" id="nav-newbill" onclick="showPage('newbill')">
+                <div class="nav-item" id="nav-newbill" data-onclick="showPage('newbill')">
                     🧾 New Bill
                 </div>
-                <div class="nav-item owner-only" id="nav-allbills" onclick="showPage('allbills')">
+                <div class="nav-item owner-only" id="nav-allbills" data-onclick="showPage('allbills')">
                     📋 All Bills
                 </div>
-                <div class="nav-item v31-only" id="nav-payments" onclick="showPage('payments')" hidden>
+                <div class="nav-item v31-only" id="nav-payments" data-onclick="showPage('payments')" hidden>
                     💰 Dues &amp; Payments
                 </div>
-                <div class="nav-item owner-only" id="nav-inventory" onclick="showPage('inventory')">
+                <div class="nav-item owner-only" id="nav-inventory" data-onclick="showPage('inventory')">
                     📦 Inventory
                 </div>
-                <div class="nav-item owner-only" id="nav-purchases" onclick="showPage('purchases')">
+                <div class="nav-item owner-only" id="nav-purchases" data-onclick="showPage('purchases')">
                     🛒 Purchases
                 </div>
-                <div class="nav-item owner-only v31-only" id="nav-suppliers" onclick="showPage('suppliers')" hidden>
+                <div class="nav-item owner-only v31-only" id="nav-suppliers" data-onclick="showPage('suppliers')" hidden>
                     🏭 Suppliers
                 </div>
-                <div class="nav-item" id="nav-treatmentreceipt" onclick="showPage('treatmentreceipt')">
+                <div class="nav-item" id="nav-treatmentreceipt" data-onclick="showPage('treatmentreceipt')">
                     🦷 Treatment Receipt
                 </div>
-                <div class="nav-item" id="nav-combinedbill" onclick="showPage('combinedbill')">
+                <div class="nav-item" id="nav-combinedbill" data-onclick="showPage('combinedbill')">
                     🧾 Bill Summary
                 </div>
-                <div class="nav-item" id="nav-prescription" onclick="showPage('prescription')">
+                <div class="nav-item" id="nav-prescription" data-onclick="showPage('prescription')">
                     📋 Prescription
                 </div>
-                <div class="nav-item" id="nav-examform" onclick="showPage('examform')">
+                <div class="nav-item" id="nav-examform" data-onclick="showPage('examform')">
                     🦷 Exam Form
                 </div>
-                <div class="nav-item" id="nav-patients" onclick="showPage('patients')">
+                <div class="nav-item" id="nav-patients" data-onclick="showPage('patients')">
                     👥 Patients
                 </div>
-                <div class="nav-item" id="nav-appointments" onclick="showPage('appointments')">
+                <div class="nav-item" id="nav-appointments" data-onclick="showPage('appointments')">
                     📅 Appointments
                 </div>
-                <div class="nav-item v31-only" id="nav-followups" onclick="showPage('followups')" hidden>
+                <div class="nav-item v31-only" id="nav-followups" data-onclick="showPage('followups')" hidden>
                     🔔 Follow-ups
                 </div>
-                <div class="nav-item" id="nav-wareminders" onclick="showPage('wareminders')">
+                <div class="nav-item" id="nav-wareminders" data-onclick="showPage('wareminders')">
                     📲 WA Reminders
                 </div>
-                <div class="nav-item owner-only" id="nav-expenses" onclick="showPage('expenses')">
+                <div class="nav-item owner-only" id="nav-expenses" data-onclick="showPage('expenses')">
                     💸 Clinic Expenses
                 </div>
-                <div class="nav-item v31-only" id="nav-cashclose" onclick="showPage('cashclose')" hidden>
+                <div class="nav-item v31-only" id="nav-cashclose" data-onclick="showPage('cashclose')" hidden>
                     🧮 Cash Closing
                 </div>
-                <div class="nav-item owner-only v31-only" id="nav-finance" onclick="showPage('finance')" hidden>
+                <div class="nav-item owner-only v31-only" id="nav-finance" data-onclick="showPage('finance')" hidden>
                     💹 Finance &amp; Reports
                 </div>
-                <div class="nav-item owner-only" id="nav-reports" onclick="showPage('reports')">
+                <div class="nav-item owner-only" id="nav-reports" data-onclick="showPage('reports')">
                     📈 Reports
                 </div>
-                <div class="nav-item owner-only" id="nav-settings" onclick="showPage('settings')">
+                <div class="nav-item owner-only" id="nav-settings" data-onclick="showPage('settings')">
                     ⚙️ Settings
                 </div>
             </nav>
@@ -1809,17 +1810,17 @@
                     <span>API Status:</span>
                     <div class="status-indicator" id="statusIndicator"></div>
                 </div>
-                <div id="syncStatusLine" onclick="openSyncCentre()" title="Open Sync Centre" style="font-size:11px;opacity:.9;margin-bottom:10px;cursor:pointer;">● Online</div>
+                <div id="syncStatusLine" data-onclick="openSyncCentre()" title="Open Sync Centre" style="font-size:11px;opacity:.9;margin-bottom:10px;cursor:pointer;">● Online</div>
                 <!-- Bluetooth Printer Status -->
-                <div id="btPrinterBar" onclick="openBtPrinterPanel()" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,0.1);border-radius:8px;cursor:pointer;transition:background 0.2s;" title="Bluetooth Printer">
+                <div id="btPrinterBar" data-onclick="openBtPrinterPanel()" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,0.1);border-radius:8px;cursor:pointer;transition:background 0.2s;" title="Bluetooth Printer">
                     <span id="btPrinterIcon" style="font-size:16px;">🖨️</span>
                     <span style="font-size:12px;flex:1;" id="btPrinterLabel">Thermal Printer</span>
                     <div id="btStatusDot" style="width:10px;height:10px;border-radius:50%;background:#e74c3c;animation:pulse 2s infinite;flex-shrink:0;"></div>
                 </div>
                 Sri Sai Speciality Dental Care<br>
                 <span id="appVersionLabel">v3.1 · secure</span>
-                <button class="logout-btn" onclick="openChangePassword(false)" style="margin-bottom:6px;background:rgba(255,255,255,0.12);">🔑 Change password</button>
-                <button class="logout-btn" onclick="doLogout()">🚪 Logout</button>
+                <button class="logout-btn" data-onclick="openChangePassword(false)" style="margin-bottom:6px;background:rgba(255,255,255,0.12);">🔑 Change password</button>
+                <button class="logout-btn" data-onclick="doLogout()">🚪 Logout</button>
             </div>
         </div>
 
@@ -1827,7 +1828,7 @@
         <div class="main-content">
             <div class="header">
                 <div style="display:flex;align-items:center;gap:10px;">
-                    <button class="hamburger-btn" id="hamburgerBtn" onclick="toggleSidebar()" aria-label="Toggle menu">
+                    <button class="hamburger-btn" id="hamburgerBtn" data-onclick="toggleSidebar()" aria-label="Toggle menu">
                         <span></span><span></span><span></span>
                     </button>
                     <h1 id="pageTitle">Dashboard</h1>
@@ -1868,9 +1869,9 @@
                         <!-- Calendar -->
                         <div class="dash-cal-card">
                             <div class="dash-cal-header">
-                                <button class="dash-cal-nav" onclick="dashCalNav(-1)">◀</button>
+                                <button class="dash-cal-nav" data-onclick="dashCalNav(-1)">◀</button>
                                 <div id="dashCalTitle" class="dash-cal-title"></div>
-                                <button class="dash-cal-nav" onclick="dashCalNav(1)">▶</button>
+                                <button class="dash-cal-nav" data-onclick="dashCalNav(1)">▶</button>
                             </div>
                             <div class="dash-cal-days-hdr">
                                 <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
@@ -1885,7 +1886,7 @@
                                     <div style="font-weight:700;font-size:16px;color:var(--primary);">📅 Today's Appointments</div>
                                     <div id="dashApptDate" style="font-size:12px;color:#888;margin-top:2px;"></div>
                                 </div>
-                                <button onclick="showPage('appointments')" style="padding:7px 14px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">+ Book</button>
+                                <button data-onclick="showPage('appointments')" style="padding:7px 14px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">+ Book</button>
                             </div>
                             <div id="dashApptList"></div>
                         </div>
@@ -1952,7 +1953,7 @@
                                 </div>
                                 <div>
                                     <label>&nbsp;</label>
-                                    <button class="btn-primary" onclick="addMedicineToCart()" style="width: 100%;">
+                                    <button class="btn-primary" data-onclick="addMedicineToCart()" style="width: 100%;">
                                         + Add to Cart
                                     </button>
                                 </div>
@@ -1982,7 +1983,7 @@
                                 </div>
                                 <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
                                     <label>Discount %:</label>
-                                    <input type="number" id="discountPct" value="0" min="0" max="100" style="width: 100px;" onchange="recalc()">
+                                    <input type="number" id="discountPct" value="0" min="0" max="100" style="width: 100px;" data-onchange="recalc()">
                                 </div>
                                 <div style="display: flex; justify-content: space-between; padding-top: 10px; border-top: 2px solid var(--border); font-size: 18px; font-weight: bold;">
                                     <span>Grand Total:</span>
@@ -1991,18 +1992,18 @@
                             </div>
 
                             <div style="margin-top: 20px; display: flex; gap: 10px;">
-                                <button class="btn-success" id="saveBillBtn" onclick="openPaymentModal(false)" style="flex: 1;">
+                                <button class="btn-success" id="saveBillBtn" data-onclick="openPaymentModal(false)" style="flex: 1;">
                                     💳 Pay &amp; Save
                                 </button>
-                                <button class="btn-primary" id="printBillBtn" onclick="openPaymentModal(true)" style="flex: 1;">
+                                <button class="btn-primary" id="printBillBtn" data-onclick="openPaymentModal(true)" style="flex: 1;">
                                     🖨️ Pay &amp; Print
                                 </button>
-                                <button class="btn-secondary" onclick="clearCart()">
+                                <button class="btn-secondary" data-onclick="clearCart()">
                                     🗑️ Clear
                                 </button>
                             </div>
 
-                            <button class="btn-primary" id="whatsappBtn" onclick="shareOnWhatsApp()" style="width: 100%; margin-top: 10px; display: none;">
+                            <button class="btn-primary" id="whatsappBtn" data-onclick="shareOnWhatsApp()" style="width: 100%; margin-top: 10px; display: none;">
                                 📲 Share on WhatsApp
                             </button>
                         </div>
@@ -2033,7 +2034,7 @@ Kharmanghat
                 <div class="page" id="allbills">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
                         <h2 style="color:var(--primary);margin:0;">All Bills</h2>
-                        <input type="text" id="billsSearch" placeholder="🔍 Search patient..." oninput="filterBills()" style="width:200px;padding:8px 12px;border-radius:8px;border:1.5px solid #ddd;font-size:14px;">
+                        <input type="text" id="billsSearch" placeholder="🔍 Search patient..." data-oninput="filterBills()" style="width:200px;padding:8px 12px;border-radius:8px;border:1.5px solid #ddd;font-size:14px;">
                     </div>
                     <!-- Desktop table (hidden on mobile) -->
                     <div class="bills-table-wrap">
@@ -2062,7 +2063,7 @@ Kharmanghat
                 <div class="page" id="inventory">
                     <h2 style="margin-bottom: 20px; color: var(--primary);">Medicine Inventory</h2>
                     <div style="margin-bottom: 20px;">
-                        <button class="btn-primary" onclick="openAddMedicineModal()">+ Add New Medicine</button>
+                        <button class="btn-primary" data-onclick="openAddMedicineModal()">+ Add New Medicine</button>
                     </div>
                     <div class="tbl-wrap">
                         <table class="table" id="inventoryTable">
@@ -2086,7 +2087,7 @@ Kharmanghat
                 <div class="page" id="purchases">
                     <h2 style="margin-bottom: 20px; color: var(--primary);">Purchase Records</h2>
                     <div style="margin-bottom: 20px;">
-                        <button class="btn-primary" onclick="openAddPurchaseModal()">+ Add Purchase</button>
+                        <button class="btn-primary" data-onclick="openAddPurchaseModal()">+ Add Purchase</button>
                     </div>
                     <div class="tbl-wrap">
                         <table class="table" id="purchasesTable">
@@ -2184,7 +2185,7 @@ Kharmanghat
                                 </select>
                             </div>
                             <div style="display:flex;align-items:flex-end;">
-                                <button onclick="addExpense()" style="width:100%;padding:11px;background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:800;cursor:pointer;touch-action:manipulation;">
+                                <button data-onclick="addExpense()" style="width:100%;padding:11px;background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:800;cursor:pointer;touch-action:manipulation;">
                                     💾 Save Expense
                                 </button>
                             </div>
@@ -2193,7 +2194,7 @@ Kharmanghat
 
                     <!-- Filter & Search -->
                     <div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-                        <select id="exp_filterCat" onchange="renderExpenses()" style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;flex:1;min-width:120px;">
+                        <select id="exp_filterCat" data-onchange="renderExpenses()" style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;flex:1;min-width:120px;">
                             <option value="">All Categories</option>
                             <option value="Rent">🏠 Rent</option>
                             <option value="Electricity">💡 Electricity</option>
@@ -2207,7 +2208,7 @@ Kharmanghat
                             <option value="Insurance">🛡️ Insurance</option>
                             <option value="Miscellaneous">📦 Miscellaneous</option>
                         </select>
-                        <select id="exp_filterMonth" onchange="renderExpenses()" style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;flex:1;min-width:120px;">
+                        <select id="exp_filterMonth" data-onchange="renderExpenses()" style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;flex:1;min-width:120px;">
                             <option value="">All Months</option>
                             <option value="01">January</option><option value="02">February</option>
                             <option value="03">March</option><option value="04">April</option>
@@ -2216,11 +2217,11 @@ Kharmanghat
                             <option value="09">September</option><option value="10">October</option>
                             <option value="11">November</option><option value="12">December</option>
                         </select>
-                        <select id="exp_filterYear" onchange="renderExpenses()" style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;flex:1;min-width:100px;">
+                        <select id="exp_filterYear" data-onchange="renderExpenses()" style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;flex:1;min-width:100px;">
                             <option value="">All Years</option>
                         </select>
-                        <button onclick="exportExpensesCSV()" style="padding:8px 14px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">📥 Export CSV</button>
-                        <button onclick="syncExpensesFromSheets()" style="padding:8px 14px;background:#2c5aa0;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">☁️ Sync from Sheets</button>
+                        <button data-onclick="exportExpensesCSV()" style="padding:8px 14px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">📥 Export CSV</button>
+                        <button data-onclick="syncExpensesFromSheets()" style="padding:8px 14px;background:#2c5aa0;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">☁️ Sync from Sheets</button>
                     </div>
 
                     <!-- Category Breakdown -->
@@ -2243,7 +2244,7 @@ Kharmanghat
                     <!-- DATE FILTER BAR -->
                     <div style="background:white;border-radius:10px;padding:14px 20px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,0.07);display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
                         <label style="font-size:13px;font-weight:600;color:var(--text-dark);">Filter:</label>
-                        <select id="rpt_period" onchange="renderReports()" style="padding:7px 12px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
+                        <select id="rpt_period" data-onchange="renderReports()" style="padding:7px 12px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
                             <option value="all">All Time</option>
                             <option value="today">Today</option>
                             <option value="week">This Week</option>
@@ -2253,17 +2254,17 @@ Kharmanghat
                             <option value="custom">Custom Range</option>
                         </select>
                         <div id="rpt_custom_range" style="display:none;gap:8px;align-items:center;display:none;">
-                            <input type="date" id="rpt_from" onchange="renderReports()" style="padding:7px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
+                            <input type="date" id="rpt_from" data-onchange="renderReports()" style="padding:7px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
                             <span style="font-size:13px;">to</span>
-                            <input type="date" id="rpt_to" onchange="renderReports()" style="padding:7px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
+                            <input type="date" id="rpt_to" data-onchange="renderReports()" style="padding:7px;border-radius:6px;border:1px solid #ddd;font-size:13px;">
                         </div>
-                        <button class="btn-primary" onclick="renderReports()" style="padding:7px 16px;font-size:13px;">🔄 Refresh</button>
+                        <button class="btn-primary" data-onclick="renderReports()" style="padding:7px 16px;font-size:13px;">🔄 Refresh</button>
                         <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;">
-                            <button onclick="generateMonthlyReport()" style="padding:7px 14px;background:#27ae60;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Monthly CSV</button>
-                            <button onclick="generateMedicineWiseReport()" style="padding:7px 14px;background:#2c5aa0;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Medicine CSV</button>
-                            <button onclick="generateTreatmentReport()" style="padding:7px 14px;background:#8e44ad;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Treatment CSV</button>
-                            <button onclick="generateSupplierWiseReport()" style="padding:7px 14px;background:#e67e22;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Supplier CSV</button>
-                            <button onclick="generatePurchaseReport()" style="padding:7px 14px;background:#16a085;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Purchase CSV</button>
+                            <button data-onclick="generateMonthlyReport()" style="padding:7px 14px;background:#27ae60;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Monthly CSV</button>
+                            <button data-onclick="generateMedicineWiseReport()" style="padding:7px 14px;background:#2c5aa0;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Medicine CSV</button>
+                            <button data-onclick="generateTreatmentReport()" style="padding:7px 14px;background:#8e44ad;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Treatment CSV</button>
+                            <button data-onclick="generateSupplierWiseReport()" style="padding:7px 14px;background:#e67e22;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Supplier CSV</button>
+                            <button data-onclick="generatePurchaseReport()" style="padding:7px 14px;background:#16a085;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">⬇ Purchase CSV</button>
                         </div>
                     </div>
 
@@ -2312,7 +2313,7 @@ Kharmanghat
                         <div style="background:white;border-radius:10px;padding:24px 28px;box-shadow:0 2px 8px rgba(0,0,0,0.07);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
                                 <div style="font-weight:700;font-size:16px;color:var(--primary);">🏭 Supplier-wise Spending & Margins</div>
-                                <button onclick="generateSupplierWiseReport()" style="padding:7px 16px;background:#e67e22;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">⬇ CSV</button>
+                                <button data-onclick="generateSupplierWiseReport()" style="padding:7px 16px;background:#e67e22;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">⬇ CSV</button>
                             </div>
                             <div id="rpt_supplier_chart" style="width:100%;margin-bottom:4px;"></div>
                             <div id="rpt_supplier_table"></div>
@@ -2322,7 +2323,7 @@ Kharmanghat
                         <div style="background:white;border-radius:10px;padding:24px 28px;box-shadow:0 2px 8px rgba(0,0,0,0.07);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
                                 <div style="font-weight:700;font-size:16px;color:var(--primary);">🛒 Purchase-wise Analysis & Margins</div>
-                                <button onclick="generatePurchaseReport()" style="padding:7px 16px;background:#16a085;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">⬇ CSV</button>
+                                <button data-onclick="generatePurchaseReport()" style="padding:7px 16px;background:#16a085;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;">⬇ CSV</button>
                             </div>
                             <div id="rpt_purchase_kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;"></div>
                             <div id="rpt_purchase_table"></div>
@@ -2344,14 +2345,14 @@ Kharmanghat
                         <div id="trControls" style="background:white;border-radius:10px;padding:20px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                                 <h3 style="color:var(--primary);margin:0;">Fill Treatment Receipt</h3>
-                                <button onclick="clearTreatmentForm()" style="background:#f0f4ff;color:var(--primary);border:1px solid var(--primary);border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;">🗑️ Clear</button>
+                                <button data-onclick="clearTreatmentForm()" style="background:#f0f4ff;color:var(--primary);border:1px solid var(--primary);border-radius:6px;padding:6px 14px;font-size:13px;cursor:pointer;">🗑️ Clear</button>
                             </div>
                             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;">
                                 <div>
                                     <label>Receipt No.</label>
                                     <div style="display:flex;gap:6px;align-items:center;">
                                         <input type="text" id="tr_no" placeholder="e.g. 001" style="flex:1;">
-                                        <button onclick="autoFillNo('tr_no')" title="Auto-generate next number"
+                                        <button data-onclick="autoFillNo('tr_no')" title="Auto-generate next number"
                                             style="padding:8px 10px;background:#2c5aa0;color:white;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;touch-action:manipulation;">🔢 Auto</button>
                                     </div>
                                 </div>
@@ -2380,16 +2381,15 @@ Kharmanghat
                                     <textarea id="tr_treatment_text"
                                         rows="4"
                                         placeholder="e.g. Root Canal Therapy, Crown Placement, Scaling & Polishing..."
-                                        oninput="updateTreatmentPreview()"
+                                        data-oninput="updateTreatmentPreview()"
                                         style="width:100%;padding:12px 14px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit;resize:vertical;line-height:1.6;color:#1e3f5a;background:#f8faff;outline:none;transition:border-color 0.2s;"
-                                        onfocus="this.style.borderColor='#2c5aa0'"
-                                        onblur="this.style.borderColor='#cbd5e1'"></textarea>
+                                        data-focusring></textarea>
                                     <div style="position:absolute;bottom:10px;right:12px;font-size:11px;color:#aaa;">Type treatment name(s)</div>
                                 </div>
                             </div>
                             <div style="display:flex;gap:10px;margin-top:4px;">
-                                <button onclick="openTreatmentPayment()" style="flex:2;padding:14px;font-size:16px;background:linear-gradient(135deg,#27ae60,#1e8449);color:white;border:none;border-radius:10px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(39,174,96,0.4);-webkit-tap-highlight-color:transparent;touch-action:manipulation;">💳 Pay &amp; Print</button>
-                                <button class="btn-primary" onclick="printTreatmentReceipt()" style="flex:1;padding:14px;font-size:15px;border-radius:10px;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">🖨️ Print</button>
+                                <button data-onclick="openTreatmentPayment()" style="flex:2;padding:14px;font-size:16px;background:linear-gradient(135deg,#27ae60,#1e8449);color:white;border:none;border-radius:10px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(39,174,96,0.4);-webkit-tap-highlight-color:transparent;touch-action:manipulation;">💳 Pay &amp; Print</button>
+                                <button class="btn-primary" data-onclick="printTreatmentReceipt()" style="flex:1;padding:14px;font-size:15px;border-radius:10px;-webkit-tap-highlight-color:transparent;touch-action:manipulation;">🖨️ Print</button>
                             </div>
                         </div>
 
@@ -2403,7 +2403,7 @@ Kharmanghat
                         <div style="background:white;border-radius:10px;padding:20px;margin-top:20px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
                                 <h3 style="color:var(--primary);margin:0;">📋 Previously Issued Receipts</h3>
-                                <button onclick="clearTreatmentHistory()" style="background:#fff0f0;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;">Clear History</button>
+                                <button data-onclick="clearTreatmentHistory()" style="background:#fff0f0;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;">Clear History</button>
                             </div>
                             <div id="tr_history_list">
                                 <div style="color:#aaa;font-size:13px;text-align:center;padding:20px;">No receipts saved yet.</div>
@@ -2420,7 +2420,7 @@ Kharmanghat
                         <div class="cb-card">
                             <div class="cb-card-header">
                                 <h3 class="cb-title">🧾 Bill Summary</h3>
-                                <button class="cb-clear-btn" onclick="clearCombinedForm()">🗑️ Clear</button>
+                                <button class="cb-clear-btn" data-onclick="clearCombinedForm()">🗑️ Clear</button>
                             </div>
 
                             <!-- Row 1: No / Date / Patient -->
@@ -2429,7 +2429,7 @@ Kharmanghat
                                     <label class="cb-lbl">Receipt No.</label>
                                     <div class="cb-no-wrap">
                                         <input type="text" id="cb_no" placeholder="e.g. 001" class="cb-input">
-                                        <button class="cb-auto-btn" onclick="autoFillNo('cb_no')">🔢 Auto</button>
+                                        <button class="cb-auto-btn" data-onclick="autoFillNo('cb_no')">🔢 Auto</button>
                                     </div>
                                 </div>
                                 <div>
@@ -2467,7 +2467,7 @@ Kharmanghat
                                 <div class="cb-row2" style="margin-top:10px;">
                                     <div>
                                         <label class="cb-lbl">Treatment Amount (₹)</label>
-                                        <input type="number" id="cb_tr_amount" placeholder="0.00" inputmode="decimal" class="cb-input cb-amt-input" oninput="recalcCombined()">
+                                        <input type="number" id="cb_tr_amount" placeholder="0.00" inputmode="decimal" class="cb-input cb-amt-input" data-oninput="recalcCombined()">
                                     </div>
                                     <div>
                                         <label class="cb-lbl">Amount in Words</label>
@@ -2492,7 +2492,7 @@ Kharmanghat
                                     </div>
                                     <div class="cb-med-btn-wrap">
                                         <label class="cb-lbl">&nbsp;</label>
-                                        <button onclick="addCbMedicine()" class="cb-add-btn">+ Add</button>
+                                        <button data-onclick="addCbMedicine()" class="cb-add-btn">+ Add</button>
                                     </div>
                                 </div>
                                 <div class="cb-cart-scroll">
@@ -2527,17 +2527,17 @@ Kharmanghat
 
                             <!-- ACTION BUTTONS -->
                             <div class="cb-actions">
-                                <button onclick="openCbPayment()" class="cb-btn-pay">💳 Pay &amp; Print</button>
-                                <button onclick="printCombinedBill()" class="cb-btn-print">🖨️ Print</button>
+                                <button data-onclick="openCbPayment()" class="cb-btn-pay">💳 Pay &amp; Print</button>
+                                <button data-onclick="printCombinedBill()" class="cb-btn-print">🖨️ Print</button>
                             </div>
-                            <button onclick="shareCbWhatsApp()" class="cb-btn-wa">📲 Share on WhatsApp</button>
+                            <button data-onclick="shareCbWhatsApp()" class="cb-btn-wa">📲 Share on WhatsApp</button>
                         </div>
 
                         <!-- PREVIEW -->
                         <div class="cb-card">
                             <div class="cb-preview-header">
                                 <span class="cb-preview-lbl">📄 PRINT PREVIEW</span>
-                                <button onclick="updateCombinedPreview()" class="cb-refresh-btn">🔄 Refresh Preview</button>
+                                <button data-onclick="updateCombinedPreview()" class="cb-refresh-btn">🔄 Refresh Preview</button>
                             </div>
                             <div id="cb_preview" class="cb-preview-box">
                                 <span class="cb-preview-hint">Click "Refresh Preview" to see bill</span>
@@ -2548,7 +2548,7 @@ Kharmanghat
                         <div class="cb-card">
                             <div class="cb-card-header">
                                 <h3 class="cb-title" style="font-size:15px;">📋 Previous Bill Summaries</h3>
-                                <button onclick="clearCbHistory()" class="cb-clrhist-btn">🗑️ Clear All</button>
+                                <button data-onclick="clearCbHistory()" class="cb-clrhist-btn">🗑️ Clear All</button>
                             </div>
                             <div id="cb_history_list">
                                 <div class="cb-empty-row" style="padding:20px;">No bill summaries saved yet.</div>
@@ -2564,20 +2564,20 @@ Kharmanghat
                         <div style="background:white;border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
                                 <h3 style="color:var(--primary);margin:0;font-size:17px;">Fill Prescription</h3>
-                                <button onclick="clearPrescriptionForm()" style="background:#f0f4ff;color:var(--primary);border:1px solid var(--primary);border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;touch-action:manipulation;">🗑️ Clear</button>
+                                <button data-onclick="clearPrescriptionForm()" style="background:#f0f4ff;color:var(--primary);border:1px solid var(--primary);border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;touch-action:manipulation;">🗑️ Clear</button>
                             </div>
                             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;" class="rx-grid3">
                                 <div>
                                     <label>Patient Name</label>
-                                    <input type="text" id="rx_name" placeholder="Patient name" oninput="updateRxPreview()">
+                                    <input type="text" id="rx_name" placeholder="Patient name" data-oninput="updateRxPreview()">
                                 </div>
                                 <div>
                                     <label>Age</label>
-                                    <input type="number" id="rx_age" placeholder="e.g. 30" oninput="updateRxPreview()" inputmode="numeric">
+                                    <input type="number" id="rx_age" placeholder="e.g. 30" data-oninput="updateRxPreview()" inputmode="numeric">
                                 </div>
                                 <div>
                                     <label>Sex</label>
-                                    <select id="rx_sex" onchange="updateRxPreview()">
+                                    <select id="rx_sex" data-onchange="updateRxPreview()">
                                         <option value="">Select</option>
                                         <option value="Male">Male</option>
                                         <option value="Female">Female</option>
@@ -2587,13 +2587,13 @@ Kharmanghat
                             </div>
                             <div style="margin-bottom:10px;">
                                 <label>Date</label>
-                                <input type="date" id="rx_date" oninput="updateRxPreview()" style="max-width:220px;">
+                                <input type="date" id="rx_date" data-oninput="updateRxPreview()" style="max-width:220px;">
                             </div>
                             <div style="margin-bottom:12px;">
                                 <label>Prescription (Rx)</label>
-                                <textarea id="rx_content" rows="5" placeholder="Write medicines, dosage and instructions here..." style="width:100%;font-size:14px;padding:10px;border:1px solid #ddd;border-radius:6px;font-family:inherit;resize:vertical;" oninput="updateRxPreview()"></textarea>
+                                <textarea id="rx_content" rows="5" placeholder="Write medicines, dosage and instructions here..." style="width:100%;font-size:14px;padding:10px;border:1px solid #ddd;border-radius:6px;font-family:inherit;resize:vertical;" data-oninput="updateRxPreview()"></textarea>
                             </div>
-                            <button class="btn-primary" onclick="printPrescription()" style="width:100%;padding:14px;font-size:15px;border-radius:10px;touch-action:manipulation;">🖨️ Print Prescription</button>
+                            <button class="btn-primary" data-onclick="printPrescription()" style="width:100%;padding:14px;font-size:15px;border-radius:10px;touch-action:manipulation;">🖨️ Print Prescription</button>
                         </div>
                         <div style="background:white;border-radius:10px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.08);margin-bottom:16px;">
                             <div style="font-size:12px;color:#888;margin-bottom:8px;text-align:center;font-weight:600;">Preview</div>
@@ -2602,7 +2602,7 @@ Kharmanghat
                         <div style="background:white;border-radius:10px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
                                 <h3 style="color:var(--primary);margin:0;font-size:15px;">📋 Previously Issued Prescriptions</h3>
-                                <button onclick="clearPrescriptionHistory()" style="background:#fff0f0;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;touch-action:manipulation;">Clear History</button>
+                                <button data-onclick="clearPrescriptionHistory()" style="background:#fff0f0;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;touch-action:manipulation;">Clear History</button>
                             </div>
                             <div id="rx_history_list">
                                 <div style="color:#aaa;font-size:13px;text-align:center;padding:20px;">No prescriptions saved yet.</div>
@@ -2622,8 +2622,8 @@ Kharmanghat
                             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
                                 <h3 style="color:var(--primary);margin:0;font-size:17px;">🦷 Examination Form</h3>
                                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                                    <button onclick="clearExamForm()" style="padding:8px 14px;background:#f0f4ff;color:var(--primary);border:1px solid var(--primary);border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">🗑️ Clear</button>
-                                    <button onclick="printExamForm()" style="padding:8px 16px;background:var(--primary);color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">🖨️ Print</button>
+                                    <button data-onclick="clearExamForm()" style="padding:8px 14px;background:#f0f4ff;color:var(--primary);border:1px solid var(--primary);border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">🗑️ Clear</button>
+                                    <button data-onclick="printExamForm()" style="padding:8px 16px;background:var(--primary);color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;touch-action:manipulation;">🖨️ Print</button>
                                 </div>
                             </div>
 
@@ -2739,7 +2739,7 @@ Kharmanghat
                         <div style="background:white;border-radius:10px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,.07);">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
                                 <h3 style="color:var(--primary);margin:0;font-size:15px;">📋 Saved Exam Forms</h3>
-                                <button onclick="clearExamHistory()" style="background:#fff0f0;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;touch-action:manipulation;">🗑️ Clear All</button>
+                                <button data-onclick="clearExamHistory()" style="background:#fff0f0;color:#e74c3c;border:1px solid #e74c3c;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;touch-action:manipulation;">🗑️ Clear All</button>
                             </div>
                             <div id="ef_history_list">
                                 <div style="text-align:center;color:#aaa;padding:20px;font-size:13px;">No exam forms saved yet.</div>
@@ -2759,9 +2759,9 @@ Kharmanghat
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
                             <h2 style="color:var(--primary);margin:0;">👥 Patient Records</h2>
                             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                                <input type="text" id="ptSearch" placeholder="🔍 Search patient..." oninput="filterPatients()"
+                                <input type="text" id="ptSearch" placeholder="🔍 Search patient..." data-oninput="filterPatients()"
                                     style="padding:9px 14px;border-radius:8px;border:1.5px solid #ddd;font-size:14px;width:180px;">
-                                <button onclick="openAddPatientModal()"
+                                <button data-onclick="openAddPatientModal()"
                                     style="padding:10px 18px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;touch-action:manipulation;white-space:nowrap;">+ Add Patient</button>
                             </div>
                         </div>
@@ -2792,7 +2792,7 @@ Kharmanghat
                     <div class="modal-content" style="max-width:480px;padding:24px;">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                             <h3 style="color:var(--primary);margin:0;">👥 Add Patient</h3>
-                            <button onclick="closeModal('addPatientModal')" style="background:none;border:none;font-size:24px;cursor:pointer;color:#888;line-height:1;">×</button>
+                            <button data-onclick="closeModal('addPatientModal')" style="background:none;border:none;font-size:24px;cursor:pointer;color:#888;line-height:1;">×</button>
                         </div>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
                             <div style="grid-column:1/-1;"><label>Full Name *</label><input type="text" id="pt_name" placeholder="Patient full name"></div>
@@ -2807,7 +2807,7 @@ Kharmanghat
                             <div style="grid-column:1/-1;"><label>Treatment</label><input type="text" id="pt_treatment" placeholder="e.g. Root Canal, Scaling..."></div>
                             <div style="grid-column:1/-1;"><label>Medical Alerts</label><input type="text" id="pt_alerts" placeholder="e.g. Penicillin allergy"></div>
                         </div>
-                        <button onclick="savePatient()" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">✅ Save Patient</button>
+                        <button data-onclick="savePatient()" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">✅ Save Patient</button>
                     </div>
                 </div>
 
@@ -2822,10 +2822,10 @@ Kharmanghat
                                 <div id="appt_dateLabel" style="font-size:13px;color:#888;"></div>
                             </div>
                             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                                <button onclick="apptChangeDay(-1)" style="padding:9px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;cursor:pointer;background:white;touch-action:manipulation;">◀</button>
-                                <input type="date" id="appt_date" onchange="renderAppointments()" style="padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;">
-                                <button onclick="apptChangeDay(1)" style="padding:9px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;cursor:pointer;background:white;touch-action:manipulation;">▶</button>
-                                <button onclick="openAddApptModal()" style="padding:10px 16px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;touch-action:manipulation;">+ Book Slot</button>
+                                <button data-onclick="apptChangeDay(-1)" style="padding:9px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;cursor:pointer;background:white;touch-action:manipulation;">◀</button>
+                                <input type="date" id="appt_date" data-onchange="renderAppointments()" style="padding:9px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;">
+                                <button data-onclick="apptChangeDay(1)" style="padding:9px 14px;border:1.5px solid #ddd;border-radius:8px;font-size:16px;cursor:pointer;background:white;touch-action:manipulation;">▶</button>
+                                <button data-onclick="openAddApptModal()" style="padding:10px 16px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;touch-action:manipulation;">+ Book Slot</button>
                             </div>
                         </div>
 
@@ -2855,7 +2855,7 @@ Kharmanghat
                     <div class="modal-content" style="max-width:440px;">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                             <h3 style="color:var(--primary);margin:0;">📅 Book Appointment</h3>
-                            <button onclick="closeModal('addApptModal')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;">×</button>
+                            <button data-onclick="closeModal('addApptModal')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#888;">×</button>
                         </div>
                         <div style="display:grid;gap:12px;margin-bottom:14px;">
                             <div><label>Patient Name *</label><input type="text" id="appt_patient" placeholder="Patient name"></div>
@@ -2880,7 +2880,7 @@ Kharmanghat
                                 <select id="appt_doctor"><option value="">Select Doctor</option><option value="Dr. T Sai Vakula">Dr. T Sai Vakula</option><option value="Dr. T Venkat Rao">Dr. T Venkat Rao</option></select>
                             </div>
                         </div>
-                        <button onclick="saveAppointment()" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;">✅ Book Appointment</button>
+                        <button data-onclick="saveAppointment()" style="width:100%;padding:13px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;">✅ Book Appointment</button>
                     </div>
                 </div>
 
@@ -2899,7 +2899,7 @@ Kharmanghat
                             <!-- Template selector -->
                             <div style="margin-bottom:12px;">
                                 <label style="font-size:12px;font-weight:700;color:#555;margin-bottom:6px;display:block;">Choose Message Template</label>
-                                <select id="wabp_template" onchange="updateWabpPreview()" style="width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;">
+                                <select id="wabp_template" data-onchange="updateWabpPreview()" style="width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;">
                                     <option value="confirm">✅ Booking Confirmation</option>
                                     <option value="reminder24">⏰ 24-Hour Reminder</option>
                                     <option value="reminder1h">🔔 1-Hour Reminder</option>
@@ -2917,8 +2917,8 @@ Kharmanghat
                             </div>
                             <!-- Buttons -->
                             <div style="display:flex;gap:10px;">
-                                <button onclick="sendWabpMsg()" style="flex:2;padding:13px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">📲 Send WhatsApp</button>
-                                <button onclick="closeModal('waBookingPopup')" style="flex:1;padding:13px;background:#f0f0f0;color:#555;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;touch-action:manipulation;">Skip</button>
+                                <button data-onclick="sendWabpMsg()" style="flex:2;padding:13px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">📲 Send WhatsApp</button>
+                                <button data-onclick="closeModal('waBookingPopup')" style="flex:1;padding:13px;background:#f0f0f0;color:#555;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;touch-action:manipulation;">Skip</button>
                             </div>
                         </div>
                     </div>
@@ -2945,11 +2945,11 @@ Kharmanghat
                             <div style="font-weight:700;font-size:15px;color:var(--primary);margin-bottom:14px;">🚀 Quick Send</div>
                             <div style="display:grid;gap:10px;margin-bottom:12px;">
                                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;" class="wa-quick-grid">
-                                    <div><label>Patient Name</label><input type="text" id="wa_patName" placeholder="Patient name" oninput="updateWaPreview()"></div>
+                                    <div><label>Patient Name</label><input type="text" id="wa_patName" placeholder="Patient name" data-oninput="updateWaPreview()"></div>
                                     <div><label>Phone Number</label><input type="tel" id="wa_patPhone" placeholder="91XXXXXXXXXX" inputmode="tel"></div>
                                 </div>
                                 <div><label>Message Template</label>
-                                    <select id="wa_template" onchange="updateWaPreview()">
+                                    <select id="wa_template" data-onchange="updateWaPreview()">
                                         <option value="reminder24">⏰ 24-Hour Reminder</option>
                                         <option value="reminder1h">🔔 1-Hour Reminder</option>
                                         <option value="reschedule">🔄 Doctor Unavailable — Reschedule</option>
@@ -2967,7 +2967,7 @@ Kharmanghat
                                     <textarea id="wa_preview_text" rows="6" style="width:100%;padding:10px;border:1.5px solid #ddd;border-radius:8px;font-size:14px;font-family:inherit;resize:vertical;line-height:1.6;"></textarea>
                                 </div>
                             </div>
-                            <button onclick="sendWaReminder()" style="width:100%;padding:14px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">📲 Send on WhatsApp</button>
+                            <button data-onclick="sendWaReminder()" style="width:100%;padding:14px;background:linear-gradient(135deg,#25d366,#128c7e);color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">📲 Send on WhatsApp</button>
                         </div>
 
                         <!-- Template Cards -->
@@ -2975,7 +2975,7 @@ Kharmanghat
                             <div style="font-weight:700;font-size:15px;color:var(--primary);margin-bottom:12px;">📋 Message Templates</div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #e67e22;">
-                                <div class="wa-tmpl-head"><span>⏰ 24-Hour Reminder</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#e67e22;">Auto</span><button onclick="openWaTmplEdit('reminder24')" style="padding:2px 8px;font-size:11px;background:#fff3e0;color:#e67e22;border:1px solid #e67e22;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>⏰ 24-Hour Reminder</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#e67e22;">Auto</span><button data-onclick="openWaTmplEdit('reminder24')" style="padding:2px 8px;font-size:11px;background:#fff3e0;color:#e67e22;border:1px solid #e67e22;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_reminder24">
                                     Hi <em>{name}</em>, this is a reminder that you have an appointment at <strong>Sri Sai Speciality Dental Care</strong> tomorrow at <em>{time}</em>.<br>
                                     🦷 Treatment: <em>{reason}</em> | 👨‍⚕️ <em>{doctor}</em><br>
@@ -2985,7 +2985,7 @@ Kharmanghat
                             </div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #e74c3c;">
-                                <div class="wa-tmpl-head"><span>🔔 1-Hour Reminder</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#e74c3c;">Urgent</span><button onclick="openWaTmplEdit('reminder1h')" style="padding:2px 8px;font-size:11px;background:#fdecea;color:#e74c3c;border:1px solid #e74c3c;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>🔔 1-Hour Reminder</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#e74c3c;">Urgent</span><button data-onclick="openWaTmplEdit('reminder1h')" style="padding:2px 8px;font-size:11px;background:#fdecea;color:#e74c3c;border:1px solid #e74c3c;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_reminder1h">
                                     Hi <em>{name}</em>, your appointment at <strong>Sri Sai Speciality Dental Care</strong> is in <strong>1 hour</strong> at <em>{time}</em>.<br>
                                     Please start heading now to arrive on time. We look forward to seeing you! 😊<br>
@@ -2994,7 +2994,7 @@ Kharmanghat
                             </div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #9b59b6;">
-                                <div class="wa-tmpl-head"><span>🔄 Doctor Unavailable — Reschedule</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#9b59b6;">Important</span><button onclick="openWaTmplEdit('reschedule')" style="padding:2px 8px;font-size:11px;background:#f5eeff;color:#9b59b6;border:1px solid #9b59b6;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>🔄 Doctor Unavailable — Reschedule</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#9b59b6;">Important</span><button data-onclick="openWaTmplEdit('reschedule')" style="padding:2px 8px;font-size:11px;background:#f5eeff;color:#9b59b6;border:1px solid #9b59b6;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_reschedule">
                                     Hi <em>{name}</em>, we regret to inform you that <strong>Dr. {doctor}</strong> is unavailable today for your <em>{time}</em> appointment.<br>
                                     We sincerely apologize for the inconvenience. Please call us to reschedule at your convenience.<br>
@@ -3003,7 +3003,7 @@ Kharmanghat
                             </div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #16a085;">
-                                <div class="wa-tmpl-head"><span>📅 Patient Reschedule — Confirmed</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#16a085;">Confirm</span><button onclick="openWaTmplEdit('patReschedule')" style="padding:2px 8px;font-size:11px;background:#e8f8f5;color:#16a085;border:1px solid #16a085;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>📅 Patient Reschedule — Confirmed</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#16a085;">Confirm</span><button data-onclick="openWaTmplEdit('patReschedule')" style="padding:2px 8px;font-size:11px;background:#e8f8f5;color:#16a085;border:1px solid #16a085;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_patReschedule">Hi <em>{name}</em>, we've received your reschedule request. Your new appointment is confirmed for <em>{date}</em> at <em>{time}</em> with <em>{doctor}</em>.<br>
                                     We look forward to seeing you! 😊<br>
                                     📞 8688033072 | 9396522492 | Sri Sai Speciality Dental Care 🦷
@@ -3011,17 +3011,17 @@ Kharmanghat
                             </div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #27ae60;">
-                                <div class="wa-tmpl-head"><span>✅ Booking Confirmation</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge">Active</span><button onclick="openWaTmplEdit('confirm')" style="padding:2px 8px;font-size:11px;background:#eafaf1;color:#27ae60;border:1px solid #27ae60;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>✅ Booking Confirmation</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge">Active</span><button data-onclick="openWaTmplEdit('confirm')" style="padding:2px 8px;font-size:11px;background:#eafaf1;color:#27ae60;border:1px solid #27ae60;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_confirm">Hi {name}, your appointment is confirmed for {date} at {time} with {doctor}. We look forward to seeing you! — Sri Sai Dental Care 😊</div>
                             </div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #f39c12;">
-                                <div class="wa-tmpl-head"><span>💰 Payment Due</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#f39c12;">Reminder</span><button onclick="openWaTmplEdit('payment')" style="padding:2px 8px;font-size:11px;background:#fef9e7;color:#f39c12;border:1px solid #f39c12;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>💰 Payment Due</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#f39c12;">Reminder</span><button data-onclick="openWaTmplEdit('payment')" style="padding:2px 8px;font-size:11px;background:#fef9e7;color:#f39c12;border:1px solid #f39c12;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_payment">Hi {name}, you have an outstanding balance at Sri Sai Speciality Dental Care. Kindly settle before your next visit. Call: 8688033072 | 9396522492.</div>
                             </div>
 
                             <div class="wa-tmpl-card" style="border-left:4px solid #2c5aa0;">
-                                <div class="wa-tmpl-head"><span>💙 Follow-up</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#2c5aa0;">Care</span><button onclick="openWaTmplEdit('followup')" style="padding:2px 8px;font-size:11px;background:#eaf0fb;color:#2c5aa0;border:1px solid #2c5aa0;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
+                                <div class="wa-tmpl-head"><span>💙 Follow-up</span><div style="display:flex;align-items:center;gap:6px;"><span class="wa-tmpl-badge" style="background:#2c5aa0;">Care</span><button data-onclick="openWaTmplEdit('followup')" style="padding:2px 8px;font-size:11px;background:#eaf0fb;color:#2c5aa0;border:1px solid #2c5aa0;border-radius:4px;cursor:pointer;font-weight:700;">✏️ Edit</button></div></div>
                                 <div class="wa-tmpl-body" id="tmplPreview_followup">Hi {name}, hope you're recovering well after your treatment at Sri Sai Speciality Dental Care. Do call us if you have any concerns. 🦷</div>
                             </div>
                         </div>
@@ -3031,8 +3031,8 @@ Kharmanghat
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
                                 <div style="font-weight:700;font-size:15px;color:var(--primary);">📅 Today's Appointments</div>
                                 <div style="display:flex;gap:6px;">
-                                    <button onclick="sendAllReminders('1h')" style="padding:7px 12px;background:#e74c3c;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation;">🔔 Send All 1h</button>
-                                    <button onclick="sendAllReminders('24h')" style="padding:7px 12px;background:#e67e22;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation;">⏰ Send All 24h</button>
+                                    <button data-onclick="sendAllReminders('1h')" style="padding:7px 12px;background:#e74c3c;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation;">🔔 Send All 1h</button>
+                                    <button data-onclick="sendAllReminders('24h')" style="padding:7px 12px;background:#e67e22;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;touch-action:manipulation;">⏰ Send All 24h</button>
                                 </div>
                             </div>
                             <div id="wa_today_list">
@@ -3045,8 +3045,8 @@ Kharmanghat
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex-wrap:wrap;gap:8px;">
                                 <div style="font-weight:700;font-size:15px;color:var(--primary);">📋 All Booked Appointments</div>
                                 <div style="display:flex;gap:6px;align-items:center;">
-                                    <input type="text" id="wa_appt_search" placeholder="🔍 Search patient..." oninput="renderWaAllAppts()" style="padding:7px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;width:150px;">
-                                    <select id="wa_appt_filter" onchange="renderWaAllAppts()" style="padding:7px 10px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;">
+                                    <input type="text" id="wa_appt_search" placeholder="🔍 Search patient..." data-oninput="renderWaAllAppts()" style="padding:7px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;width:150px;">
+                                    <select id="wa_appt_filter" data-onchange="renderWaAllAppts()" style="padding:7px 10px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;">
                                         <option value="all">All Dates</option>
                                         <option value="today">Today</option>
                                         <option value="upcoming">Upcoming</option>
@@ -3080,7 +3080,7 @@ Kharmanghat
                                 Find this in Google Apps Script → Deploy → Manage deployments → Web app URL (ends with /exec). Saved on this device only.
                             </small>
                         </div>
-                        <button class="btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+                        <button class="btn-primary" data-onclick="saveSettings()">💾 Save Settings</button>
                     </div>
 
                     <div style="background: white; padding: 20px; border-radius: 8px;">
@@ -3109,7 +3109,7 @@ Kharmanghat
                             <label>UPI Display Name</label>
                             <input type="text" id="clinicUpiName" placeholder="Merchant name shown on UPI apps">
                         </div>
-                        <button class="btn-primary" onclick="saveClinicDetails()">💾 Save Clinic Details</button>
+                        <button class="btn-primary" data-onclick="saveClinicDetails()">💾 Save Clinic Details</button>
                     </div>
                 </div>
             </div>
@@ -3137,8 +3137,8 @@ Kharmanghat
                 <input type="date" id="newMedicineExpiry">
             </div>
             <div style="display: flex; gap: 10px;">
-                <button class="btn-success" onclick="saveMedicine()" style="flex: 1;">Save</button>
-                <button class="btn-secondary" onclick="closeModal('addMedicineModal')">Cancel</button>
+                <button class="btn-success" data-onclick="saveMedicine()" style="flex: 1;">Save</button>
+                <button class="btn-secondary" data-onclick="closeModal('addMedicineModal')">Cancel</button>
             </div>
         </div>
     </div>
@@ -3193,8 +3193,8 @@ Kharmanghat
                 <input type="text" id="purchaseInvoiceNo" placeholder="prevents entering the same invoice twice">
             </div>
             <div style="display: flex; gap: 10px;">
-                <button class="btn-success" onclick="savePurchase()" style="flex: 1;">Save</button>
-                <button class="btn-secondary" onclick="closeModal('addPurchaseModal')">Cancel</button>
+                <button class="btn-success" data-onclick="savePurchase()" style="flex: 1;">Save</button>
+                <button class="btn-secondary" data-onclick="closeModal('addPurchaseModal')">Cancel</button>
             </div>
         </div>
     </div>
@@ -3202,7 +3202,7 @@ Kharmanghat
     <div class="modal" id="reprints">
         <div class="modal-content">
             <div class="modal-header">Reprint Bill</div>
-            <button class="btn-secondary" onclick="closeModal('reprints')" style="width: 100%;">Close</button>
+            <button class="btn-secondary" data-onclick="closeModal('reprints')" style="width: 100%;">Close</button>
         </div>
     </div>
 
@@ -3231,10 +3231,10 @@ Kharmanghat
             <div style="margin-bottom:16px;">
                 <label style="font-weight:600;font-size:14px;margin-bottom:10px;display:block;">Mode of Payment</label>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;" id="payModeBtns">
-                    <button onclick="selectPayMode('Cash')" id="pm-Cash" class="pay-mode-btn pay-mode-active">💵 Cash</button>
-                    <button onclick="selectPayMode('Card')" id="pm-Card" class="pay-mode-btn">💳 Card</button>
-                    <button onclick="selectPayMode('UPI')" id="pm-UPI" class="pay-mode-btn">📱 UPI / GPay</button>
-                    <button onclick="selectPayMode('Split')" id="pm-Split" class="pay-mode-btn">🔀 Split</button>
+                    <button data-onclick="selectPayMode('Cash')" id="pm-Cash" class="pay-mode-btn pay-mode-active">💵 Cash</button>
+                    <button data-onclick="selectPayMode('Card')" id="pm-Card" class="pay-mode-btn">💳 Card</button>
+                    <button data-onclick="selectPayMode('UPI')" id="pm-UPI" class="pay-mode-btn">📱 UPI / GPay</button>
+                    <button data-onclick="selectPayMode('Split')" id="pm-Split" class="pay-mode-btn">🔀 Split</button>
                 </div>
             </div>
 
@@ -3243,7 +3243,7 @@ Kharmanghat
                 <div style="display:flex;gap:10px;align-items:center;">
                     <div style="flex:1;">
                         <label style="font-size:13px;">Amount Tendered (₹)</label>
-                        <input type="number" id="pmTendered" placeholder="Enter amount paid" style="width:100%;margin-top:4px;" oninput="calcChange()">
+                        <input type="number" id="pmTendered" placeholder="Enter amount paid" style="width:100%;margin-top:4px;" data-oninput="calcChange()">
                     </div>
                     <div style="flex:1;background:#e8f8ee;border-radius:8px;padding:10px;text-align:center;">
                         <div style="font-size:11px;color:#555;">Change</div>
@@ -3258,7 +3258,7 @@ Kharmanghat
             <div id="upiSection" style="display:none;margin-bottom:14px;">
                 <!-- No UPI configured warning -->
                 <div id="upiNoConfig" style="display:none;background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;text-align:center;margin-bottom:10px;">
-                    ⚠️ UPI ID not set. <a onclick="closeModal('paymentModal');showPage('settings')" style="color:#2c5aa0;cursor:pointer;text-decoration:underline;">Go to Settings → Clinic Details</a> to add your UPI ID.
+                    ⚠️ UPI ID not set. <a data-onclick="closeModal('paymentModal');showPage('settings')" style="color:#2c5aa0;cursor:pointer;text-decoration:underline;">Go to Settings → Clinic Details</a> to add your UPI ID.
                 </div>
                 <!-- QR Card -->
                 <div id="upiQrCard" style="text-align:center;">
@@ -3298,7 +3298,7 @@ Kharmanghat
                     <!-- SMS PASTE BOX -->
                     <div style="margin-bottom:14px;">
                         <div style="font-size:12px;color:#7f8c8d;margin-bottom:6px;text-align:left;">📋 Optional: Paste bank SMS here to auto-verify amount</div>
-                        <textarea id="upiSmsInput" rows="2" placeholder="Paste bank SMS here e.g. 'Rs.450.00 credited to your a/c via UPI Ref 123456789'" style="width:100%;font-size:12px;border:1px solid #ddd;border-radius:8px;padding:8px;resize:none;" oninput="checkSmsForPayment(this.value)"></textarea>
+                        <textarea id="upiSmsInput" rows="2" placeholder="Paste bank SMS here e.g. 'Rs.450.00 credited to your a/c via UPI Ref 123456789'" style="width:100%;font-size:12px;border:1px solid #ddd;border-radius:8px;padding:8px;resize:none;" data-oninput="checkSmsForPayment(this.value)"></textarea>
                         <div id="upiSmsStatus" style="font-size:12px;margin-top:4px;min-height:16px;"></div>
                     </div>
 
@@ -3311,7 +3311,7 @@ Kharmanghat
                     </div>
 
                     <!-- MAIN ACTION BUTTON — big and iPad friendly -->
-                    <button id="upiPaidBtn" onclick="markUpiPaid()"
+                    <button id="upiPaidBtn" data-onclick="markUpiPaid()"
                         style="width:100%;padding:20px;background:#27ae60;color:white;border:none;border-radius:14px;font-size:20px;font-weight:700;cursor:pointer;transition:all 0.2s;box-shadow:0 4px 16px rgba(39,174,96,0.4);letter-spacing:0.5px;-webkit-tap-highlight-color:transparent;">
                         ✅ Payment Received — Save Bill
                     </button>
@@ -3333,19 +3333,19 @@ Kharmanghat
                 <div style="display:flex;gap:10px;margin-bottom:8px;">
                     <div style="flex:1;">
                         <label style="font-size:13px;">Cash (₹)</label>
-                        <input type="number" id="pmSplitCash" placeholder="0" style="width:100%;margin-top:4px;" oninput="calcSplit()">
+                        <input type="number" id="pmSplitCash" placeholder="0" style="width:100%;margin-top:4px;" data-oninput="calcSplit()">
                     </div>
                     <div style="flex:1;">
                         <label style="font-size:13px;">UPI / Card (₹)</label>
-                        <input type="number" id="pmSplitUpi" placeholder="0" style="width:100%;margin-top:4px;" oninput="calcSplit()">
+                        <input type="number" id="pmSplitUpi" placeholder="0" style="width:100%;margin-top:4px;" data-oninput="calcSplit()">
                     </div>
                 </div>
                 <div style="text-align:right;font-size:13px;" id="splitStatus"></div>
             </div>
 
             <div id="pmConfirmRow" style="display:flex;gap:10px;margin-top:6px;">
-                <button class="btn-success" onclick="confirmPayment()" style="flex:1;font-size:15px;padding:12px;">✅ Confirm &amp; Save</button>
-                <button class="btn-secondary" onclick="stopUpiPolling();closeModal('paymentModal')" style="padding:12px 18px;">Cancel</button>
+                <button class="btn-success" data-onclick="confirmPayment()" style="flex:1;font-size:15px;padding:12px;">✅ Confirm &amp; Save</button>
+                <button class="btn-secondary" data-onclick="stopUpiPolling();closeModal('paymentModal')" style="padding:12px 18px;">Cancel</button>
             </div>
         </div>
     </div>
@@ -3433,8 +3433,8 @@ Kharmanghat
 
                 <!-- Action buttons -->
                 <div style="display:flex;gap:10px;">
-                    <button onclick="printBillFromSuccess()" style="flex:1;padding:13px;background:#2c5aa0;color:white;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;">🖨️ Print Bill</button>
-                    <button onclick="closeBillSuccess()" style="flex:1;padding:13px;background:#27ae60;color:white;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;">✅ Done</button>
+                    <button data-onclick="printBillFromSuccess()" style="flex:1;padding:13px;background:#2c5aa0;color:white;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;">🖨️ Print Bill</button>
+                    <button data-onclick="closeBillSuccess()" style="flex:1;padding:13px;background:#27ae60;color:white;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;">✅ Done</button>
                 </div>
                 <div style="text-align:center;margin-top:12px;font-size:11px;color:#aaa;">Thank you for choosing Sri Sai Speciality Dental Care 🦷</div>
             </div>
@@ -3456,14 +3456,14 @@ Kharmanghat
     </div>
 
     <!-- Mobile sidebar overlay -->
-    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()" ontouchend="closeSidebar()"></div>
+    <div class="sidebar-overlay" id="sidebarOverlay" data-onclick="closeSidebar()" data-ontouchend="closeSidebar()"></div>
 
-    <div id="trPayModal" onclick="if(event.target===this)closeTrPayModal()">
+    <div id="trPayModal" data-onclick="if(event.target===this)closeTrPayModal()">
         <div id="trPaySheet">
             <div class="tr-handle"></div>
             <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px 8px;">
                 <div style="font-size:18px;font-weight:800;color:#2c5aa0;">💳 Collect Payment</div>
-                <button onclick="closeTrPayModal()" style="background:#f0f0f0;border:none;border-radius:50%;width:34px;height:34px;font-size:16px;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">✕</button>
+                <button data-onclick="closeTrPayModal()" style="background:#f0f0f0;border:none;border-radius:50%;width:34px;height:34px;font-size:16px;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">✕</button>
             </div>
             <div style="padding:4px 18px 22px;">
                 <!-- Summary -->
@@ -3484,10 +3484,10 @@ Kharmanghat
                 <!-- Mode buttons -->
                 <div style="font-size:12px;font-weight:700;color:#aaa;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">Mode of Payment</div>
                 <div class="tr-pay-grid" style="margin-bottom:18px;">
-                    <button class="tr-pm-btn tr-active" id="trpm-Cash" onclick="selectTrMode('Cash')"><span class="trpmi">💵</span>Cash</button>
-                    <button class="tr-pm-btn" id="trpm-UPI" onclick="selectTrMode('UPI')"><span class="trpmi">📱</span>UPI / GPay</button>
-                    <button class="tr-pm-btn" id="trpm-Card" onclick="selectTrMode('Card')"><span class="trpmi">💳</span>Card</button>
-                    <button class="tr-pm-btn" id="trpm-Split" onclick="selectTrMode('Split')"><span class="trpmi">🔀</span>Split</button>
+                    <button class="tr-pm-btn tr-active" id="trpm-Cash" data-onclick="selectTrMode('Cash')"><span class="trpmi">💵</span>Cash</button>
+                    <button class="tr-pm-btn" id="trpm-UPI" data-onclick="selectTrMode('UPI')"><span class="trpmi">📱</span>UPI / GPay</button>
+                    <button class="tr-pm-btn" id="trpm-Card" data-onclick="selectTrMode('Card')"><span class="trpmi">💳</span>Card</button>
+                    <button class="tr-pm-btn" id="trpm-Split" data-onclick="selectTrMode('Split')"><span class="trpmi">🔀</span>Split</button>
                 </div>
                 <!-- CASH -->
                 <div class="tr-sec" id="trSecCash" style="max-height:320px;">
@@ -3496,7 +3496,7 @@ Kharmanghat
                             <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">CASH RECEIVED (₹)</div>
                             <input type="number" id="trPmTendered" inputmode="numeric" placeholder="0"
                                 style="width:100%;padding:14px;font-size:22px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;font-family:inherit;text-align:center;transition:border-color 0.2s;"
-                                onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'" oninput="calcTrChange()">
+                                data-focusring data-oninput="calcTrChange()">
                         </div>
                         <div style="background:#e8f8ee;border-radius:12px;padding:10px 12px;text-align:center;min-width:82px;display:flex;flex-direction:column;justify-content:center;gap:2px;">
                             <div style="font-size:11px;color:#7f8c8d;font-weight:700;">CHANGE</div>
@@ -3504,14 +3504,14 @@ Kharmanghat
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;" id="trQuickChips"></div>
-                    <button class="tr-confirm-btn" onclick="confirmTrPayment()">✅ Confirm &amp; Print</button>
+                    <button class="tr-confirm-btn" data-onclick="confirmTrPayment()">✅ Confirm &amp; Print</button>
                 </div>
                 <!-- UPI -->
                 <div class="tr-sec tr-hide" id="trSecUPI" style="max-height:520px;">
                     <div id="trUpiWarn" style="display:none;background:#fff8e1;border:1.5px solid #ffc107;border-radius:12px;padding:14px;text-align:center;margin-bottom:14px;">
                         <div style="font-size:22px;margin-bottom:6px;">⚠️</div>
                         <div style="font-size:14px;font-weight:600;color:#7f6000;margin-bottom:4px;">UPI ID not configured</div>
-                        <a onclick="closeTrPayModal();showPage('settings')" style="font-size:13px;color:#2c5aa0;cursor:pointer;text-decoration:underline;">Settings → Clinic Details →</a>
+                        <a data-onclick="closeTrPayModal();showPage('settings')" style="font-size:13px;color:#2c5aa0;cursor:pointer;text-decoration:underline;">Settings → Clinic Details →</a>
                     </div>
                     <div id="trUpiCard" style="display:none;border-radius:16px;overflow:hidden;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.13);">
                         <div style="background:linear-gradient(135deg,#1a237e,#283593);padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -3526,7 +3526,7 @@ Kharmanghat
                         </div>
                         <div style="padding:10px 16px;background:#f0f4ff;font-size:12px;color:#7f8c8d;line-height:1.5;">Patient scans with GPay / PhonePe / any UPI app → tap button below after payment received.</div>
                     </div>
-                    <button class="tr-confirm-btn" onclick="confirmTrPayment()" style="font-size:18px;padding:18px;margin-bottom:8px;">✅ Payment Received — Print</button>
+                    <button class="tr-confirm-btn" data-onclick="confirmTrPayment()" style="font-size:18px;padding:18px;margin-bottom:8px;">✅ Payment Received — Print</button>
                     <div style="text-align:center;font-size:12px;color:#bbb;">Tap only after bank notification appears</div>
                 </div>
                 <!-- CARD -->
@@ -3534,8 +3534,8 @@ Kharmanghat
                     <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:8px;">LAST 4 DIGITS (OPTIONAL)</div>
                     <input type="text" id="trPmCardRef" inputmode="numeric" placeholder="e.g. 4521" maxlength="4"
                         style="width:100%;padding:14px;font-size:22px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;margin-bottom:16px;text-align:center;letter-spacing:6px;"
-                        onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'">
-                    <button class="tr-confirm-btn" onclick="confirmTrPayment()">✅ Confirm &amp; Print</button>
+                        data-focusring>
+                    <button class="tr-confirm-btn" data-onclick="confirmTrPayment()">✅ Confirm &amp; Print</button>
                 </div>
                 <!-- SPLIT -->
                 <div class="tr-sec tr-hide" id="trSecSplit" style="max-height:300px;">
@@ -3544,17 +3544,17 @@ Kharmanghat
                             <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">💵 CASH (₹)</div>
                             <input type="number" id="trPmSplitCash" inputmode="numeric" placeholder="0"
                                 style="width:100%;padding:13px;font-size:18px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;text-align:center;"
-                                onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'" oninput="calcTrSplit()">
+                                data-focusring data-oninput="calcTrSplit()">
                         </div>
                         <div>
                             <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">📱 UPI/CARD (₹)</div>
                             <input type="number" id="trPmSplitUpi" inputmode="numeric" placeholder="0"
                                 style="width:100%;padding:13px;font-size:18px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;text-align:center;"
-                                onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'" oninput="calcTrSplit()">
+                                data-focusring data-oninput="calcTrSplit()">
                         </div>
                     </div>
                     <div id="trSplitSt" style="text-align:center;font-size:14px;font-weight:700;padding:10px;border-radius:10px;background:#f8f9fa;margin-bottom:14px;min-height:40px;line-height:1.4;"></div>
-                    <button class="tr-confirm-btn" onclick="confirmTrPayment()">✅ Confirm &amp; Print</button>
+                    <button class="tr-confirm-btn" data-onclick="confirmTrPayment()">✅ Confirm &amp; Print</button>
                 </div>
             </div>
         </div>
@@ -3582,8 +3582,8 @@ Kharmanghat
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                    <button onclick="trSucPrint()" style="padding:14px;background:#2c5aa0;color:white;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">🖨️ Print</button>
-                    <button onclick="closeTrSuccess()" style="padding:14px;background:#27ae60;color:white;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">✅ Done</button>
+                    <button data-onclick="trSucPrint()" style="padding:14px;background:#2c5aa0;color:white;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">🖨️ Print</button>
+                    <button data-onclick="closeTrSuccess()" style="padding:14px;background:#27ae60;color:white;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;touch-action:manipulation;">✅ Done</button>
                 </div>
                 <div style="text-align:center;margin-top:12px;font-size:11px;color:#bbb;">Sri Sai Speciality Dental Care 🦷</div>
             </div>
@@ -3593,7 +3593,7 @@ Kharmanghat
     <!-- AUTO RECEIPT NUMBER -->
 
     <!-- COMBINED BILL PAYMENT MODAL -->
-    <div id="cbPayModal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.55);align-items:flex-end;justify-content:center;" onclick="if(event.target===this)closeCbPayModal()">
+    <div id="cbPayModal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.55);align-items:flex-end;justify-content:center;" data-onclick="if(event.target===this)closeCbPayModal()">
         <div id="cbPayCard" style="background:white;border-radius:20px 20px 0 0;padding:24px 20px 32px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;transition:transform .37s cubic-bezier(.22,1,.36,1);transform:translate3d(0,100%,0);will-change:transform;">
             <div style="text-align:center;margin-bottom:18px;">
                 <div style="font-size:20px;font-weight:800;color:#1e3f5a;">💳 Collect Payment</div>
@@ -3605,16 +3605,16 @@ Kharmanghat
                 <div style="font-size:11px;color:#aaa;margin-top:4px;">Treatment: ₹<span id="cbPmTr">0</span> &nbsp;+&nbsp; Pharmacy: ₹<span id="cbPmPh">0</span></div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:16px;">
-                <button id="cbpm-Cash"  onclick="selectCbMode('Cash')"  style="padding:10px 6px;border-radius:10px;border:2px solid #2c5aa0;font-size:13px;font-weight:700;cursor:pointer;background:#2c5aa0;color:white;">💵 Cash</button>
-                <button id="cbpm-UPI"   onclick="selectCbMode('UPI')"   style="padding:10px 6px;border-radius:10px;border:2px solid #e0e0e0;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#333;">📱 UPI</button>
-                <button id="cbpm-Card"  onclick="selectCbMode('Card')"  style="padding:10px 6px;border-radius:10px;border:2px solid #e0e0e0;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#333;">💳 Card</button>
-                <button id="cbpm-Split" onclick="selectCbMode('Split')" style="padding:10px 6px;border-radius:10px;border:2px solid #e0e0e0;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#333;">🔀 Split</button>
+                <button id="cbpm-Cash"  data-onclick="selectCbMode('Cash')"  style="padding:10px 6px;border-radius:10px;border:2px solid #2c5aa0;font-size:13px;font-weight:700;cursor:pointer;background:#2c5aa0;color:white;">💵 Cash</button>
+                <button id="cbpm-UPI"   data-onclick="selectCbMode('UPI')"   style="padding:10px 6px;border-radius:10px;border:2px solid #e0e0e0;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#333;">📱 UPI</button>
+                <button id="cbpm-Card"  data-onclick="selectCbMode('Card')"  style="padding:10px 6px;border-radius:10px;border:2px solid #e0e0e0;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#333;">💳 Card</button>
+                <button id="cbpm-Split" data-onclick="selectCbMode('Split')" style="padding:10px 6px;border-radius:10px;border:2px solid #e0e0e0;font-size:13px;font-weight:700;cursor:pointer;background:white;color:#333;">🔀 Split</button>
             </div>
             <div id="cbSecCash">
                 <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">💵 CASH TENDERED (₹)</div>
                 <input type="number" id="cbPmTendered" inputmode="numeric" placeholder="Enter amount"
                     style="width:100%;padding:13px;font-size:20px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;text-align:center;margin-bottom:10px;"
-                    onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'" oninput="calcCbChange()">
+                    data-focusring data-oninput="calcCbChange()">
                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;" id="cbQuickChips"></div>
                 <div style="display:flex;justify-content:space-between;padding:10px 14px;background:#f8f9fa;border-radius:10px;">
                     <span style="font-size:14px;font-weight:700;">Change:</span>
@@ -3633,7 +3633,7 @@ Kharmanghat
                 <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">💳 CARD REF / LAST 4 DIGITS</div>
                 <input type="text" id="cbPmCardRef" placeholder="Optional reference"
                     style="width:100%;padding:13px;font-size:16px;border:2px solid #e0e0e0;border-radius:12px;"
-                    onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'">
+                    data-focusring>
             </div>
             <div id="cbSecSplit" style="display:none;">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -3641,18 +3641,18 @@ Kharmanghat
                         <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">💵 CASH (₹)</div>
                         <input type="number" id="cbPmSplitCash" inputmode="numeric" placeholder="0"
                             style="width:100%;padding:13px;font-size:18px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;text-align:center;"
-                            onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'" oninput="calcCbSplit()">
+                            data-focusring data-oninput="calcCbSplit()">
                     </div>
                     <div>
                         <div style="font-size:12px;color:#7f8c8d;font-weight:700;margin-bottom:6px;">📱 UPI/CARD (₹)</div>
                         <input type="number" id="cbPmSplitUpi" inputmode="numeric" placeholder="0"
                             style="width:100%;padding:13px;font-size:18px;font-weight:700;border:2px solid #e0e0e0;border-radius:12px;text-align:center;"
-                            onfocus="this.style.borderColor='#2c5aa0'" onblur="this.style.borderColor='#e0e0e0'" oninput="calcCbSplit()">
+                            data-focusring data-oninput="calcCbSplit()">
                     </div>
                 </div>
                 <div id="cbSplitSt" style="text-align:center;font-size:14px;font-weight:700;padding:10px;border-radius:10px;background:#f8f9fa;margin-bottom:14px;min-height:40px;"></div>
             </div>
-            <button onclick="confirmCbPayment()" style="width:100%;margin-top:16px;padding:16px;background:linear-gradient(135deg,#27ae60,#1e8449);color:white;border:none;border-radius:14px;font-size:17px;font-weight:800;cursor:pointer;touch-action:manipulation;">✅ Confirm &amp; Print Bill Summary</button>
+            <button data-onclick="confirmCbPayment()" style="width:100%;margin-top:16px;padding:16px;background:linear-gradient(135deg,#27ae60,#1e8449);color:white;border:none;border-radius:14px;font-size:17px;font-weight:800;cursor:pointer;touch-action:manipulation;">✅ Confirm &amp; Print Bill Summary</button>
         </div>
     </div>
 
@@ -3667,34 +3667,34 @@ Kharmanghat
     ══════════════════════════════════════════════════════════ -->
 
     <!-- Print Choice Dialog -->
-    <div id="__printChoiceDlg" onclick="if(event.target===this)__closePrintChoice()">
+    <div id="__printChoiceDlg" data-onclick="if(event.target===this)__closePrintChoice()">
         <div id="__pcdSheet">
             <div class="__pcdHandle"></div>
             <div class="__pcdTitle">🖨️ How do you want to print?</div>
             <div class="__pcdSub">Choose Regular (A4/PDF) or Thermal (80mm Bluetooth)</div>
             <div class="__pcdBtns">
-                <button class="__pcdBtn regular" onclick="__pickRegularPrint()">
+                <button class="__pcdBtn regular" data-onclick="__pickRegularPrint()">
                     🖨️ Regular Print<br>
                     <span style="font-size:11px;opacity:0.8;">A4 / PDF / AirPrint</span>
                 </button>
-                <button class="__pcdBtn thermal" id="__pcdBtBtn" onclick="__pickThermalPrint()">
+                <button class="__pcdBtn thermal" id="__pcdBtBtn" data-onclick="__pickThermalPrint()">
                     &#x1F535; Thermal Print<br>
                     <span style="font-size:11px;opacity:0.8;">80mm &middot; Preview &amp; Print</span>
                 </button>
             </div>
-            <button class="__pcdCancel" onclick="__closePrintChoice()">✕ Cancel</button>
+            <button class="__pcdCancel" data-onclick="__closePrintChoice()">✕ Cancel</button>
         </div>
     </div>
 
     <!-- Thermal Print Preview Dialog -->
-    <div id="__thermalPreviewDlg" onclick="if(event.target===this)__closeThermalPreview()">
+    <div id="__thermalPreviewDlg" data-onclick="if(event.target===this)__closeThermalPreview()">
         <div id="__thermalPreviewSheet">
             <div class="__tpvHdr">
                 <div>
                     <div class="__tpvHdrTitle">🧾 Thermal Print Preview</div>
                     <div class="__tpvHdrSub">80mm roll &middot; ESC/POS simulation</div>
                 </div>
-                <button class="__tpvHdrClose" onclick="__closeThermalPreview()">&#10005;</button>
+                <button class="__tpvHdrClose" data-onclick="__closeThermalPreview()">&#10005;</button>
             </div>
             <div class="__tpvScroll" id="__tpvScrollArea">
                 <div class="__tpvRoll" id="__tpvContent"></div>
@@ -3704,14 +3704,14 @@ Kharmanghat
                 <div id="__tpvScrollThumb" style="position:absolute;top:0;left:0;height:3px;background:linear-gradient(90deg,#5b2fc9,#8b5cf6);width:30%;border-radius:3px;transition:left 0.1s,width 0.1s;"></div>
             </div>
             <div class="__tpvFtr">
-                <button class="__tpvCancelBtn" onclick="__closeThermalPreview()">Cancel</button>
-                <button class="__tpvPrintBtn" onclick="__closeThermalPreview();setTimeout(function(){window._btPrinter&&window._btPrinter.connected?_doThermalPrint(__pendingPrintHtml||''):openBtPrinterPanel(true);},200);">&#128424; Print Now</button>
+                <button class="__tpvCancelBtn" data-onclick="__closeThermalPreview()">Cancel</button>
+                <button class="__tpvPrintBtn" data-onclick="__thermalPrintNow()">&#128424; Print Now</button>
             </div>
         </div>
     </div>
 
     <!-- Bluetooth Printer Panel -->
-    <div id="__btPanel" onclick="if(event.target===this)closeBtPrinterPanel()">
+    <div id="__btPanel" data-onclick="if(event.target===this)closeBtPrinterPanel()">
         <div id="__btPanelSheet">
             <div class="__pcdHandle"></div>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
@@ -3719,7 +3719,7 @@ Kharmanghat
                     <div style="font-size:17px;font-weight:800;color:#1e3f5a;">🔵 Bluetooth Thermal Printer</div>
                     <div style="font-size:12px;color:#888;margin-top:2px;">80mm Roll · ESC/POS</div>
                 </div>
-                <button onclick="closeBtPrinterPanel()" style="background:#f5f5f5;border:none;border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer;font-weight:700;color:#555;">✕</button>
+                <button data-onclick="closeBtPrinterPanel()" style="background:#f5f5f5;border:none;border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer;font-weight:700;color:#555;">✕</button>
             </div>
 
             <!-- Status area -->
@@ -3737,8 +3737,8 @@ Kharmanghat
                         <div class="__btRowName" id="__btConnName">—</div>
                         <div class="__btRowSub">✅ Connected · 80mm ready</div>
                     </div>
-                    <button class="__btTestBtn" onclick="btTestPrint()" style="margin-right:6px;">Test</button>
-                    <button class="__btConnBtn disconnect" onclick="btDisconnect()">Disconnect</button>
+                    <button class="__btTestBtn" data-onclick="btTestPrint()" style="margin-right:6px;">Test</button>
+                    <button class="__btConnBtn disconnect" data-onclick="btDisconnect()">Disconnect</button>
                 </div>
 
                 <!-- Printer Width Calibration -->
@@ -3750,21 +3750,21 @@ Kharmanghat
                         2️⃣ Count characters on the ruler line<br>
                         3️⃣ Select matching value → saved automatically
                     </div>
-                    <button onclick="btWidthTest()" style="width:100%;padding:10px;background:#e67e22;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:12px;touch-action:manipulation;">
+                    <button data-onclick="btWidthTest()" style="width:100%;padding:10px;background:#e67e22;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:12px;touch-action:manipulation;">
                         📏 Print Test Line
                     </button>
                     <!-- Radio button selection -->
                     <div style="display:flex;flex-direction:column;gap:8px;">
                         <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid #ddd;border-radius:10px;cursor:pointer;font-size:13px;" id="__wLabel32">
-                            <input type="radio" name="printerW" value="32" onchange="savePrinterWidth(32)" style="width:18px;height:18px;accent-color:#e67e22;">
+                            <input type="radio" name="printerW" value="32" data-onchange="savePrinterWidth(32)" style="width:18px;height:18px;accent-color:#e67e22;">
                             <div><strong>32 chars</strong> <span style="color:#888;font-size:11px;">— Small / compact printers</span></div>
                         </label>
                         <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid #ddd;border-radius:10px;cursor:pointer;font-size:13px;" id="__wLabel42">
-                            <input type="radio" name="printerW" value="42" onchange="savePrinterWidth(42)" style="width:18px;height:18px;accent-color:#e67e22;">
+                            <input type="radio" name="printerW" value="42" data-onchange="savePrinterWidth(42)" style="width:18px;height:18px;accent-color:#e67e22;">
                             <div><strong>42 chars</strong> <span style="color:#27ae60;font-size:11px;font-weight:700;">— Chinese 80mm (some models)</span></div>
                         </label>
                         <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid #ddd;border-radius:10px;cursor:pointer;font-size:13px;" id="__wLabel48">
-                            <input type="radio" name="printerW" value="48" onchange="savePrinterWidth(48)" style="width:18px;height:18px;accent-color:#e67e22;" checked>
+                            <input type="radio" name="printerW" value="48" data-onchange="savePrinterWidth(48)" style="width:18px;height:18px;accent-color:#e67e22;" checked>
                             <div><strong>48 chars</strong> <span style="color:#27ae60;font-size:11px;font-weight:700;">— KP307 / Standard 80mm ✅</span></div>
                         </label>
                     </div>
@@ -3774,7 +3774,7 @@ Kharmanghat
 
             <!-- Scan button -->
             <div id="__btNotConnectedSection">
-                <button class="__btBigBtn scan" onclick="btScanAndConnect()">
+                <button class="__btBigBtn scan" data-onclick="btScanAndConnect()">
                     🔍 Scan &amp; Connect Printer
                 </button>
                 <div class="__btNote">
@@ -3785,7 +3785,7 @@ Kharmanghat
 
             <!-- Bottom actions when connected -->
             <div id="__btPrintNowSection" style="display:none;margin-top:14px;">
-                <button class="__btBigBtn" onclick="btPrintPending()" style="background:linear-gradient(135deg,#27ae60,#1e8449);color:#fff;">
+                <button class="__btBigBtn" data-onclick="btPrintPending()" style="background:linear-gradient(135deg,#27ae60,#1e8449);color:#fff;">
                     🖨️ Print Now (80mm Thermal)
                 </button>
             </div>
@@ -3811,15 +3811,15 @@ Kharmanghat
         <div style="background:#fff;border-radius:12px;padding:24px;max-width:520px;width:93%;max-height:85vh;overflow-y:auto;box-shadow:0 12px 48px rgba(0,0,0,0.3);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                 <div style="font-size:17px;font-weight:700;color:var(--primary);">✏️ Edit Template</div>
-                <button onclick="closeWaTmplEdit()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888;padding:0 4px;">✕</button>
+                <button data-onclick="closeWaTmplEdit()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888;padding:0 4px;">✕</button>
             </div>
             <div id="waTmplEditName" style="font-weight:600;font-size:13px;color:#555;margin-bottom:6px;"></div>
             <div style="font-size:11px;color:#888;margin-bottom:10px;">Use placeholders: <code>{name}</code> <code>{time}</code> <code>{date}</code> <code>{doctor}</code> <code>{reason}</code></div>
             <textarea id="waTmplEditText" rows="10" style="width:100%;padding:11px;border:1.5px solid #c0d0f0;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;line-height:1.7;"></textarea>
             <div style="display:flex;gap:10px;margin-top:14px;">
-                <button onclick="saveWaTmplEdit()" style="flex:1;padding:11px;background:linear-gradient(135deg,#2c5aa0,#1e3f5a);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">💾 Save Template</button>
-                <button onclick="resetWaTmplEdit()" style="padding:11px 16px;background:#f0f4ff;color:var(--primary);border:1.5px solid #c0d0f0;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">↩ Reset</button>
-                <button onclick="closeWaTmplEdit()" style="padding:11px 16px;background:#f5f5f5;color:#666;border:none;border-radius:8px;font-size:13px;cursor:pointer;">Cancel</button>
+                <button data-onclick="saveWaTmplEdit()" style="flex:1;padding:11px;background:linear-gradient(135deg,#2c5aa0,#1e3f5a);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">💾 Save Template</button>
+                <button data-onclick="resetWaTmplEdit()" style="padding:11px 16px;background:#f0f4ff;color:var(--primary);border:1.5px solid #c0d0f0;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">↩ Reset</button>
+                <button data-onclick="closeWaTmplEdit()" style="padding:11px 16px;background:#f5f5f5;color:#666;border:none;border-radius:8px;font-size:13px;cursor:pointer;">Cancel</button>
             </div>
         </div>
     </div>
