@@ -2535,7 +2535,7 @@ function buildReportData_(from, to) {
   var closings = closingsData_().filter(function (c) { return inR(c.date); });
   var batches = loadBatches_(), bCost = {}; batches.forEach(function (b) { bCost[b.batchId] = b.cost; });
   var medCost = {}; loadMedicines_().list.forEach(function (m) { medCost[m.id] = m.costPrice; });
-  var stockLoss = values_('StockMovements').slice(1).filter(function (r) { var t = String(r[6]); return r[0] && (t === 'EXPIRED' || t === 'DAMAGED' || t === 'ADJUSTMENT' || t === 'OPENING') && inR(ts_(r[1]).slice(0, 10)); })
+  var stockLoss = values_('StockMovements').slice(1).filter(function (r) { return r[0] && inR(ts_(r[1]).slice(0, 10)); })
     .map(function (r) { var o = mvObj_(r); o.date = o.at.slice(0, 10); o.value = r2_(o.qty * (bCost[o.batchId] !== undefined ? bCost[o.batchId] : (medCost[o.medicineId] || 0))); return o; });
   return { success: true, from: from, to: to, bills: bills, receipts: receipts, payments: payments, expenses: expenses, purchases: purchases, purchaseInvoices: invoices,
     purchaseReturns: returns, supplierLedger: ledger, cashClosings: closings, stockChanges: stockLoss, treatments: values_('PatientTreatments').slice(1).filter(function (r) { return r[0] && String(r[10]) !== 'Deleted' && inR(formatDate(r[1])); }).map(ptObj_) };

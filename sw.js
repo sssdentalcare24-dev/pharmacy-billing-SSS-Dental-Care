@@ -3,7 +3,7 @@
    show the saved copy immediately, download the newest copy in the
    background for next time. Google Sheets calls are never cached here.
    After uploading big changes you can bump VERSION to clear old copies. */
-const VERSION = 'ssdc-v6';
+const VERSION = 'ssdc-v7';
 const CORE = [
   "./",
   "index.html",

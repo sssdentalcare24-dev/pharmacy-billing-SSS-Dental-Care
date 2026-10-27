@@ -30,13 +30,19 @@
 
   var IDLE_LOGOUT_MIN = 30;
   var READS = { getAllData: 1, getSettings: 1, getExpenses: 1, whoami: 1, getStockMovements: 1, listUsers: 1, getAuditLog: 1,
-    listBackups: 1, validateData: 1, login: 1, logout: 1, ping: 1 };
-  var NO_QUEUE = { reserveReceiptNo: 1, changePassword: 1, createUser: 1, resetUserPassword: 1, setUserActive: 1, backupNow: 1 };
+    listBackups: 1, validateData: 1, login: 1, logout: 1, ping: 1,
+    getPayments: 1, getCashSummary: 1, getCashClosings: 1, getSupplierLedger: 1, getPatientHistory: 1, getRecentRecords: 1, getBills: 1,
+    getBatchHistory: 1, getInventoryReport: 1, getReportData: 1, healthCheck: 1 };
+  var NO_QUEUE = { reserveReceiptNo: 1, changePassword: 1, createUser: 1, resetUserPassword: 1, setUserActive: 1, backupNow: 1,
+    restoreDrill: 1, uploadInvoiceAttachment: 1, returnRefund: 1, cancelPayment: 1, addPurchaseInvoice: 1, cancelPurchaseInvoice: 1,
+    purchaseReturn: 1, recordSupplierPayment: 1, cancelSupplierEntry: 1, saveSupplier: 1, deleteSupplier: 1, saveCashClosing: 1, saveTreatment: 1 };
   var LABELS = { saveBill: 'Bill', cancelBill: 'Cancel bill', deleteBill: 'Cancel bill', savePatient: 'Patient', deletePatient: 'Delete patient',
     saveAppointment: 'Appointment', updateAppointmentStatus: 'Appointment status', deleteAppointment: 'Delete appointment',
     saveTreatmentReceipt: 'Treatment receipt', savePrescription: 'Prescription', saveExamForm: 'Exam form', saveExpense: 'Expense',
     deleteExpense: 'Delete expense', addMedicine: 'New medicine', updateMedicine: 'Medicine edit', addPurchase: 'Purchase',
-    cancelPurchase: 'Cancel purchase', deletePurchase: 'Cancel purchase', adjustStock: 'Stock adjustment', saveSettings: 'Settings' };
+    cancelPurchase: 'Cancel purchase', deletePurchase: 'Cancel purchase', adjustStock: 'Stock adjustment', saveSettings: 'Settings',
+    recordPayment: 'Payment received', savePatientTreatment: 'Treatment', setPatientTreatmentStatus: 'Treatment status', saveFollowUp: 'Follow-up',
+    setFollowUpStatus: 'Follow-up status' };
 
   function storedApiUrl() {
     try { return (JSON.parse(localStorage.getItem('medistock_config') || '{}').apiUrl) || ''; } catch (e) { return ''; }
@@ -117,7 +123,7 @@
         banner(res.error);
         return res;
       }
-      if (res.success) API.saveSession({ token: res.token, user: res.user, at: Date.now() });
+      if (res.success) API.saveSession({ token: res.token, user: res.user, at: Date.now(), features: res.features || {}, dataKey: res.dataKey || '' });
       else if (res.code === 'MIGRATION_REQUIRED' || res.code === 'USE_POST') banner(res.error);
       return res;
     });
@@ -137,7 +143,11 @@
     if (reqId) body.reqId = reqId;
     return post(body).then(function (res) {
       handleCodes(res);
-      if (action === 'getAllData' && res && res.success !== false) { API.lastSync = Date.now(); res = mergePending(res); updateStatusLine(); }
+      if (action === 'getAllData' && res && res.success !== false) {
+        API.lastSync = Date.now();
+        if (!res.unchanged) { res = mergePending(res); API.lastAllData = res; if (res.dataVersion) API.dataVersion = res.dataVersion; }
+        updateStatusLine();
+      }
       // session ended / server busy: keep the write and send it after login / later
       if (reqId && !NO_QUEUE[action] && !opts.noQueue && res && ['AUTH_REQUIRED', 'MUST_CHANGE_PASSWORD', 'BUSY', 'RATE_LIMIT', 'SERVER_ERROR'].indexOf(res.code) !== -1) {
         delete p.token; enqueue(action, p, reqId);
@@ -231,7 +241,9 @@
         var items = []; try { items = typeof p.items === 'string' ? JSON.parse(p.items) : (p.items || []); } catch (e) {}
         data.bills.push({ billId: p.billId, patientName: p.patientName || '', doctor: p.doctor || '', phone: p.phone || '', date: p.date || todayLocal(),
           subtotal: +p.subtotal || 0, discount: +p.discount || 0, total: +p.total || 0, costTotal: +p.costTotal || 0,
-          paymentMode: p.paymentMode || 'Cash', items: items, syncStatus: st, syncError: it.error });
+          paymentMode: p.paymentMode || 'Cash', items: items, syncStatus: st, syncError: it.error,
+          paidAmount: p.paidAmount !== undefined && p.paidAmount !== '' ? +p.paidAmount : +p.total || 0,
+          balanceDue: p.paidAmount !== undefined && p.paidAmount !== '' ? Math.round(((+p.total || 0) - (+p.paidAmount || 0)) * 100) / 100 : 0 });
       }
       if ((it.action === 'cancelBill' || it.action === 'deleteBill') && data.bills) data.bills = data.bills.filter(function (b) { return String(b.billId) !== String(p.billId); });
       if (it.action === 'savePatient' && data.patients && !havePt[p.id]) data.patients.push(Object.assign({}, p, { syncStatus: st }));
@@ -253,7 +265,7 @@
     var body = Object.assign({}, params, { action: action, token: API.token() }); if (reqId) body.reqId = reqId;
     return post(body).then(function (res) {
       handleCodes(res);
-      if (action === 'getAllData' && res && res.success !== false) { API.lastSync = Date.now(); res = mergePending(res); updateStatusLine(); }
+      if (action === 'getAllData' && res && res.success !== false && !res.unchanged) { API.lastSync = Date.now(); res = mergePending(res); updateStatusLine(); }
       return jsonResponse(res);
     }, function (err) {
       if (reqId && !NO_QUEUE[action]) enqueue(action, params, reqId);
@@ -331,6 +343,122 @@
     if (!io) return;
     document.querySelectorAll('.lazy-more:not([data-obs])').forEach(function (b) { b.setAttribute('data-obs', '1'); io.observe(b); });
   }
+})();
+;
+
+;/* ══ FILE: 00b-secure-store.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   00b-secure-store.js — patient data saved on this device is ENCRYPTED.
+   • The server (v3.1) gives each user a device key at login (AES-256).
+     It is kept only in this tab's session — never in the code or on disk.
+   • Sensitive keys (patients, bills cache, offline queue, histories…) are
+     stored as AES-GCM ciphertext, one slot per user, so a lost/shared
+     phone shows nothing readable after logout.
+   • The app keeps using localStorage as before: reads are served from a
+     decrypted copy in memory, writes are encrypted in the background.
+   • Old server (no key) → plain storage exactly as before.
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var SENSITIVE = { medistock_cache: 1, pt_records: 1, appointments: 1, clinic_expenses: 1, ssdc_sync_queue_v2: 1, rx_history: 1,
+    tr_history: 1, cb_history: 1, ef_history: 1, wa_sent_today: 1, ssdc_v31_cache: 1 };
+  var P = Storage.prototype, rawGet = P.getItem, rawSet = P.setItem, rawRemove = P.removeItem;
+  var mem = null, cryptoKey = null, user = '', dirty = {}, writing = null, timer = null;
+  var hasCrypto = !!(window.crypto && crypto.subtle && window.TextEncoder);
+  function isLocal(st) { try { return st === window.localStorage; } catch (e) { return false; } }
+  function isEnc(raw) { return typeof raw === 'string' && raw.slice(0, 5) === 'enc1:'; }
+  function b64(buf) { var s = '', a = new Uint8Array(buf); for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); }
+  function unb64(s) { var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+
+  P.getItem = function (k) {
+    if (isLocal(this) && SENSITIVE[k]) {
+      if (mem) return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null;
+      var raw = rawGet.call(this, k);
+      return isEnc(raw) ? null : raw;          // locked: encrypted data stays unreadable
+    }
+    return rawGet.apply(this, arguments);
+  };
+  P.setItem = function (k, v) {
+    if (isLocal(this) && SENSITIVE[k]) {
+      if (mem) { mem[k] = String(v); mark(k); return; }
+      if (isEnc(rawGet.call(this, k))) return;  // locked: never overwrite someone's encrypted data with plain text
+    }
+    return rawSet.apply(this, arguments);
+  };
+  P.removeItem = function (k) {
+    if (isLocal(this) && SENSITIVE[k] && mem) { mem[k] = null; mark(k); return; }
+    return rawRemove.apply(this, arguments);
+  };
+
+  function mark(k) {
+    dirty[k] = 1;
+    clearTimeout(timer);
+    timer = setTimeout(persist, k === 'ssdc_sync_queue_v2' ? 0 : 150);   // offline queue: right away
+  }
+  function persist() {
+    if (!cryptoKey || !mem) return Promise.resolve();
+    var keys = Object.keys(dirty); dirty = {};
+    if (!keys.length) return writing || Promise.resolve();
+    var key = cryptoKey, who = user, snap = {};
+    keys.forEach(function (k) { snap[k] = mem[k]; });
+    var job = (writing || Promise.resolve()).then(function () {
+      return Promise.all(keys.map(function (k) {
+        var raw = rawGet.call(localStorage, k), box = { users: {} };
+        if (isEnc(raw)) { try { box = JSON.parse(raw.slice(5)); } catch (e) {} }
+        if (snap[k] === null || snap[k] === undefined) {
+          delete box.users[who];
+          if (!Object.keys(box.users).length) { rawRemove.call(localStorage, k); return; }
+          try { rawSet.call(localStorage, k, 'enc1:' + JSON.stringify(box)); } catch (e) {}
+          return;
+        }
+        var iv = crypto.getRandomValues(new Uint8Array(12));
+        return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(snap[k])).then(function (ct) {
+          var cur = rawGet.call(localStorage, k);                      // re-read: keep other users' slots
+          if (isEnc(cur)) { try { box = JSON.parse(cur.slice(5)); } catch (e) {} } else box = { users: {} };
+          box.users[who] = b64(iv) + '.' + b64(ct);
+          try { rawSet.call(localStorage, k, 'enc1:' + JSON.stringify(box)); }
+          catch (e) { console.warn('Device storage full — could not save ' + k); }
+        });
+      }));
+    });
+    writing = job.then(function () { writing = null; }, function () { writing = null; });
+    return writing;
+  }
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') persist(); });
+  window.addEventListener('pagehide', persist);
+
+  window.SecureStore = {
+    keys: SENSITIVE,
+    isUnlocked: function () { return !!mem; },
+    available: hasCrypto,
+    // b64key: from the server at login; username: whose slot to use
+    unlock: function (b64key, username) {
+      if (!hasCrypto || !b64key) return Promise.resolve(false);
+      return crypto.subtle.importKey('raw', unb64(b64key), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']).then(function (k) {
+        var who = String(username || '').toLowerCase(), next = {}, migrate = [];
+        return Promise.all(Object.keys(SENSITIVE).map(function (name) {
+          var raw = rawGet.call(localStorage, name);
+          if (!raw) { next[name] = null; return; }
+          if (!isEnc(raw)) { next[name] = raw; migrate.push(name); return; }     // plain text from before → encrypt now
+          var box; try { box = JSON.parse(raw.slice(5)); } catch (e) { next[name] = null; return; }
+          var slot = box.users && box.users[who];
+          if (!slot) { next[name] = null; return; }
+          var parts = slot.split('.');
+          return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(parts[0]) }, k, unb64(parts[1]))
+            .then(function (pt) { next[name] = new TextDecoder().decode(pt); }, function () { next[name] = null; });
+        })).then(function () {
+          cryptoKey = k; user = who; mem = next;
+          migrate.forEach(mark);
+          return true;
+        });
+      }).catch(function (e) { console.warn('Secure storage unavailable:', e); return false; });
+    },
+    lock: function () {
+      var p = persist();
+      return p.then(function () { mem = null; cryptoKey = null; user = ''; dirty = {}; });
+    },
+    flush: persist
+  };
 })();
 ;
 
@@ -658,7 +786,9 @@
         let _firstLoadDone = false;
         async function loadData() {
             if (!CONFIG.apiUrl || !API.token()) { updateConnectionStatus(false); return; }
-            const data = await API.call('getAllData');
+            // Data already on screen? Ask the server only whether it changed (tiny answer when nothing did).
+            const data = await API.call('getAllData', (_firstLoadDone && API.dataVersion && bills.length + medicines.length) ? { ifVersion: API.dataVersion } : {});
+            if (data && data.unchanged) { updateConnectionStatus(true); if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets(); return; }
             if (!data || data.success === false) {
                 updateConnectionStatus(false);
                 // Keep showing the data already on screen / saved on this device. Never swap in demo data.
@@ -678,7 +808,9 @@
                 _patients = data.patients.map(function(p){ return {
                     id: p.id||('PT-'+Date.now()+Math.random()), name: p.name||'', phone: String(p.phone||''), age: p.age||'',
                     sex: p.sex||'', doctor: p.doctor||'', treatment: p.treatment||'', balance: parseFloat(p.balance)||0, alerts: p.alerts||'',
-                    status: p.status||'Active', lastVisit: p.lastVisit||'', addedOn: p.addedOn||'', syncStatus: p.syncStatus
+                    status: p.status||'Active', lastVisit: p.lastVisit||'', addedOn: p.addedOn||'', syncStatus: p.syncStatus,
+                    medicalHistory: p.medicalHistory||'', dentalHistory: p.dentalHistory||'', allergies: p.allergies||'', medications: p.medications||'',
+                    bloodGroup: p.bloodGroup||'', address: p.address||'', emergencyContact: p.emergencyContact||'', dob: p.dob||''
                 }; });
                 localStorage.setItem('pt_records', JSON.stringify(_patients));
             }
@@ -712,6 +844,7 @@
             }, 100);
             if (!_firstLoadDone) { _firstLoadDone = true; showToast('✅ Data loaded from Google Sheets', 'success'); }
             if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets();
+            if (window.V31) V31.ingest(data);
         }
 
         // ── DASHBOARD CALENDAR ───────────────────────────────────
@@ -936,7 +1069,7 @@
         function updateMedicineSelect() {
             const select = document.getElementById('medicineSelect');
             const purchaseSelect = document.getElementById('purchaseMedicine');
-            const options = medicines.map(m => `<option value="${m.id}" data-price="${m.price}" data-stock="${m.stock}" data-name="${m.name}">${m.name} — ₹${parseFloat(m.price).toFixed(2)} (Stock: ${m.stock})</option>`).join('');
+            const options = medicines.map(m => `<option value="${esc(m.id)}" data-price="${esc(m.price)}" data-stock="${esc(m.stock)}" data-name="${esc(m.name)}">${esc(m.name)} — ₹${parseFloat(m.price).toFixed(2)} (Stock: ${esc(m.stock)})</option>`).join('');
             select.innerHTML = '<option value="">Choose medicine...</option>' + options;
             purchaseSelect.innerHTML = '<option value="">Select medicine...</option>' + options;
             // Also populate Combined Bill dropdown with same data
@@ -1103,6 +1236,12 @@ Thank you! Visit again.`;
         // ============ PAYMENT MODAL ============
         let _pendingPrint = false;
         let _selectedPayMode = 'Cash';
+        Object.defineProperty(window, '_selectedPayMode', { get: () => _selectedPayMode, configurable: true });
+        // Amount to take now: the total, or the part payment entered (v3.1)
+        function _pmCollect() {
+            const t = parseFloat(document.getElementById('pmTotal').textContent.replace(/[₹,]/g, '')) || 0;
+            return (window.V31 && V31.partPay) ? V31.partPay.amount('pm', t) : t;
+        }
 
         function openPaymentModal(shouldPrint) {
             if (cart.length === 0) { showToast('Add medicines to cart first', 'warning'); return; }
@@ -1132,6 +1271,7 @@ Thank you! Visit again.`;
             document.getElementById('pmSplitUpi').value = '';
             document.getElementById('splitStatus').textContent = '';
             selectPayMode('Cash');
+            if (window.V31 && V31.partPay) V31.partPay.reset('pm');
 
             // Quick cash buttons
             const qc = document.getElementById('quickCashBtns');
@@ -1171,7 +1311,7 @@ Thank you! Visit again.`;
         let _upiPaymentDetected = false;
 
         function generateUpiQr() {
-            const total = parseFloat(document.getElementById('pmTotal').textContent.replace('₹', '')) || 0;
+            const total = _pmCollect();
             const upiId = (CONFIG.upiId || '').trim();
             const upiName = (CONFIG.upiName || CONFIG.clinicName).trim();
             const noConfig = document.getElementById('upiNoConfig');
@@ -1301,7 +1441,8 @@ Thank you! Visit again.`;
 
             // Payment mode label
             let modeLabel = paymentInfo.mode;
-            if (paymentInfo.mode === 'Cash') modeLabel = '💵 Cash Payment';
+            if (paymentInfo.mode === 'Credit') modeLabel = '🕒 Pay later (nothing paid now)';
+            else if (paymentInfo.mode === 'Cash') modeLabel = '💵 Cash Payment';
             else if (paymentInfo.mode === 'UPI')  modeLabel = '📱 UPI / GPay Payment';
             else if (paymentInfo.mode === 'Card') modeLabel = '💳 Card Payment';
             else if (paymentInfo.mode === 'Split') modeLabel = '🔀 Split Payment';
@@ -1322,7 +1463,7 @@ Thank you! Visit again.`;
             const tbody = document.getElementById('bsItemsBody');
             tbody.innerHTML = billData.items.map((item, i) => `
                 <tr style="background:${i % 2 === 0 ? 'white' : '#f8f9fa'};">
-                    <td style="padding:7px 10px;border-bottom:1px solid #eee;">${item.medicineName}</td>
+                    <td style="padding:7px 10px;border-bottom:1px solid #eee;">${esc(item.medicineName)}</td>
                     <td style="padding:7px 6px;text-align:center;border-bottom:1px solid #eee;">${item.qty}</td>
                     <td style="padding:7px 6px;text-align:right;border-bottom:1px solid #eee;">₹${parseFloat(item.price).toFixed(2)}</td>
                     <td style="padding:7px 10px;text-align:right;border-bottom:1px solid #eee;font-weight:600;">₹${parseFloat(item.amount).toFixed(2)}</td>
@@ -1340,6 +1481,12 @@ Thank you! Visit again.`;
             } else {
                 discountRow.style.display = 'none';
             }
+
+            // Part payment: paid now / still due
+            let dueBox = document.getElementById('bsDueBox');
+            if (!dueBox) { dueBox = document.createElement('div'); dueBox.id = 'bsDueBox'; dueBox.className = 'v-due-box'; const t = document.getElementById('bsTotal'); if (t) t.closest('div').parentNode.appendChild(dueBox); }
+            dueBox.innerHTML = billData.balanceDue > 0.009 ? `<div><span>Paid now</span><b>₹${(+billData.paidAmount || 0).toFixed(2)}</b></div><div class="v-due-strong"><span>Balance due</span><b>₹${(+billData.balanceDue).toFixed(2)}</b></div>` : '';
+            dueBox.style.display = billData.balanceDue > 0.009 ? 'block' : 'none';
 
             // Cash change details
             const cashDetails = document.getElementById('bsCashDetails');
@@ -1366,7 +1513,7 @@ Thank you! Visit again.`;
             // Build items rows
             const itemRows = b.items.map((item, i) => `
                 <tr style="background:${i % 2 === 0 ? '#fff' : '#f8f9fa'};">
-                    <td style="padding:8px 10px;border-bottom:1px solid #eee;">${item.medicineName}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #eee;">${esc(item.medicineName)}</td>
                     <td style="padding:8px 6px;text-align:center;border-bottom:1px solid #eee;">${item.qty}</td>
                     <td style="padding:8px 6px;text-align:right;border-bottom:1px solid #eee;">₹${parseFloat(item.price).toFixed(2)}</td>
                     <td style="padding:8px 10px;text-align:right;border-bottom:1px solid #eee;font-weight:700;">₹${parseFloat(item.amount).toFixed(2)}</td>
@@ -1378,6 +1525,10 @@ Thank you! Visit again.`;
             else if (modeLabel === 'UPI')   modeLabel = '📱 UPI / GPay';
             else if (modeLabel === 'Card')  modeLabel = '💳 Card';
             else if (modeLabel === 'Split') modeLabel = '🔀 Split';
+            else if (modeLabel === 'Credit') modeLabel = '🕒 Pay later';
+            const dueRows = b.balanceDue > 0.009
+                ? `<tr><td style="padding:4px 0;">Paid now</td><td style="padding:4px 0;text-align:right;">₹${(+b.paidAmount || 0).toFixed(2)}</td></tr>
+                   <tr><td style="padding:4px 0;font-weight:800;color:#c0392b;">Balance due</td><td style="padding:4px 0;text-align:right;font-weight:800;color:#c0392b;">₹${(+b.balanceDue).toFixed(2)}</td></tr>` : '';
 
             const discountRow = b.discount > 0
                 ? `<tr><td style="padding:5px 0;color:#e74c3c;">Discount</td><td style="padding:5px 0;text-align:right;color:#e74c3c;">-₹${parseFloat(b.discount).toFixed(2)}</td></tr>` : '';
@@ -1418,11 +1569,11 @@ Thank you! Visit again.`;
 <div id="__bps">
   <div class="banner">
     <span class="tick">✅</span>
-    <h1>Payment Done!</h1>
+    <h1>${b.balanceDue > 0.009 ? 'Bill Saved' : 'Payment Done!'}</h1>
     <div class="mode">${modeLabel}</div>
   </div>
   <div class="body">
-    <div id="__ph" data-patient="${(b.patientName||'').replace(/"/g,'&quot;')}" data-doctor="${(b.doctor||'').replace(/"/g,'&quot;')}" data-date="${b.date||''}" data-billid="${b.billId||''}" data-total="${parseFloat(b.total||0).toFixed(2)}" data-subtotal="${parseFloat(b.subtotal||0).toFixed(2)}" data-discount="${parseFloat(b.discount||0).toFixed(2)}" data-mode="${b.paymentMode||'Cash'}" data-items="${encodeURIComponent(JSON.stringify((b.items||[]).map(function(i){return{name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount};})))}" style="display:none"></div>
+    <div id="__ph" data-patient="${(b.patientName||'').replace(/"/g,'&quot;')}" data-doctor="${(b.doctor||'').replace(/"/g,'&quot;')}" data-date="${b.date||''}" data-billid="${b.billId||''}" data-total="${parseFloat(b.total||0).toFixed(2)}" data-subtotal="${parseFloat(b.subtotal||0).toFixed(2)}" data-discount="${parseFloat(b.discount||0).toFixed(2)}" data-mode="${b.paymentMode||'Cash'}" data-paid="${(+(b.paidAmount !== undefined ? b.paidAmount : b.total) || 0).toFixed(2)}" data-due="${(+b.balanceDue || 0).toFixed(2)}" data-items="${encodeURIComponent(JSON.stringify((b.items||[]).map(function(i){return{name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount};})))}" style="display:none"></div>
     <div class="bill-id">${b.billId}</div>
     <div class="clinic-header">
       <div class="name">🦷 Sri Sai Speciality Dental Care</div>
@@ -1430,10 +1581,10 @@ Thank you! Visit again.`;
       <div class="sub">${CONFIG ? (CONFIG.clinicPhone ? '📞 ' + CONFIG.clinicPhone : '') : ''}</div>
     </div>
     <div class="info-grid">
-      <div><div class="lbl">Patient</div><div class="val">${b.patientName || '—'}</div></div>
-      <div><div class="lbl">Doctor</div><div class="val">${b.doctor || '—'}</div></div>
-      <div><div class="lbl">Date</div><div class="val">${b.date || '—'}</div></div>
-      <div><div class="lbl">Phone</div><div class="val">${b.phone || '—'}</div></div>
+      <div><div class="lbl">Patient</div><div class="val">${esc(b.patientName || '—')}</div></div>
+      <div><div class="lbl">Doctor</div><div class="val">${esc(b.doctor || '—')}</div></div>
+      <div><div class="lbl">Date</div><div class="val">${esc(b.date || '—')}</div></div>
+      <div><div class="lbl">Phone</div><div class="val">${esc(b.phone || '—')}</div></div>
     </div>
     <table>
       <thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead>
@@ -1444,6 +1595,7 @@ Thank you! Visit again.`;
         <tr><td>Subtotal</td><td>₹${parseFloat(b.subtotal).toFixed(2)}</td></tr>
         ${discountRow}
         <tr class="grand-total"><td><strong>Grand Total</strong></td><td><strong>₹${parseFloat(b.total).toFixed(2)}</strong></td></tr>
+        ${dueRows}
         ${cashRows}
       </table>
     </div>
@@ -1456,7 +1608,7 @@ Thank you! Visit again.`;
         // ══ END BILL SUCCESS POPUP ════════════════════════════
 
         function calcChange() {
-            const total = parseFloat(document.getElementById('pmTotal').textContent.replace('₹', '')) || 0;
+            const total = _pmCollect();
             const tendered = parseFloat(document.getElementById('pmTendered').value) || 0;
             const change = tendered - total;
             const el = document.getElementById('pmChange');
@@ -1465,7 +1617,7 @@ Thank you! Visit again.`;
         }
 
         function calcSplit() {
-            const total = parseFloat(document.getElementById('pmTotal').textContent.replace('₹', '')) || 0;
+            const total = _pmCollect();
             const cash = parseFloat(document.getElementById('pmSplitCash').value) || 0;
             const upi = parseFloat(document.getElementById('pmSplitUpi').value) || 0;
             const rem = total - cash - upi;
@@ -1476,7 +1628,14 @@ Thank you! Visit again.`;
         }
 
         function confirmPayment() {
-            const total = parseFloat(document.getElementById('pmTotal').textContent.replace('₹', '')) || 0;
+            const total = _pmCollect();
+            const fullTotal = parseFloat(document.getElementById('pmTotal').textContent.replace(/[₹,]/g, '')) || 0;
+            if (total <= 0 && fullTotal > 0) {          // patient pays everything later
+                if (!confirm('Save this bill with nothing paid now?\n\n₹' + fullTotal.toFixed(2) + ' will be due from the patient.')) return;
+                closeModal('paymentModal');
+                submitBill(_pendingPrint, { mode: 'Credit', paidAmount: 0 });
+                return;
+            }
 
             // Validation per mode
             if (_selectedPayMode === 'Cash') {
@@ -1501,6 +1660,7 @@ Thank you! Visit again.`;
                 paymentInfo.cash = parseFloat(document.getElementById('pmSplitCash').value) || 0;
                 paymentInfo.upi = parseFloat(document.getElementById('pmSplitUpi').value) || 0;
             }
+            if (total < fullTotal - 0.009) paymentInfo.paidAmount = Math.round(total * 100) / 100;
 
             closeModal('paymentModal');
             submitBill(_pendingPrint, paymentInfo);
@@ -1546,6 +1706,9 @@ Thank you! Visit again.`;
                 costTotal: costTotal,
                 paymentMode: paymentInfo.mode,
                 paymentRef: paymentInfo.ref || '',
+                paidAmount: paymentInfo.paidAmount !== undefined ? paymentInfo.paidAmount : total,
+                balanceDue: paymentInfo.paidAmount !== undefined ? Math.round((total - paymentInfo.paidAmount) * 100) / 100 : 0,
+                patientId: (window.V31 && V31.enabled()) ? V31.patientIdFor('patientName', 'patientPhone') : '',
                 items: cart.map(item => ({
                     medicineId: item.id,
                     medicineName: item.name,
@@ -1582,6 +1745,7 @@ Thank you! Visit again.`;
             // Auto-clear cart after payment (no confirm needed — payment already confirmed)
             cart = [];
             document.getElementById('patientName').value = '';
+            { const pn = document.getElementById('patientName'); if (pn && pn._v31Clear) pn._v31Clear(); }
             document.getElementById('patientPhone').value = '';
             document.getElementById('doctor').value = '';
             document.getElementById('discountPct').value = '0';
@@ -1596,6 +1760,7 @@ Thank you! Visit again.`;
                 date: today, subtotal: subtotal.toFixed(2), discount: discount.toFixed(2), total: total.toFixed(2),
                 paymentMode: paymentInfo.mode, paymentRef: paymentInfo.ref || '',
                 cashAmount: paymentInfo.mode === 'Split' ? (paymentInfo.cash || 0) : '', upiAmount: paymentInfo.mode === 'Split' ? (paymentInfo.upi || 0) : '',
+                paidAmount: paymentInfo.paidAmount !== undefined ? paymentInfo.paidAmount.toFixed(2) : '', patientId: billData.patientId || '',
                 items: JSON.stringify(billData.items)
             }).then(res => applyBillSaveResult(billId, res, billData.items));
         }
@@ -1604,10 +1769,12 @@ Thank you! Visit again.`;
         function applyBillSaveResult(billId, res, items) {
             const b = bills.find(x => x.billId === billId);
             if (res && res.success) {
-                if (b) { b.syncStatus = 'saved'; if (res.billNo) b.billNo = res.billNo; if (res.costTotal !== undefined && currentRole === 'owner') b.costTotal = res.costTotal; }
+                if (b) { b.syncStatus = 'saved'; if (res.billNo) b.billNo = res.billNo; if (res.costTotal !== undefined && currentRole === 'owner') b.costTotal = res.costTotal;
+                    if (res.balanceDue !== undefined) { b.paidAmount = res.paidAmount; b.balanceDue = res.balanceDue; b.paymentStatus = res.balanceDue > 0.009 ? (res.paidAmount > 0 ? 'Partial' : 'Unpaid') : 'Paid'; } }
                 setBillSyncStatus('saved', res.billNo);
                 showToast('☁️ Saved on server' + (res.billNo ? ' · ' + res.billNo : ''), 'success');
                 if (res.warnings && res.warnings.length) showToast('⚠️ ' + res.warnings.join(' · '), 'warning');
+                if (b && res.balanceDue > 0.009 && window.V31) V31.money.noteDue('BILL', b);
             } else if (res && res.queued) {
                 if (b) b.syncStatus = 'pending';
                 setBillSyncStatus('pending');
@@ -1686,9 +1853,12 @@ Thank you! Visit again.`;
             const stockColor = s => s <= 0 ? '#e74c3c' : s <= 10 ? '#f39c12' : '#27ae60';
             const expTag = med => (med.expiredStock > 0 ? `<div style="font-size:11px;color:#8e44ad;font-weight:700;">+${med.expiredStock} expired</div>` : '');
             const nb = med => (med.batches && med.batches.length > 1 ? ` <span style="font-size:11px;color:#888;">(${med.batches.length} batches)</span>` : '');
-            tbody.innerHTML = medicines.map(med => `
+            const invList = (window.V31 && V31.stock) ? V31.stock.filterInv(medicines) : medicines;
+            const hist = med => (window.V31 && V31.enabled()) ? `<button class="btn-primary btn-small" style="background:#7f8c8d;" data-act="batchHistory" data-id="${esc(med.id)}" title="Batches and stock history">📜</button>` : '';
+            const gen = med => med.genericName ? `<div style="font-size:11px;color:#888;">${esc(med.genericName)}${med.barcode ? ' · ▮▯ ' + esc(med.barcode) : ''}</div>` : (med.barcode ? `<div style="font-size:11px;color:#888;">▮▯ ${esc(med.barcode)}</div>` : '');
+            tbody.innerHTML = invList.map(med => `
                 <tr>
-                    <td><strong>${esc(med.name)}</strong>${nb(med)}</td>
+                    <td><strong>${esc(med.name)}</strong>${nb(med)}${gen(med)}</td>
                     <td style="color:${stockColor(med.stock)};font-weight:700;">${med.stock}${expTag(med)}</td>
                     <td>₹${med.price}</td>
                     <td>₹${med.costPrice}</td>
@@ -1696,12 +1866,13 @@ Thank you! Visit again.`;
                     <td style="white-space:nowrap;">
                         <button class="btn-primary btn-small" onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
                         <button class="btn-primary btn-small" style="background:#16a085;" onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
+                        ${hist(med)}
                         <button class="btn-danger btn-small" onclick="deleteMedicine('${esc(med.id)}')" title="Hide (history kept)">🗑️</button>
                     </td>
                 </tr>
             `).join('');
             if (cards) {
-                cards.innerHTML = medicines.length ? medicines.map(med => {
+                cards.innerHTML = invList.length ? invList.map(med => {
                     const sc = stockColor(med.stock);
                     return `<div class="m-card" style="border-left-color:${sc}">
                         <div class="m-card-row">
@@ -1715,6 +1886,7 @@ Thank you! Visit again.`;
                         <div class="m-card-actions">
                             <button style="background:#2c5aa0;" onclick="openEditMedicine('${esc(med.id)}')">✏️ Edit</button>
                             <button style="background:#16a085;" onclick="openStockDialog('${esc(med.id)}')">📦 Stock</button>
+                            ${(window.V31 && V31.enabled()) ? `<button style="background:#7f8c8d;" data-act="batchHistory" data-id="${esc(med.id)}">📜 History</button>` : ''}
                             <button style="background:#e74c3c;" onclick="deleteMedicine('${esc(med.id)}')">🗑️</button>
                         </div>
                     </div>`;
@@ -1764,6 +1936,9 @@ Thank you! Visit again.`;
                 params.append('costPrice', costPrice);
                 params.append('stock', stock);
                 params.append('expiry', expiry);
+                { const bc = document.getElementById('newMedicineBarcode'), gn = document.getElementById('newMedicineGeneric');
+                  if (bc && bc.value.trim()) params.append('barcode', bc.value.trim()); if (gn && gn.value.trim()) params.append('genericName', gn.value.trim());
+                  if (bc) bc.value = ''; if (gn) gn.value = ''; }
 
                 fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
                     .then(r => r.json())
@@ -1992,10 +2167,10 @@ Thank you! Visit again.`;
                     <td>${esc(bill.doctor||'—')}</td>
                     <td style="max-width:200px;">${trInfo}${medBadges}</td>
                     <td style="font-weight:700;">₹${parseFloat(bill.total||0).toFixed(2)}</td>
-                    <td><span style="background:${payColor};color:${payText};border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600;">${bill.paymentMode||'—'}</span></td>
+                    <td><span style="background:${payColor};color:${payText};border-radius:4px;padding:2px 8px;font-size:12px;font-weight:600;">${esc(bill.paymentMode||'—')}</span>${window.V31 ? V31.money.billBadges(bill) : ''}</td>
                     <td style="white-space:nowrap;">${bill.date||'—'}</td>
                     <td style="white-space:nowrap;">
-                        <button class="btn-primary btn-small" onclick="${printFn}" style="margin-right:4px;">🖨️ Print</button>
+                        ${window.V31 ? V31.money.billButton(bill) : ''}<button class="btn-primary btn-small" onclick="${printFn}" style="margin-right:4px;">🖨️ Print</button>
                         <button class="btn-primary btn-small" onclick="${waFn}" style="background:#25d366;">📲 WA</button>${cancelBtn}
                     </td>
                 </tr>`;
@@ -2017,11 +2192,11 @@ Thank you! Visit again.`;
                             <div style="font-size:11px;color:#888;">${bill.date||''}</div>
                         </div>
                     </div>
-                    <div class="bill-card-meta">👨‍⚕️ ${esc(bill.doctor||'—')} &nbsp;|&nbsp; <span class="pay-badge" style="background:${payColor};color:${payText};">${bill.paymentMode||'—'}</span></div>
+                    <div class="bill-card-meta">👨‍⚕️ ${esc(bill.doctor||'—')} &nbsp;|&nbsp; <span class="pay-badge" style="background:${payColor};color:${payText};">${esc(bill.paymentMode||'—')}</span>${window.V31 ? V31.money.billBadges(bill) : ''}</div>
                     ${trLine}
                     ${medLine?`<div class="bill-card-meta">💊 ${medLine}</div>`:''}
                     <div class="bill-card-actions" style="margin-top:10px;">
-                        <button class="bc-print-btn" onclick="${printFn}">🖨️ Print</button>
+                        ${window.V31 && V31.money.billButton(bill) ? `<button class="bc-print-btn" style="background:#8e44ad;" data-act="billDetail" data-type="BILL" data-id="${esc(bill.billId)}">💰 Payments</button>` : ''}<button class="bc-print-btn" onclick="${printFn}">🖨️ Print</button>
                         <button class="bc-wa-btn" onclick="${waFn}">📲 WhatsApp</button>
                         ${currentRole === 'owner' ? `<button class="bc-print-btn" style="background:#e74c3c;" onclick="cancelBillUI('${esc(bill.billId)}')">✖ Cancel</button>` : ''}
                     </div>
@@ -2071,7 +2246,7 @@ Reason (required):`) || '').trim();
         function filterBills() {
             const q = (document.getElementById('billsSearch').value||'').toLowerCase();
             if (!q) { updateBillsTable(); return; }
-            const filtered = bills.filter(b => (b.patientName||'').toLowerCase().includes(q));
+            const filtered = bills.filter(b => ((b.patientName||'') + ' ' + (b.billNo||'') + ' ' + (b.phone||'')).toLowerCase().includes(q));
             const saved = bills;
             bills = filtered;
             updateBillsTable();
@@ -2628,9 +2803,9 @@ Reason (required):`) || '').trim();
                 const preview = (r.rxText || '').replace(/\n/g,' ').substring(0, 80) + ((r.rxText||'').length > 80 ? '...' : '');
                 return `<div style="border:1px solid #e0e8f5;border-radius:8px;padding:12px 14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8faff;">
                     <div style="min-width:0;">
-                        <div style="font-weight:700;color:var(--primary);font-size:14px;">${r.name || '-'} &nbsp;|&nbsp; Age: ${r.age||'-'} &nbsp;|&nbsp; ${r.sex||'-'}</div>
-                        <div style="font-size:12px;color:#777;margin-top:3px;">Date: ${r.dateStr || '-'}</div>
-                        <div style="font-size:12px;color:#555;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${preview || '-'}</div>
+                        <div style="font-weight:700;color:var(--primary);font-size:14px;">${esc(r.name || '-')} &nbsp;|&nbsp; Age: ${esc(r.age||'-')} &nbsp;|&nbsp; ${esc(r.sex||'-')}</div>
+                        <div style="font-size:12px;color:#777;margin-top:3px;">Date: ${esc(r.dateStr || '-')}</div>
+                        <div style="font-size:12px;color:#555;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(preview || '-')}</div>
                     </div>
                     <div style="display:flex;gap:8px;flex-shrink:0;">
                         <button onclick="loadRxRecord(${idx})" style="background:#2c5aa0;color:white;border:none;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;">✏️ Edit</button>
@@ -2720,6 +2895,7 @@ Reason (required):`) || '').trim();
             params.append('age', age);
             params.append('sex', sex);
             params.append('prescription', rxText);
+            if (window.V31 && V31.enabled()) { const x = V31.clinic.rxExtras(); Object.keys(x).forEach(k => { if (x[k]) params.append(k, x[k]); }); }
 
             fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
                 .then(r => r.json())
@@ -2733,12 +2909,15 @@ Reason (required):`) || '').trim();
 
         // ══ TREATMENT RECEIPT ════════════════════════════════
         function buildTreatmentReceiptHTML(forPrint) {
-            const no        = document.getElementById('tr_no').value || '___________';
+            const no        = esc(document.getElementById('tr_no').value || '___________');
             const date      = document.getElementById('tr_date').value || '';
-            const patient   = document.getElementById('tr_patient').value || '______________________________';
-            const amount    = document.getElementById('tr_amount').value || '___________';
-            const words     = document.getElementById('tr_words').value || '______________________________';
+            const patient   = esc(document.getElementById('tr_patient').value || '______________________________');
+            const pay       = forPrint && window.__trPay && window.__trPay.paidAmount !== undefined ? window.__trPay : null;    // part payment (v3.1)
+            const totalAmt  = parseFloat(document.getElementById('tr_amount').value) || 0;
+            const amount    = esc(pay ? pay.paidAmount.toFixed(2) : (document.getElementById('tr_amount').value || '___________'));
+            const words     = esc(pay ? (window.V31 ? V31.words(pay.paidAmount) : '') : (document.getElementById('tr_words').value || '______________________________'));
             const treatText = (document.getElementById('tr_treatment_text') ? document.getElementById('tr_treatment_text').value.trim() : '') || '';
+            const dueLine   = pay ? `<div class="due-line">Total treatment charges ₹${totalAmt.toFixed(2)} · Paid now ₹${pay.paidAmount.toFixed(2)} · <b>Balance due ₹${(totalAmt - pay.paidAmount).toFixed(2)}</b></div>` : '';
             const dateStr   = date ? new Date(date).toLocaleDateString('en-IN', {day:'2-digit',month:'2-digit',year:'numeric'}) : '_______________';
             const clinicAddr  = CONFIG ? (CONFIG.clinicAddress || 'TKR College Road, Karmanghat, Hyderabad.') : 'TKR College Road, Karmanghat, Hyderabad.';
             const clinicPhone = CONFIG ? (CONFIG.clinicPhone || '9396522492, 8688033072') : '9396522492, 8688033072';
@@ -2749,7 +2928,7 @@ Reason (required):`) || '').trim();
             const rowsToShow = Math.max(tLines.length, minRows);
             let treatmentRows = '';
             for (let i = 0; i < rowsToShow; i++) {
-                const label = tLines[i] || '&nbsp;';
+                const label = tLines[i] ? esc(tLines[i]) : '&nbsp;';
                 treatmentRows += `<tr><td class="item-cell" style="height:30px;">${label}</td></tr>`;
             }
 
@@ -2778,6 +2957,7 @@ Reason (required):`) || '').trim();
   #__tr table.treat td { border:1.5px solid #000; padding:0; height:30px; vertical-align:middle; }
   #__tr table.treat td.item-cell { padding-left:8px; }
   #__tr .sig-row { display:flex; justify-content:flex-end; margin-top:18px; font-size:13px; padding-right:4px; }
+  #__tr .due-line { border:1.5px solid #000; padding:6px 8px; margin:-4px 0 10px; font-size:12.5px; }
   @media print { html, body { margin:0; padding:0; } #__tr { width:100%; } }
 </style>
 <div id="__tr">
@@ -2809,6 +2989,7 @@ Reason (required):`) || '').trim();
   </div>
   <div class="towards">TOWARDS</div>
   <table class="treat"><tbody>${treatmentRows}</tbody></table>
+  ${dueLine}
   <div class="sig-row">Signature</div>
 </div>`;
         }
@@ -2913,17 +3094,21 @@ Reason (required):`) || '').trim();
             const treatmentText= document.getElementById('tr_treatment_text') ? document.getElementById('tr_treatment_text').value.trim() : '';
             const dateStr      = dateV ? new Date(dateV).toLocaleDateString('en-IN',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
 
+            const tp = window.__trPay || null;
             const record = { recordId: newId('TR'), no, date: dateV, dateStr, patient, amount, words, treatmentText, treatments: treatmentText,
-                             paymentMode: (typeof _trMode !== 'undefined' ? _trMode : ''), savedAt: new Date().toISOString() };
+                             paymentMode: tp ? tp.mode : (typeof _trMode !== 'undefined' ? _trMode : ''), savedAt: new Date().toISOString() };
             const list = getTreatmentHistory();
             list.push(record);
             saveTreatmentHistory(list);
             renderTreatmentHistory();
-            serverTreatments.push({ no, date: dateV || todayLocal(), patient, amount: parseFloat(amount) || 0, treatments: treatmentText, recordId: record.recordId, paymentMode: record.paymentMode, pending: true });
+            serverTreatments.push({ no, date: dateV || todayLocal(), patient, amount: parseFloat(amount) || 0, treatments: treatmentText, recordId: record.recordId, paymentMode: record.paymentMode, pending: true,
+                                    paidAmount: tp && tp.paidAmount !== undefined ? tp.paidAmount : parseFloat(amount) || 0, balanceDue: tp && tp.paidAmount !== undefined ? (parseFloat(amount) || 0) - tp.paidAmount : 0 });
 
             const html = buildTreatmentReceiptHTML(true);
             printBillHtml(html);
             saveTreatmentReceiptToSheets(record.recordId, record.paymentMode);
+            window.__trPay = null;
+            if (window.V31 && V31.clinic) V31.clinic.clearReceiptExtras();
         }
 
         function saveTreatmentReceiptToSheets(recordId, paymentMode) {
@@ -2946,6 +3131,10 @@ Reason (required):`) || '').trim();
             params.append('amount', amount);
             params.append('amountWords', words);
             params.append('treatments', selected);
+            const tp = window.__trPay;
+            if (tp && tp.paidAmount !== undefined) params.append('paidAmount', tp.paidAmount.toFixed(2));
+            if (tp && tp.mode === 'Split') { params.append('cashAmount', tp.cash || 0); params.append('upiAmount', tp.upi || 0); }
+            if (window.V31 && V31.enabled()) { const x = V31.clinic.receiptExtras(); Object.keys(x).forEach(k => { if (x[k] && x[k] !== '[]') params.append(k, x[k]); }); }
 
             fetch(CONFIG.apiUrl + '?' + params.toString(), { method: 'GET', redirect: 'follow' })
                 .then(r => r.json())
@@ -4206,6 +4395,8 @@ Reason (required):`) || '').trim();
             document.getElementById('trUpiCard').style.display='none';
         }
         selectTrMode('Cash');
+        if (window.V31 && V31.partPay) V31.partPay.reset('tr');
+        window.__trPay = null;
         const modal=document.getElementById('trPayModal');
         modal.style.display='flex';
         requestAnimationFrame(()=>requestAnimationFrame(()=>modal.classList.add('tr-open')));
@@ -4224,8 +4415,9 @@ Reason (required):`) || '').trim();
             document.getElementById('trSec'+m).classList.toggle('tr-hide',m!==mode);
         });
     }
+    function _trCollect() { const t = parseFloat((document.getElementById('trPmTotal').textContent||'').replace(/[₹,]/g,''))||0; return (window.V31 && V31.partPay) ? V31.partPay.amount('tr', t) : t; }
     function calcTrChange() {
-        const total=parseFloat((document.getElementById('trPmTotal').textContent||'').replace('₹',''))||0;
+        const total=_trCollect();
         const amt=parseFloat(document.getElementById('trPmTendered').value)||0;
         const chg=amt-total;
         const el=document.getElementById('trPmChange');
@@ -4233,7 +4425,7 @@ Reason (required):`) || '').trim();
         el.style.color=chg>=0?'#27ae60':'#e74c3c';
     }
     function calcTrSplit() {
-        const total=parseFloat((document.getElementById('trPmTotal').textContent||'').replace('₹',''))||0;
+        const total=_trCollect();
         const cash=parseFloat(document.getElementById('trPmSplitCash').value)||0;
         const upi=parseFloat(document.getElementById('trPmSplitUpi').value)||0;
         const rem=total-cash-upi;
@@ -4243,23 +4435,29 @@ Reason (required):`) || '').trim();
         else{el.textContent='❌ Overpaid by ₹'+Math.abs(rem).toFixed(2);el.style.background='#fff0f0';el.style.color='#e74c3c';}
     }
     function confirmTrPayment() {
-        const total=parseFloat((document.getElementById('trPmTotal').textContent||'').replace('₹',''))||0;
-        if(_trMode==='Cash'&&(parseFloat(document.getElementById('trPmTendered').value)||0)<total){showToast('Amount tendered is less than total','warning');return;}
-        if(_trMode==='Split'){
+        const full=parseFloat((document.getElementById('trPmTotal').textContent||'').replace(/[₹,]/g,''))||0;
+        const total=_trCollect();
+        const credit = total <= 0 && full > 0;
+        if (credit && !confirm('Save this receipt with nothing paid now?\n\n₹' + full.toFixed(2) + ' will be due from the patient.')) return;
+        if(!credit&&_trMode==='Cash'&&(parseFloat(document.getElementById('trPmTendered').value)||0)<total){showToast('Amount tendered is less than '+(total<full?'the amount paid now':'total'),'warning');return;}
+        if(!credit&&_trMode==='Split'){
             const c=parseFloat(document.getElementById('trPmSplitCash').value)||0;
             const u=parseFloat(document.getElementById('trPmSplitUpi').value)||0;
-            if(Math.abs(c+u-total)>0.5){showToast('Split amounts must add up to total','warning');return;}
+            if(Math.abs(c+u-total)>0.5){showToast('Split amounts must add up to '+(total<full?'the amount paid now':'total'),'warning');return;}
         }
+        window.__trPay = { mode: credit ? 'Credit' : _trMode };
+        if (total < full - 0.009) window.__trPay.paidAmount = Math.round(total * 100) / 100;
+        if (!credit && _trMode === 'Split') { window.__trPay.cash = parseFloat(document.getElementById('trPmSplitCash').value)||0; window.__trPay.upi = parseFloat(document.getElementById('trPmSplitUpi').value)||0; }
         closeTrPayModal();
         const modeLabel={Cash:'💵 Cash',UPI:'📱 UPI / GPay',Card:'💳 Card',Split:'🔀 Split'};
         document.getElementById('trSucPat').textContent=document.getElementById('tr_patient').value||'—';
         document.getElementById('trSucNo').textContent=document.getElementById('tr_no').value||'—';
-        document.getElementById('trSucAmt').textContent='₹'+total.toFixed(2);
-        document.getElementById('trSucMode').textContent=modeLabel[_trMode]||_trMode;
+        document.getElementById('trSucAmt').textContent='₹'+total.toFixed(2)+(total<full-0.009?' (due ₹'+(full-total).toFixed(2)+')':'');
+        document.getElementById('trSucMode').textContent=credit?'🕒 Pay later':(modeLabel[_trMode]||_trMode);
         setTimeout(()=>document.getElementById('trSuccessSheet').classList.add('tr-open'),220);
         printTreatmentReceipt();
     }
-    function trSucPrint(){closeTrSuccess();setTimeout(()=>printBillHtml(buildTreatmentReceiptHTML(true)),150);}
+    function trSucPrint(){closeTrSuccess();setTimeout(()=>printBillHtml(buildTreatmentReceiptHTML(false)),150);}
     function closeTrSuccess(){document.getElementById('trSuccessSheet').classList.remove('tr-open');}
 ;
 
@@ -4563,6 +4761,7 @@ Reason (required):`) || '').trim();
             document.getElementById('cbUpiCard').style.display='none';
         }
         selectCbMode('Cash');
+        if (window.V31 && V31.partPay) V31.partPay.reset('cb');
         var modal=document.getElementById('cbPayModal');
         modal.style.display='flex';
         // Force GPU layer before animating
@@ -4576,12 +4775,16 @@ Reason (required):`) || '').trim();
     }
     function closeCbPayModal(){document.getElementById('cbPayCard').style.transform='translate3d(0,100%,0)';setTimeout(function(){document.getElementById('cbPayModal').style.display='none';},340);document.body.style.overflow='';}
     function selectCbMode(mode){_cbMode=mode;['Cash','UPI','Card','Split'].forEach(function(m){var btn=document.getElementById('cbpm-'+m);var sec=document.getElementById('cbSec'+m);if(btn){btn.style.background=(m===mode)?'#2c5aa0':'white';btn.style.color=(m===mode)?'white':'#333';btn.style.borderColor=(m===mode)?'#2c5aa0':'#e0e0e0';}if(sec)sec.style.display=(m===mode)?'block':'none';});}
-    function calcCbChange(){var total=parseFloat((document.getElementById('cbPmTotal').textContent||'').replace('₹',''))||0;var amt=parseFloat(document.getElementById('cbPmTendered').value)||0;var chg=amt-total;var el=document.getElementById('cbPmChange');el.textContent=chg>=0?'₹'+chg.toFixed(2):'-₹'+Math.abs(chg).toFixed(2);el.style.color=chg>=0?'#27ae60':'#e74c3c';}
-    function calcCbSplit(){var total=parseFloat((document.getElementById('cbPmTotal').textContent||'').replace('₹',''))||0;var cash=parseFloat(document.getElementById('cbPmSplitCash').value)||0;var upi=parseFloat(document.getElementById('cbPmSplitUpi').value)||0;var rem=total-cash-upi;var el=document.getElementById('cbSplitSt');if(Math.abs(rem)<0.01){el.textContent='✅ Balanced';el.style.background='#e8f8ee';el.style.color='#27ae60';}else if(rem>0){el.textContent='⚠️ ₹'+rem.toFixed(2)+' still pending';el.style.background='#fff8e1';el.style.color='#e67e22';}else{el.textContent='❌ Overpaid by ₹'+Math.abs(rem).toFixed(2);el.style.background='#fff0f0';el.style.color='#e74c3c';}}
+    function _cbCollect(){var t=parseFloat((document.getElementById('cbPmTotal').textContent||'').replace(/[₹,]/g,''))||0;return (window.V31&&V31.partPay)?V31.partPay.amount('cb',t):t;}
+    function calcCbChange(){var total=_cbCollect();var amt=parseFloat(document.getElementById('cbPmTendered').value)||0;var chg=amt-total;var el=document.getElementById('cbPmChange');el.textContent=chg>=0?'₹'+chg.toFixed(2):'-₹'+Math.abs(chg).toFixed(2);el.style.color=chg>=0?'#27ae60':'#e74c3c';}
+    function calcCbSplit(){var total=_cbCollect();var cash=parseFloat(document.getElementById('cbPmSplitCash').value)||0;var upi=parseFloat(document.getElementById('cbPmSplitUpi').value)||0;var rem=total-cash-upi;var el=document.getElementById('cbSplitSt');if(Math.abs(rem)<0.01){el.textContent='✅ Balanced';el.style.background='#e8f8ee';el.style.color='#27ae60';}else if(rem>0){el.textContent='⚠️ ₹'+rem.toFixed(2)+' still pending';el.style.background='#fff8e1';el.style.color='#e67e22';}else{el.textContent='❌ Overpaid by ₹'+Math.abs(rem).toFixed(2);el.style.background='#fff0f0';el.style.color='#e74c3c';}}
     function confirmCbPayment(){
-        var total=parseFloat((document.getElementById('cbPmTotal').textContent||'').replace('₹',''))||0;
-        if(_cbMode==='Cash'&&(parseFloat(document.getElementById('cbPmTendered').value)||0)<total){showToast('Amount tendered is less than total','warning');return;}
-        if(_cbMode==='Split'){
+        var full=parseFloat((document.getElementById('cbPmTotal').textContent||'').replace(/[₹,]/g,''))||0;
+        var total=_cbCollect(), cbCredit = total <= 0 && full > 0;
+        if(cbCredit && !confirm('Save this bill with nothing paid now?\n\n₹' + full.toFixed(2) + ' will be due from the patient.')) return;
+        window.__cbPaid = total < full - 0.009 ? Math.round(total*100)/100 : null;
+        if(!cbCredit&&_cbMode==='Cash'&&(parseFloat(document.getElementById('cbPmTendered').value)||0)<total){showToast('Amount tendered is less than '+(total<full?'the amount paid now':'total'),'warning');return;}
+        if(!cbCredit&&_cbMode==='Split'){
             var c=parseFloat(document.getElementById('cbPmSplitCash').value)||0;
             var u=parseFloat(document.getElementById('cbPmSplitUpi').value)||0;
             if(Math.abs(c+u-total)>0.5){showToast('Split amounts must add up to total','warning');return;}
@@ -4656,7 +4859,7 @@ Reason (required):`) || '').trim();
         }
 
         // ── Save to Google Sheets in background ──────────────────
-        saveCombinedBillToSheets(_cbMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no, cbRecordId);
+        saveCombinedBillToSheets(cbCredit ? 'Credit' : _cbMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no, cbRecordId);
     }
 
     function saveCombinedBillToSheets(payMode, billId, dateV, grand, phAmt, costTotal, patient, doctor, phone, no, recordId) {
@@ -4665,11 +4868,20 @@ Reason (required):`) || '').trim();
         var trWords = document.getElementById('cb_tr_words').value || '';
         var cartItems = _cbCart.map(function(item){ return { medicineId: item.medicineId, medicineName: item.medicineName, qty: item.qty, price: item.price, amount: item.amount }; });
         var splitCash = parseFloat((document.getElementById('cbPmSplitCash')||{}).value)||0, splitUpi = parseFloat((document.getElementById('cbPmSplitUpi')||{}).value)||0;
+        // Money paid now goes to the medicines first, then to the treatment. Split cash/UPI is shared out the same way.
+        var r2 = function(x){ return Math.round((+x||0)*100)/100; };
+        var paidNow = payMode === 'Credit' ? 0 : (window.__cbPaid !== null && window.__cbPaid !== undefined ? window.__cbPaid : grand);
+        var phPaid = r2(Math.min(phAmt, paidNow)), trPaid = r2(paidNow - phPaid);
+        var phCash = r2(Math.min(splitCash, phPaid)), phUpi = r2(phPaid - phCash), trCash = r2(splitCash - phCash), trUpi = r2(splitUpi - phUpi);
+        var partMode = function(paid){ return paid <= 0 ? 'Credit' : payMode; };
+        var pid = (window.V31 && V31.enabled()) ? V31.patientIdFor('cb_patient', 'cb_phone') : '';
+        window.__cbPaid = null;
 
         // ── 1. Treatment receipt (dental revenue) ──
         if (trAmt > 0 || trDesc) {
-            API.call('saveTreatmentReceipt', { recordId: recordId || newId('TR'), receiptNo: no, date: dateV, patient: patient, doctor: doctor,
-                amount: trAmt.toFixed(2), amountWords: trWords, treatments: trDesc, paymentMode: payMode }).then(function(res){
+            API.call('saveTreatmentReceipt', { recordId: recordId || newId('TR'), receiptNo: no, date: dateV, patient: patient, doctor: doctor, phone: phone, patientId: pid,
+                amount: trAmt.toFixed(2), amountWords: trWords, treatments: trDesc, paymentMode: partMode(trPaid),
+                paidAmount: trPaid < trAmt - 0.009 ? trPaid.toFixed(2) : '', cashAmount: payMode === 'Split' ? trCash : '', upiAmount: payMode === 'Split' ? trUpi : '' }).then(function(res){
                 if (res.success) showToast('☁️ Treatment saved', 'success');
                 else if (res.queued) showToast('📴 Treatment kept on this device — will sync', 'warning');
                 else showToast('❌ Treatment NOT saved: ' + (res.error || ''), 'error');
@@ -4679,8 +4891,9 @@ Reason (required):`) || '').trim();
         if (cartItems.length > 0) {
             setBillSyncStatus && setBillSyncStatus('saving');
             API.call('saveBill', { billId: billId, patientName: patient, doctor: doctor, phone: phone, date: dateV,
-                subtotal: phAmt.toFixed(2), discount: '0', total: phAmt.toFixed(2), paymentMode: payMode, paymentRef: '',
-                cashAmount: payMode === 'Split' ? splitCash : '', upiAmount: payMode === 'Split' ? splitUpi : '',
+                subtotal: phAmt.toFixed(2), discount: '0', total: phAmt.toFixed(2), paymentMode: partMode(phPaid), paymentRef: '', patientId: pid,
+                cashAmount: payMode === 'Split' ? phCash : '', upiAmount: payMode === 'Split' ? phUpi : '',
+                paidAmount: phPaid < phAmt - 0.009 ? phPaid.toFixed(2) : '',
                 items: JSON.stringify(cartItems) }).then(function(res){ applyBillSaveResult(billId, res, cartItems); });
         }
     }
@@ -4963,7 +5176,7 @@ Reason (required):`) || '').trim();
 
     function updatePatientStats(){
         var now = new Date(); var ym = now.getFullYear()+'-'+(now.getMonth()+1);
-        var due = _patients.reduce(function(s,p){ return s+parseFloat(p.balance||0); }, 0);
+        var due = (window.V31 && V31.enabled()) ? V31.clinic.totalDue() : _patients.reduce(function(s,p){ return s+parseFloat(p.balance||0); }, 0);
         var month = _patients.filter(function(p){ return (p.lastVisit||'').startsWith(now.getFullYear()+'-'); }).length;
         var t=document.getElementById('pt_total'); if(t) t.textContent=_patients.length;
         var m=document.getElementById('pt_month'); if(m) m.textContent=month;
@@ -4986,13 +5199,13 @@ Reason (required):`) || '').trim();
             var sc = statusColor[p.status]||'grey';
             var idx = _patients.indexOf(p);
             return '<tr>' +
-                '<td><strong>'+esc(p.name)+'</strong>'+(p.syncStatus==='pending'?' <span style="font-size:10px;color:#e67e22;">⏳</span>':'')+(p.age?' <span style="color:#aaa;font-size:12px;">('+esc(p.age)+(p.sex?' '+esc(p.sex):'')+')' +'</span>':'')+'</td>'+
+                '<td><strong>'+esc(p.name)+'</strong>'+(p.syncStatus==='pending'?' <span style="font-size:10px;color:#e67e22;">⏳</span>':'')+(p.age?' <span style="color:#aaa;font-size:12px;">('+esc(p.age)+(p.sex?' '+esc(p.sex):'')+')' +'</span>':'')+((p.allergies||p.alerts)?' <span title="'+esc((p.allergies?'Allergy: '+p.allergies+' ':'')+(p.alerts||''))+'" style="color:#c0392b;">⚠️</span>':'')+'</td>'+
                 '<td style="white-space:nowrap;">'+esc(p.phone||'—')+'</td>'+
                 '<td style="white-space:nowrap;">'+esc(p.lastVisit||'—')+'</td>'+
                 '<td>'+esc(p.treatment||'—')+'</td>'+
-                '<td style="font-weight:700;color:'+(parseFloat(p.balance||0)>0?'#e74c3c':'#27ae60')+'">₹'+(parseFloat(p.balance||0).toFixed(0))+'</td>'+
-                '<td><span class="patient-badge '+sc+'">'+(p.status||'Active')+'</span></td>'+
-                '<td style="white-space:nowrap;">' +
+                (function(){ var bal = window.V31 ? V31.clinic.balanceOf(p) : parseFloat(p.balance||0); return '<td style="font-weight:700;color:'+(bal>0?'#e74c3c':'#27ae60')+'">₹'+bal.toFixed(0)+'</td>'; })()+
+                '<td><span class="patient-badge '+sc+'">'+esc(p.status||'Active')+'</span></td>'+
+                '<td style="white-space:nowrap;">' + (window.V31 ? V31.clinic.rowButtons(p) : '') +
                     '<button onclick="sendWaToPatient('+idx+')" style="background:#25d366;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;margin-right:4px;touch-action:manipulation;">📲 WA</button>' +
                     '<button onclick="deletePatient('+idx+')" style="background:#e74c3c;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;touch-action:manipulation;">🗑️</button>' +
                 '</td></tr>';
@@ -5022,6 +5235,7 @@ Reason (required):`) || '').trim();
     }
 
     function openAddPatientModal(){
+        if (window.V31 && V31.enabled()) { V31.clinic.openProfile(''); return; }
         ['pt_name','pt_phone','pt_age','pt_treatment','pt_alerts'].forEach(function(id){ var e=document.getElementById(id); if(e) e.value=''; });
         var s=document.getElementById('pt_sex'); if(s) s.value='';
         var d=document.getElementById('pt_doctor'); if(d) d.value='';
@@ -6207,6 +6421,7 @@ Reason (required):`) || '').trim();
             p.append('tp_notes',     d.tp_notes);
             p.append('upper_teeth',  EF_UPPER.map(function(n){ return n+':'+(d.teeth[n]||''); }).join(', '));
             p.append('lower_teeth',  EF_LOWER.map(function(n){ return n+':'+(d.teeth[n]||''); }).join(', '));
+            if (window.V31 && V31.enabled()) { var epid = V31.patientIdFor('ef_patient', 'ef_phone'); if (epid) p.append('patientId', epid); }
             fetch(CONFIG.apiUrl + '?' + p.toString(), {method:'GET', redirect:'follow'})
                 .then(function(r){return r.json();})
                 .then(function(res){ if(res.success) showToast('☁️ Exam form saved to Sheets!','success'); })
@@ -6227,9 +6442,9 @@ Reason (required):`) || '').trim();
             var tpSummary = (d.treatments||[]).map(function(t){ return t.charAt(0).toUpperCase()+t.slice(1); }).join(', ') || '—';
             return '<div class="ef-hist-item">' +
                 '<div class="ef-hist-info">' +
-                    '<div class="ef-hist-name">🦷 '+(d.patient||'—')+'</div>' +
-                    '<div class="ef-hist-meta">📅 '+dateStr+(d.doctor?' | 👨‍⚕️ '+d.doctor:'')+'</div>' +
-                    '<div class="ef-hist-meta">📋 '+tpSummary+'</div>' +
+                    '<div class="ef-hist-name">🦷 '+esc(d.patient||'—')+'</div>' +
+                    '<div class="ef-hist-meta">📅 '+esc(dateStr)+(d.doctor?' | 👨‍⚕️ '+esc(d.doctor):'')+'</div>' +
+                    '<div class="ef-hist-meta">📋 '+esc(tpSummary)+'</div>' +
                 '</div>' +
                 '<div class="ef-hist-btns">' +
                     '<button style="background:#2c5aa0;" onclick="loadEfRecord('+idx+')">✏️ Load</button>' +
@@ -7745,6 +7960,2405 @@ async function loadMovements(id) {
                 + '</td><td style="font-family:monospace;font-size:11px;">' + esc(m.ref) + '</td><td>' + esc(m.user) + '</td><td>' + esc(m.reason) + '</td></tr>';
         }).join('') + '</tbody></table></div>' : '<p style="color:#888;">No movements yet.</p>';
 }
+;
+
+;/* ══ FILE: 13-v31-core.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   13-v31-core.js — shared layer for the v3.1 features
+   • V31.enabled(): new screens appear only when the server is v3.1
+   • V31.data: receivables, payments, suppliers, treatments, follow-ups…
+   • Click/input handling through data-act attributes (no inline scripts)
+   • Patient picker with allergy / medical alert banner
+   • Page registry: V31.pages[id] = render function
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V31 = window.V31 = {
+    data: { receivables: [], payments: [], treatmentMaster: [], patientTreatments: [], followUps: [], cashClosings: [], suppliers: [],
+      purchaseInvoices: [], purchaseReturns: [], settings: {}, loadedFrom: '' },
+    pages: {}, _serverOn: false
+  };
+  V31.enabled = function () { var s = API.session; return !!((s && s.features && s.features.v31) || V31._serverOn); };
+  V31.isOwner = function () { return API.isOwner(); };
+
+  // ── small helpers ──────────────────────────────────────────────────
+  var h = V31.h = window.esc;
+  V31.r2 = function (x) { return Math.round((+x || 0) * 100) / 100; };
+  V31.inr = function (n, dp) {
+    n = +n || 0; var d = dp === 0 ? 0 : 2;
+    return (n < 0 ? '−₹' : '₹') + Math.abs(n).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+  };
+  V31.today = function () { return todayLocal(); };
+  V31.addDays = function (d, n) { var x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return x.toLocaleDateString('en-CA'); };
+  V31.fmtDate = function (d) {
+    if (!d) return '—'; var x = new Date(String(d).slice(0, 10) + 'T12:00:00');
+    return isNaN(x) ? String(d) : x.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  };
+  V31.daysBetween = function (a, b) { return Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 86400000); };
+  V31.normPhone = function (p) { var d = String(p || '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : d; };
+  V31.waPhone = function (p) { var d = V31.normPhone(p); return d.length === 10 ? '91' + d : d; };
+  V31.badge = function (status) {
+    var c = { Paid: ['#e8f8ee', '#1e8449'], Partial: ['#fff3e0', '#b9770e'], Unpaid: ['#fdecea', '#c0392b'], Returned: ['#eef1f5', '#555'],
+      Active: ['#e8f8ee', '#1e8449'], Cancelled: ['#eef1f5', '#777'], Pending: ['#fff3e0', '#b9770e'], Done: ['#e8f8ee', '#1e8449'],
+      Planned: ['#e8f0fe', '#2c5aa0'], 'In progress': ['#fff3e0', '#b9770e'], Completed: ['#e8f8ee', '#1e8449'], Overdue: ['#fdecea', '#c0392b'],
+      Inactive: ['#eef1f5', '#777'] }[status] || ['#eef1f5', '#555'];
+    return '<span class="v-badge" style="background:' + c[0] + ';color:' + c[1] + ';">' + h(status || '—') + '</span>';
+  };
+  V31.uid = function (p) { return newId(p); };
+  V31.toast = function (m, t) { showToast(m, t || 'success'); };
+  V31.val = function (id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; };
+  V31.num = function (id) { var v = parseFloat(V31.val(id)); return isFinite(v) ? v : 0; };
+  V31.msg = function (id, text, ok) { var e = document.getElementById(id); if (e) { e.textContent = text; e.style.color = ok ? '#1e8449' : '#c0392b'; } };
+  V31.busy = function (btn, on, label) {
+    if (!btn) return; if (on) { btn.dataset.label = btn.textContent; btn.disabled = true; btn.textContent = label || '⏳ Saving…'; }
+    else { btn.disabled = false; if (btn.dataset.label) btn.textContent = btn.dataset.label; }
+  };
+  // Amount in words (Indian numbering) — receipts
+  V31.words = function (num) {
+    num = Math.round(+num || 0); if (!num) return 'Zero Only';
+    var a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+    var b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    var two = function (n) { return n < 20 ? a[n] : b[Math.floor(n / 10)] + (n % 10 ? ' ' + a[n % 10] : ''); };
+    var three = function (n) { return (n >= 100 ? a[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' : '') : '') + (n % 100 ? two(n % 100) : ''); };
+    var out = [], cr = Math.floor(num / 10000000), lk = Math.floor(num / 100000) % 100, th = Math.floor(num / 1000) % 100, rest = num % 1000;
+    if (cr) out.push(three(cr) + ' Crore'); if (lk) out.push(two(lk) + ' Lakh'); if (th) out.push(two(th) + ' Thousand'); if (rest) out.push(three(rest));
+    return out.join(' ') + ' Only';
+  };
+
+  // ── clicks / inputs without inline scripts (CSP friendly) ─────────
+  var ACT = V31.act = {};
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest && e.target.closest('[data-act]'); if (!el || el.disabled) return;
+    var fn = ACT[el.getAttribute('data-act')]; if (!fn) return;
+    if (el.tagName === 'A' || el.tagName === 'BUTTON') e.preventDefault();
+    try { fn(el, e); } catch (err) { console.error(err); showToast('⚠️ ' + err.message, 'error'); }
+  });
+  ['input', 'change'].forEach(function (type) {
+    document.addEventListener(type, function (e) {
+      var el = e.target; if (!el || !el.getAttribute) return;
+      var name = el.getAttribute('data-' + type); if (!name || !ACT[name]) return;
+      try { ACT[name](el, e); } catch (err) { console.error(err); }
+    });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    var el = e.target; if (!el || !el.getAttribute) return;
+    var name = el.getAttribute('data-enter'); if (!name || !ACT[name]) return;
+    e.preventDefault(); ACT[name](el, e);
+  });
+
+  // ── building blocks ────────────────────────────────────────────────
+  V31.table = function (heads, rows, opts) {
+    opts = opts || {};
+    if (!rows.length) return '<div class="v-empty">' + (opts.empty || 'Nothing to show.') + '</div>';
+    var numCol = String(rows[0]).split('<td').slice(1).map(function (c) { return /^[^>]*class="num"/.test(c); });
+    // phones: every row becomes a small card; each cell shows its column name
+    var labels = heads.map(function (x) { return String(x).replace(/<[^>]*>/g, '').replace(/"/g, '&quot;').trim(); });
+    rows = rows.map(function (r) { var i = 0; return String(r).replace(/<td(?=[\s>])/g, function () { return '<td data-label="' + (labels[i++] || '') + '"'; }); });
+    return '<div class="tbl-wrap' + (opts.scroll ? ' v-scroll' : '') + '"><table class="table v-table' + (opts.cls ? ' ' + opts.cls : '') + '"><thead><tr>'
+      + heads.map(function (x, i) { return '<th' + (numCol[i] ? ' class="num"' : '') + '>' + x + '</th>'; }).join('')
+      + '</tr></thead><tbody>' + rows.join('') + '</tbody>' + (opts.foot ? '<tfoot>' + opts.foot + '</tfoot>' : '') + '</table></div>';
+  };
+  V31.td = function (v, num, extra) { return '<td' + (num ? ' class="num"' : '') + (extra ? ' ' + extra : '') + '>' + v + '</td>'; };
+  V31.kpis = function (list) {
+    return '<div class="v-kpis">' + list.map(function (k) {
+      return '<div class="v-kpi' + (k.tone ? ' v-' + k.tone : '') + '"><div class="v-kpi-l">' + h(k.label) + '</div><div class="v-kpi-v">' + k.value + '</div>' + (k.sub ? '<div class="v-kpi-s">' + k.sub + '</div>' : '') + '</div>';
+    }).join('') + '</div>';
+  };
+  V31.tabs = function (id, list, cur) {
+    return '<div class="v-tabs" role="tablist">' + list.map(function (t) {
+      return '<button type="button" role="tab" aria-selected="' + (t[0] === cur) + '" class="v-tab' + (t[0] === cur ? ' on' : '') + '" data-act="v31Tab" data-tabs="' + id + '" data-tab="' + t[0] + '">' + t[1] + '</button>';
+    }).join('') + '</div>';
+  };
+  V31.tabState = {};
+  ACT.v31Tab = function (el) { V31.tabState[el.dataset.tabs] = el.dataset.tab; var f = V31.tabRender[el.dataset.tabs]; if (f) f(); };
+  V31.tabRender = {};
+  V31.modeButtons = function (group, cur, modes) {
+    modes = modes || [['Cash', '💵 Cash'], ['UPI', '📱 UPI'], ['Card', '💳 Card'], ['Split', '🔀 Split']];
+    return '<div class="v-modes" data-group="' + group + '">' + modes.map(function (m) {
+      return '<button type="button" class="v-mode' + (m[0] === cur ? ' on' : '') + '" data-act="v31Mode" data-group="' + group + '" data-mode="' + m[0] + '">' + m[1] + '</button>';
+    }).join('') + '</div>';
+  };
+  V31.modeOf = function (group) { var b = document.querySelector('.v-mode.on[data-group="' + group + '"]'); return b ? b.dataset.mode : 'Cash'; };
+  V31.onMode = {};
+  ACT.v31Mode = function (el) {
+    document.querySelectorAll('.v-mode[data-group="' + el.dataset.group + '"]').forEach(function (b) { b.classList.toggle('on', b === el); });
+    if (V31.onMode[el.dataset.group]) V31.onMode[el.dataset.group](el.dataset.mode);
+  };
+  V31.dialog = function (title, body, opts) { return ssdcDialog(title, body, opts); };
+  V31.close = function () { closeSsdcDialog(); };
+  ACT.v31Close = function () { closeSsdcDialog(); };
+  V31.field = function (id, label, input) { return '<div class="v-field"><label for="' + id + '">' + label + '</label>' + input + '</div>'; };
+  V31.input = function (id, attrs) { return '<input id="' + id + '" class="v-in" ' + (attrs || '') + '>'; };
+  V31.call = function (action, params, opts) { return API.call(action, params, opts); };
+
+  // ── data from getAllData ─────────────────────────────────────────
+  var CKEY = 'ssdc_v31_cache';
+  V31.ingest = function (d) {
+    if (!d || d.unchanged || d.success === false) return;
+    V31._serverOn = !!(d.features && d.features.v31);
+    if (API.session) { API.session.features = d.features || API.session.features; API.saveSession(API.session); }
+    if (V31._serverOn) {
+      ['receivables', 'payments', 'treatmentMaster', 'patientTreatments', 'followUps', 'cashClosings', 'suppliers', 'purchaseInvoices', 'purchaseReturns']
+        .forEach(function (k) { if (Array.isArray(d[k])) V31.data[k] = d[k]; });
+      V31.data.settings = d.settings || {}; V31.data.loadedFrom = d.loadedFrom || '';
+      try { localStorage.setItem(CKEY, JSON.stringify(V31.data)); } catch (e) {}
+    }
+    V31.applyUI();
+    V31.refresh();
+  };
+  V31.loadCache = function () {
+    try { var c = JSON.parse(localStorage.getItem(CKEY) || 'null'); if (c) Object.keys(c).forEach(function (k) { V31.data[k] = c[k]; }); } catch (e) {}
+  };
+  V31.applyUI = function () {
+    var on = V31.enabled();
+    document.body.classList.toggle('v31', on);
+    document.querySelectorAll('.v31-only').forEach(function (el) { el.hidden = !on || (el.classList.contains('owner-only') && !API.isOwner()); });
+    document.querySelectorAll('.v30-only').forEach(function (el) { el.hidden = on; });
+  };
+  V31.refresh = function () {
+    var cur = document.querySelector('.page.active'), ae = document.activeElement;
+    var typing = cur && ae && cur.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
+    // background refresh never redraws a page someone is typing in (or that has its own data, like Finance / Cash closing)
+    if (cur && V31.pages[cur.id] && V31.enabled() && !typing && !V31.pages[cur.id].noAutoRefresh) { try { V31.pages[cur.id](true); } catch (e) { console.error(e); } }
+    (V31.afterRefresh || []).forEach(function (f) { try { f(); } catch (e) { console.error(e); } });
+  };
+  V31.afterRefresh = [];
+
+  // ── patients ───────────────────────────────────────────────────────
+  V31.patients = function () { return window._patients || []; };
+  V31.patientById = function (id) { return V31.patients().find(function (p) { return String(p.id) === String(id); }) || null; };
+  V31.findPatient = function (name, phone) {
+    var n = String(name || '').trim().toLowerCase(), ph = V31.normPhone(phone);
+    if (!n) return null;
+    var list = V31.patients().filter(function (p) { return String(p.name || '').trim().toLowerCase() === n && (!ph || V31.normPhone(p.phone) === ph); });
+    return list.length === 1 ? list[0] : null;
+  };
+  V31.searchPatients = function (q, limit) {
+    q = String(q || '').trim().toLowerCase(); if (!q) return [];
+    var digits = q.replace(/\D/g, '');
+    return V31.patients().filter(function (p) {
+      return String(p.name || '').toLowerCase().indexOf(q) !== -1 || (digits.length >= 3 && String(p.phone || '').replace(/\D/g, '').indexOf(digits) !== -1);
+    }).slice(0, limit || 8);
+  };
+  V31.outstandingOf = function (p) {
+    if (!p) return 0; var ph = V31.normPhone(p.phone), nm = String(p.name || '').trim().toLowerCase();
+    return V31.r2(V31.data.receivables.reduce(function (a, r) {
+      var mine = r.patientId ? String(r.patientId) === String(p.id) : (String(r.patientName || '').trim().toLowerCase() === nm && (!ph || !r.phone || V31.normPhone(r.phone) === ph));
+      return a + (mine ? r.balance : 0);
+    }, 0));
+  };
+  V31.alertsHtml = function (p) {
+    if (!p) return '';
+    var bits = [];
+    if (p.allergies) bits.push('<b>Allergy:</b> ' + h(p.allergies));
+    if (p.alerts) bits.push('<b>Alert:</b> ' + h(p.alerts));
+    if (p.medicalHistory) bits.push('<b>History:</b> ' + h(String(p.medicalHistory).slice(0, 120)));
+    var due = V31.outstandingOf(p);
+    if (due > 0) bits.push('<b>Due:</b> ' + V31.inr(due));
+    return bits.length ? '<div class="v-alert" role="status">⚠️ ' + bits.join(' · ') + '</div>' : '';
+  };
+  // Type-ahead under a name field. Remembers the chosen patient's ID on the input.
+  V31.attachPatientPicker = function (input, opts) {
+    if (!input || input.dataset.picker) return; opts = opts || {};
+    input.dataset.picker = '1'; input.setAttribute('autocomplete', 'off');
+    var box = document.createElement('div'); box.className = 'v-pick'; box.hidden = true; box.setAttribute('role', 'listbox');
+    var alertBox = document.createElement('div'); alertBox.className = 'v-pick-alert';
+    input.parentNode.insertBefore(box, input.nextSibling); box.parentNode.insertBefore(alertBox, box.nextSibling);
+    if (getComputedStyle(input.parentNode).position === 'static') input.parentNode.style.position = 'relative';
+    var choose = function (p) {
+      input.value = p.name; input.dataset.patientId = p.id; box.hidden = true;
+      var ph = opts.phone && document.getElementById(opts.phone); if (ph && !ph.value) ph.value = p.phone || '';
+      alertBox.innerHTML = V31.enabled() ? V31.alertsHtml(p) : '';
+      if (opts.onPick) opts.onPick(p);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    input.addEventListener('input', function (e) {
+      if (e.isTrusted !== false && input.dataset.patientId) { var cur = V31.patientById(input.dataset.patientId); if (!cur || cur.name !== input.value) { delete input.dataset.patientId; alertBox.innerHTML = ''; } }
+      var list = V31.searchPatients(input.value, 8);
+      if (!list.length || (list.length === 1 && list[0].name === input.value && input.dataset.patientId)) { box.hidden = true; return; }
+      box.innerHTML = list.map(function (p, i) {
+        return '<div class="v-pick-item" role="option" data-i="' + i + '"><b>' + h(p.name) + '</b> <span>' + h(p.phone || '') + (p.age ? ' · ' + h(p.age) : '') + '</span>'
+          + (p.allergies || p.alerts ? ' <span class="v-pick-warn">⚠️</span>' : '') + '</div>';
+      }).join('');
+      box._list = list; box.hidden = false;
+    });
+    box.addEventListener('mousedown', function (e) { var it = e.target.closest('.v-pick-item'); if (it) { e.preventDefault(); choose(box._list[+it.dataset.i]); } });
+    input.addEventListener('blur', function () { setTimeout(function () { box.hidden = true; }, 150); });
+    input.addEventListener('keydown', function (e) { if (e.key === 'Escape') box.hidden = true; if (e.key === 'Enter' && !box.hidden && box._list && box._list.length === 1) { e.preventDefault(); choose(box._list[0]); } });
+    input._v31Clear = function () { delete input.dataset.patientId; alertBox.innerHTML = ''; box.hidden = true; };
+    input._v31Choose = choose;
+  };
+  V31.patientIdFor = function (inputId, phoneId) {
+    var el = document.getElementById(inputId); if (!el) return '';
+    if (el.dataset.patientId) return el.dataset.patientId;
+    var p = V31.findPatient(el.value, phoneId ? V31.val(phoneId) : ''); return p ? p.id : '';
+  };
+
+  // ── session: unlock encrypted storage before the app reads it ─────
+  var origStart = window.startSession;
+  window.startSession = function (user) {
+    var s = API.session || {};
+    if (s.dataKey && window.SecureStore && !SecureStore.isUnlocked()) {
+      SecureStore.unlock(s.dataKey, user.username).then(function () { reloadLocalState(); origStart(user); }, function () { origStart(user); });
+      return;
+    }
+    origStart(user);
+    V31.applyUI();
+  };
+  function reloadLocalState() {
+    try { window._patients = JSON.parse(localStorage.getItem('pt_records') || '[]'); } catch (e) {}
+    try { window._appointments = JSON.parse(localStorage.getItem('appointments') || '[]'); } catch (e) {}
+    try { if (typeof window._expenses !== 'undefined') window._expenses = JSON.parse(localStorage.getItem('clinic_expenses') || '[]'); } catch (e) {}
+    try { if (typeof window._efHistory !== 'undefined') window._efHistory = JSON.parse(localStorage.getItem('ef_history') || '[]'); } catch (e) {}
+    V31.loadCache(); V31.applyUI();
+    if (API.updateStatusLine) API.updateStatusLine();
+  }
+  var origLogout = window.doLogout;
+  window.doLogout = function (silent) {
+    var r = origLogout.apply(this, arguments);
+    API.dataVersion = '';
+    if (window.SecureStore && SecureStore.isUnlocked()) SecureStore.lock();
+    V31._serverOn = false; V31.applyUI();
+    return r;
+  };
+
+  // ── page hooks ─────────────────────────────────────────────────────
+  var V31_TITLES = { payments: '💰 Dues & Payments', cashclose: '🧮 Cash Closing', suppliers: '🏭 Suppliers', followups: '🔔 Follow-ups', finance: '💹 Finance & Reports' };
+  var origShow = window.showPage;
+  window.showPage = function (page) {
+    if (['suppliers', 'finance'].indexOf(page) !== -1 && currentRole !== 'owner') return;
+    var r = origShow.apply(this, arguments);
+    if (V31_TITLES[page]) document.getElementById('pageTitle').textContent = V31_TITLES[page];
+    if (V31.pages[page] && V31.enabled()) {
+      try { V31.pages[page](); } catch (e) { console.error(e); }
+      if (API.token() && typeof loadData === 'function') loadData();     // fresh numbers (tiny request when nothing changed)
+    }
+    (V31.onShow[page] || []).forEach(function (f) { try { f(); } catch (e) { console.error(e); } });
+    return r;
+  };
+  V31.onShow = {};
+  V31.whenShown = function (page, fn) { (V31.onShow[page] = V31.onShow[page] || []).push(fn); };
+
+  document.addEventListener('DOMContentLoaded', function () {
+    V31.applyUI();
+    ['patientName', 'patientPhone', 'doctor', 'discountPct'].forEach(function (id) {
+      var el = document.getElementById(id); if (el) el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', function () { if (typeof updateReceipt === 'function') updateReceipt(); });
+    });
+  });
+})();
+;
+
+;/* ══ FILE: 14-money.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   14-money.js — part payments, dues, collections, returns/refunds,
+   payment history, daily cash closing (v3.1)
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V = window.V31, ACT = V.act, h = V.h, inr = V.inr, r2 = V.r2;
+  var M = V.money = {};
+
+  // ═══════════ part payment widget (inside the 3 payment windows) ═══════════
+  var PP = V.partPay = { st: {} };
+  PP.mount = function (key, anchor, getTotal, onChange) {
+    if (!anchor) return;
+    var box = document.getElementById('pp_' + key);
+    if (!box) { box = document.createElement('div'); box.id = 'pp_' + key; box.className = 'v-pp'; anchor.parentNode.insertBefore(box, anchor.nextSibling); }
+    PP.st[key] = PP.st[key] || { on: false, now: '' };
+    PP.st[key].getTotal = getTotal; PP.st[key].onChange = onChange;
+    PP.render(key);
+  };
+  PP.allowed = function () { return V.enabled() && (API.isOwner() || V.data.settings.staffCreditAllowed !== false); };
+  PP.render = function (key) {
+    var box = document.getElementById('pp_' + key), st = PP.st[key]; if (!box || !st) return;
+    box.hidden = !PP.allowed();
+    if (box.hidden) { st.on = false; return; }
+    var total = st.getTotal(), now = st.on ? PP.amount(key) : total;
+    box.innerHTML = '<label class="v-pp-tog"><input type="checkbox" data-change="ppToggle" data-k="' + key + '"' + (st.on ? ' checked' : '') + '> Pay part now · rest later</label>'
+      + (st.on ? '<div class="v-pp-body"><div class="v-pp-row"><label for="pp_now_' + key + '">Paying now ₹</label>'
+        + '<input id="pp_now_' + key + '" type="number" min="0" step="0.01" inputmode="decimal" value="' + now + '" data-input="ppNow" data-k="' + key + '"></div>'
+        + '<div class="v-pp-chips"><button type="button" data-act="ppSet" data-k="' + key + '" data-v="0">Pay all later</button>'
+        + '<button type="button" data-act="ppSet" data-k="' + key + '" data-v="half">Half now</button></div>'
+        + '<div class="v-pp-due" id="pp_due_' + key + '">' + dueText(total, now) + '</div></div>' : '');
+  };
+  function dueText(total, now) {
+    var due = r2(total - now);
+    return now <= 0 ? '🕒 Nothing collected now — <b>' + inr(total) + '</b> will be due' : 'Balance due later: <b>' + inr(due) + '</b>';
+  }
+  PP.amount = function (key, totalArg) {
+    var st = PP.st[key], total = totalArg !== undefined ? totalArg : (st ? st.getTotal() : 0);
+    if (!st || !st.on || !PP.allowed()) return total;
+    var v = parseFloat(st.now); if (!isFinite(v)) v = total;
+    return r2(Math.max(0, Math.min(total, v)));
+  };
+  PP.isPart = function (key) { var st = PP.st[key]; return !!(st && st.on && PP.allowed() && PP.amount(key) < st.getTotal() - 0.009); };
+  PP.reset = function (key) { var st = PP.st[key]; if (st) { st.on = false; st.now = ''; PP.render(key); } };
+  ACT.ppToggle = function (el) {
+    var st = PP.st[el.dataset.k]; st.on = el.checked; st.now = st.on ? String(r2(st.getTotal() / 2)) : '';
+    PP.render(el.dataset.k); if (st.onChange) st.onChange();
+    var inp = document.getElementById('pp_now_' + el.dataset.k); if (inp) { inp.focus(); inp.select(); }
+  };
+  ACT.ppNow = function (el) {
+    var k = el.dataset.k, st = PP.st[k]; st.now = el.value;
+    var d = document.getElementById('pp_due_' + k); if (d) d.innerHTML = dueText(st.getTotal(), PP.amount(k));
+    if (st.onChange) st.onChange();
+  };
+  ACT.ppSet = function (el) {
+    var k = el.dataset.k, st = PP.st[k], t = st.getTotal();
+    st.now = el.dataset.v === 'half' ? String(r2(t / 2)) : '0';
+    PP.render(k); if (st.onChange) st.onChange();
+  };
+
+  // pharmacy bill window
+  function pmTotal() { return parseFloat(String((document.getElementById('pmTotal') || {}).textContent || '0').replace(/[₹,]/g, '')) || 0; }
+  function pmChanged() {
+    var now = PP.amount('pm', pmTotal());
+    if (now === 0 && window._selectedPayMode === 'UPI') selectPayMode('Cash');
+    if (typeof calcChange === 'function') calcChange();
+    if (typeof calcSplit === 'function') calcSplit();
+    if (window._selectedPayMode === 'UPI' && typeof generateUpiQr === 'function') generateUpiQr();
+    var qc = document.getElementById('quickCashBtns');
+    if (qc && now > 0) {
+      qc.innerHTML = '';
+      var rd = Math.ceil(now / 10) * 10;
+      [rd, rd + 50, rd + 100, 500, 1000, 2000].filter(function (v, i, a) { return a.indexOf(v) === i && v >= now; }).slice(0, 5).forEach(function (amt) {
+        var b = document.createElement('button'); b.type = 'button'; b.textContent = '₹' + amt;
+        b.style.cssText = 'padding:6px 12px;border:1px solid #2c5aa0;border-radius:6px;background:#f0f4ff;color:#2c5aa0;cursor:pointer;font-size:13px;font-weight:600;';
+        b.addEventListener('click', function () { document.getElementById('pmTendered').value = amt; calcChange(); });
+        qc.appendChild(b);
+      });
+    }
+    var lab = document.getElementById('pmCollectLine');
+    if (lab) lab.innerHTML = PP.isPart('pm') ? 'Collect now: <b>' + inr(now) + '</b>' : '';
+  }
+  // dental receipt window
+  function trTotal() { return parseFloat(String((document.getElementById('trPmTotal') || {}).textContent || '0').replace(/[₹,]/g, '')) || 0; }
+  function upiQr(imgId, amtId, amt) {
+    var img = document.getElementById(imgId); if (!img || !CONFIG.upiId) return;
+    var link = 'upi://pay?pa=' + encodeURIComponent(CONFIG.upiId) + '&pn=' + encodeURIComponent(CONFIG.upiName || 'Sri Sai Dental') + '&am=' + amt.toFixed(2) + '&cu=INR&tn=' + encodeURIComponent('Dental');
+    img.src = qrDataUrl(link, 5); var a = document.getElementById(amtId); if (a) a.textContent = (amtId === 'cbUpiAmt' ? '' : '₹') + amt.toFixed(2);
+  }
+  function trChanged() { if (typeof calcTrChange === 'function') calcTrChange(); if (typeof calcTrSplit === 'function') calcTrSplit(); upiQr('trUpiQr', 'trUpiAmt', PP.amount('tr', trTotal())); }
+  function cbTotal() { return parseFloat(String((document.getElementById('cbPmTotal') || {}).textContent || '0').replace(/[₹,]/g, '')) || 0; }
+  function cbChanged() { if (typeof calcCbChange === 'function') calcCbChange(); if (typeof calcCbSplit === 'function') calcCbSplit(); upiQr('cbUpiQr', 'cbUpiAmt', PP.amount('cb', cbTotal())); }
+  M.mountPartPay = function () {
+    var a = document.getElementById('pmTotal'); if (a) PP.mount('pm', a.closest('div').parentNode, pmTotal, pmChanged);
+    var b = document.getElementById('trPmTotal'); if (b) PP.mount('tr', b.closest('div').parentNode, trTotal, trChanged);
+    var c = document.getElementById('cbPmTotal'); if (c) PP.mount('cb', c.closest('div').parentNode, cbTotal, cbChanged);
+  };
+  M.collectNow = function (key) {     // amount to collect now in a payment window
+    var t = key === 'pm' ? pmTotal() : key === 'tr' ? trTotal() : cbTotal();
+    return PP.amount(key, t);
+  };
+
+  // ═══════════ collect a balance ═══════════
+  function recLabel(r) { return (r.type === 'BILL' ? '💊 ' : r.type === 'RECEIPT' ? '🦷 ' : '📒 ') + (r.no || r.id); }
+  M.receivable = function (type, id) { return V.data.receivables.find(function (r) { return r.type === type && String(r.id) === String(id); }) || null; };
+  M.openCollect = function (recs) {
+    recs = (recs || []).filter(function (r) { return r && r.balance > 0.009; });
+    if (!recs.length) { V.toast('Nothing is due', 'info'); return; }
+    recs.sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    var due = r2(recs.reduce(function (a, r) { return a + r.balance; }, 0)), p = recs[0];
+    M._collect = recs;
+    V.dialog('💰 Collect payment',
+      '<div class="v-sum"><div><span>Patient</span><b>' + h(p.patientName) + '</b></div>'
+      + (p.phone ? '<div><span>Phone</span><b>' + h(p.phone) + '</b></div>' : '')
+      + '<div><span>For</span><b>' + recs.map(function (r) { return h(recLabel(r)) + ' <small>(' + inr(r.balance) + ')</small>'; }).join('<br>') + '</b></div>'
+      + '<div class="v-sum-big"><span>Total due</span><b>' + inr(due) + '</b></div></div>'
+      + V.field('colAmt', 'Amount received now (₹)', '<input id="colAmt" class="v-in v-in-big" type="number" min="1" step="0.01" inputmode="decimal" value="' + due + '" data-input="colAmtChanged">')
+      + '<div id="colAfter" class="v-note"></div>'
+      + '<label class="v-lbl">How was it paid?</label>' + V.modeButtons('col', 'Cash')
+      + '<div id="colSplit" hidden><div class="v-row2">' + V.field('colCash', 'Cash ₹', V.input('colCash', 'type="number" min="0" step="0.01"'))
+      + V.field('colUpi', 'UPI ₹', V.input('colUpi', 'type="number" min="0" step="0.01"')) + V.field('colCard', 'Card ₹', V.input('colCard', 'type="number" min="0" step="0.01"')) + '</div></div>'
+      + '<div id="colUpiQr" class="v-qr" hidden></div>'
+      + V.field('colRef', 'Reference (UPI ref / card last 4) — optional', V.input('colRef', 'maxlength="60"'))
+      + (API.isOwner() ? V.field('colDate', 'Date received', V.input('colDate', 'type="date" max="' + V.today() + '" value="' + V.today() + '"')) : '')
+      + '<div id="colMsg" class="v-msg" aria-live="polite"></div>'
+      + '<button type="button" class="v-btn v-primary v-wide" data-act="colSave">✅ Save payment</button>', { width: 480 });
+    V.onMode.col = function (m) { document.getElementById('colSplit').hidden = m !== 'Split'; colQr(); };
+    ACT.colAmtChanged(); colQr();
+  };
+  function colQr() {
+    var el = document.getElementById('colUpiQr'); if (!el) return;
+    var m = V.modeOf('col'), amt = V.num('colAmt');
+    if (m !== 'UPI' || !CONFIG.upiId || !(amt > 0)) { el.hidden = true; return; }
+    var link = 'upi://pay?pa=' + encodeURIComponent(CONFIG.upiId) + '&pn=' + encodeURIComponent(CONFIG.upiName || 'Sri Sai Dental Care') + '&am=' + amt.toFixed(2) + '&cu=INR&tn=' + encodeURIComponent('Dues');
+    el.innerHTML = '<img alt="UPI QR for ' + inr(amt) + '" src="' + qrDataUrl(link, 4) + '"><div>Scan to pay <b>' + inr(amt) + '</b><br><small>' + h(CONFIG.upiId) + '</small></div>'; el.hidden = false;
+  }
+  ACT.colAmtChanged = function () {
+    var due = r2((M._collect || []).reduce(function (a, r) { return a + r.balance; }, 0)), amt = V.num('colAmt'), el = document.getElementById('colAfter');
+    if (el) el.innerHTML = amt > due + 0.009 ? '<span class="v-bad">More than the amount due (' + inr(due) + ')</span>' : amt > 0 ? 'Still due after this: <b>' + inr(due - amt) + '</b>' : '';
+    colQr();
+  };
+  ACT.colSave = async function (btn) {
+    var recs = M._collect || [], amt = r2(V.num('colAmt')), mode = V.modeOf('col'), due = r2(recs.reduce(function (a, r) { return a + r.balance; }, 0));
+    if (!(amt > 0)) return V.msg('colMsg', 'Enter the amount received');
+    if (amt > due + 0.009) return V.msg('colMsg', 'That is more than the ' + inr(due) + ' due');
+    var split = { cash: V.num('colCash'), upi: V.num('colUpi'), card: V.num('colCard') };
+    if (mode === 'Split' && Math.abs(split.cash + split.upi + split.card - amt) > 0.5) return V.msg('colMsg', 'Cash + UPI + Card must add up to ' + inr(amt));
+    V.busy(btn, true);
+    var left = amt, done = [], failed = '', queued = false, sLeft = Object.assign({}, split);
+    for (var i = 0; i < recs.length && left > 0.009; i++) {
+      var r = recs[i], part = r2(Math.min(left, r.balance)), p = { againstType: r.type, againstId: r.id, amount: part, mode: mode, ref: V.val('colRef'), date: V.val('colDate') || '', phone: r.phone || '' };
+      if (mode === 'Split') {     // fill this invoice from cash, then UPI, then card
+        var need = part; ['cash', 'upi', 'card'].forEach(function (k) { var t = r2(Math.min(sLeft[k], need)); p[k + 'Amount'] = t; sLeft[k] = r2(sLeft[k] - t); need = r2(need - t); });
+      }
+      var res = await API.call('recordPayment', p);
+      if (res.success) { done.push({ r: r, res: res, amount: part }); r.balance = r2(r.balance - part); left = r2(left - part); }
+      else if (res.queued) { queued = true; r.balance = r2(r.balance - part); left = r2(left - part); done.push({ r: r, res: { paymentNo: 'pending', balance: r.balance }, amount: part }); }
+      else { failed = res.error || 'Not saved'; break; }
+    }
+    V.busy(btn, false);
+    if (failed && !done.length) return V.msg('colMsg', failed);
+    V.data.receivables = V.data.receivables.filter(function (x) { return x.balance > 0.009; });
+    M._lastReceipt = { patientName: recs[0].patientName, phone: recs[0].phone, amount: r2(amt - left), mode: mode, ref: V.val('colRef'), date: V.val('colDate') || V.today(),
+      lines: done.map(function (d) { return { label: recLabel(d.r), no: d.res.paymentNo, amount: d.amount, after: d.res.balance }; }), stillDue: r2(due - (amt - left)) };
+    V.dialog('✅ Payment saved',
+      '<p class="v-big-ok">' + inr(M._lastReceipt.amount) + ' received from <b>' + h(recs[0].patientName) + '</b>' + (queued ? '<br><small>📴 Saved on this device — will sync automatically</small>' : '') + '</p>'
+      + (failed ? '<p class="v-bad">Part of it was not saved: ' + h(failed) + '</p>' : '')
+      + '<p>Still due: <b>' + inr(M._lastReceipt.stillDue) + '</b></p>'
+      + '<div class="v-actions"><button type="button" class="v-btn v-primary" data-act="payReceiptPrint">🖨️ Print receipt</button>'
+      + (recs[0].phone ? '<button type="button" class="v-btn v-wa" data-act="payReceiptWa">📲 WhatsApp</button>' : '')
+      + '<button type="button" class="v-btn" data-act="v31Close">Done</button></div>', { width: 420 });
+    if (!queued) loadData(); else V.refresh();
+  };
+  function receiptHtml(rc) {
+    return '<div id="__pay" style="font-family:Georgia,serif;max-width:420px;margin:0 auto;color:#111;">'
+      + '<h2 style="text-align:center;margin:0;font-size:18px;">Sri Sai Speciality Dental Care</h2>'
+      + '<div style="text-align:center;font-size:11px;">' + h(CONFIG.clinicAddress || '') + '<br>📞 ' + h(CONFIG.clinicPhone || '') + '</div>'
+      + '<h3 style="text-align:center;letter-spacing:2px;text-decoration:underline;margin:12px 0;">PAYMENT RECEIPT</h3>'
+      + '<table style="width:100%;font-size:13px;border-collapse:collapse;">'
+      + '<tr><td>Date</td><td style="text-align:right;">' + h(V.fmtDate(rc.date)) + '</td></tr>'
+      + '<tr><td>Received from</td><td style="text-align:right;"><b>' + h(rc.patientName) + '</b></td></tr>'
+      + rc.lines.map(function (l) { return '<tr><td>' + h(l.label) + ' <small>' + h(l.no) + '</small></td><td style="text-align:right;">' + inr(l.amount) + '</td></tr>'; }).join('')
+      + '<tr><td style="border-top:1px solid #000;padding-top:6px;"><b>Amount received</b></td><td style="border-top:1px solid #000;text-align:right;padding-top:6px;"><b>' + inr(rc.amount) + '</b></td></tr>'
+      + '<tr><td colspan="2" style="font-size:12px;">(' + h(V.words(rc.amount)) + ') · ' + h(rc.mode) + (rc.ref ? ' · Ref ' + h(rc.ref) : '') + '</td></tr>'
+      + '<tr><td>Balance still due</td><td style="text-align:right;">' + inr(rc.stillDue) + '</td></tr></table>'
+      + '<p style="text-align:right;margin-top:26px;font-size:12px;">Signature</p></div>';
+  }
+  ACT.payReceiptPrint = function () { if (M._lastReceipt) printBillHtml(receiptHtml(M._lastReceipt)); };
+  ACT.payReceiptWa = function () {
+    var rc = M._lastReceipt; if (!rc) return;
+    var msg = '*🦷 Sri Sai Speciality Dental Care*\n\nDear *' + rc.patientName + '*, we received *' + inr(rc.amount) + '* (' + rc.mode + ') on ' + V.fmtDate(rc.date) + '.\n'
+      + (rc.stillDue > 0 ? 'Balance still due: *' + inr(rc.stillDue) + '*.\n' : 'Your account is fully settled. ✅\n') + '\nThank you! 🙏\n📞 ' + (CONFIG.clinicPhone || '');
+    openWhatsApp(V.waPhone(rc.phone), msg);
+  };
+  ACT.remindDue = function (el) {
+    var list = V.data.receivables.filter(function (r) { return M.patientKey(r) === el.dataset.key; }); if (!list.length) return;
+    var p = list[0], due = r2(list.reduce(function (a, r) { return a + r.balance; }, 0));
+    if (!p.phone) { V.toast('No phone number for this patient', 'warning'); return; }
+    var msg = '*🦷 Sri Sai Speciality Dental Care*\n\nHello *' + p.patientName + '*! 😊\nA balance of *' + inr(due) + '* is pending'
+      + ' (' + list.map(function (r) { return (r.no || r.id) + ' — ' + inr(r.balance); }).join(', ') + ').\n'
+      + (CONFIG.upiId ? 'You can pay by UPI to *' + CONFIG.upiId + '*.\n' : '') + 'Kindly settle at your convenience.\n\nThank you! 🙏\n📞 ' + (CONFIG.clinicPhone || '');
+    openWhatsApp(V.waPhone(p.phone), msg);
+  };
+  // a bill just saved with money still due shows in Dues straight away
+  M.noteDue = function (type, b) {
+    if (M.receivable(type, b.billId)) return;
+    V.data.receivables.push({ type: type, id: b.billId, no: b.billNo || b.billId, date: b.date, patientId: b.patientId || '', patientName: b.patientName, phone: b.phone || '',
+      doctor: b.doctor || '', total: +b.total || 0, paid: +b.paidAmount || 0, returned: 0, refunded: 0, balance: +b.balanceDue || 0 });
+    V.refresh();
+  };
+  ACT.collect = function (el) {
+    if (el.dataset.key) return M.openCollect(V.data.receivables.filter(function (r) { return M.patientKey(r) === el.dataset.key; }));
+    M.openCollect([M.receivable(el.dataset.type, el.dataset.id)]);
+  };
+
+  // ═══════════ bill detail: payments + returns ═══════════
+  M.findInvoice = function (type, id) {
+    if (type === 'BILL') return (window.bills || []).find(function (b) { return String(b.billId) === String(id); }) || null;
+    return (window.serverTreatments || []).find(function (t) { return String(t.recordId || t.no) === String(id); }) || null;
+  };
+  ACT.billDetail = function (el) { M.openDetail(el.dataset.type || 'BILL', el.dataset.id); };
+  M.openDetail = async function (type, id) {
+    var inv = M.findInvoice(type, id), rec = M.receivable(type, id);
+    if (!inv && type === 'BILL' && API.isOwner()) {
+      var got = await API.call('getBills', { q: id, limit: 3 });
+      if (got.success) inv = (got.bills || []).find(function (b) { return String(b.billId) === String(id); }) || null;
+    }
+    var base = inv ? (type === 'BILL'
+      ? { no: inv.billNo || inv.billId, date: inv.date, patient: inv.patientName, phone: inv.phone, doctor: inv.doctor, total: +inv.total || 0, paid: inv.paidAmount !== undefined ? inv.paidAmount : +inv.total, returned: inv.returnedValue || 0, refunded: inv.refundedAmount || 0, items: inv.items || [], subtotal: +inv.subtotal || 0, discount: +inv.discount || 0, mode: inv.paymentMode }
+      : { no: inv.no, date: inv.date, patient: inv.patient, phone: '', doctor: inv.doctor, total: +inv.amount || 0, paid: inv.paidAmount !== undefined ? inv.paidAmount : +inv.amount, returned: inv.returnedValue || 0, refunded: inv.refundedAmount || 0, items: [], treatments: inv.treatments, mode: inv.paymentMode })
+      : rec ? { no: rec.no, date: rec.date, patient: rec.patientName, phone: rec.phone, doctor: rec.doctor, total: rec.total, paid: rec.paid, returned: rec.returned, refunded: rec.refunded, items: [] } : null;
+    if (!base) { V.toast('Bill not found on this device', 'warning'); return; }
+    base.balance = r2(base.total - base.returned - (base.paid - base.refunded));
+    M._detail = { type: type, id: id, base: base, inv: inv };
+    V.dialog((type === 'BILL' ? '💊 Bill ' : '🦷 Receipt ') + h(base.no || id),
+      '<div class="v-sum"><div><span>Patient</span><b>' + h(base.patient || '—') + '</b></div><div><span>Date</span><b>' + h(V.fmtDate(base.date)) + '</b></div>'
+      + (base.doctor ? '<div><span>Doctor</span><b>' + h(base.doctor) + '</b></div>' : '') + '</div>'
+      + (base.items.length ? V.table(['Item', 'Qty', 'Rate', 'Amount'], base.items.map(function (i) { return '<tr><td>' + h(i.medicineName || i.name) + '</td>' + V.td(i.qty, 1) + V.td(inr(i.price), 1) + V.td(inr(i.amount), 1) + '</tr>'; })) : '')
+      + (base.treatments ? '<p class="v-note">🦷 ' + h(base.treatments) + '</p>' : '')
+      + '<div class="v-money">' + [['Total', base.total], base.returned ? ['Returned', -base.returned] : null, ['Paid', base.paid], base.refunded ? ['Paid back', -base.refunded] : null]
+        .filter(Boolean).map(function (x) { return '<div><span>' + x[0] + '</span><b>' + inr(x[1]) + '</b></div>'; }).join('')
+      + '<div class="v-money-due"><span>Balance due</span><b>' + inr(base.balance) + '</b></div></div>'
+      + '<h4 class="v-h4">Payments &amp; returns</h4><div id="detPays">Loading…</div>'
+      + '<div class="v-actions">'
+      + (base.balance > 0.009 ? '<button type="button" class="v-btn v-primary" data-act="collect" data-type="' + type + '" data-id="' + h(id) + '">💰 Collect</button>' : '')
+      + (API.isOwner() && base.total - base.returned > 0.009 ? '<button type="button" class="v-btn v-warn" data-act="openRefund">↩️ Return / Refund</button>' : '')
+      + '</div>', { width: 620 });
+    var res = await API.call('getPayments', { againstId: id });
+    var el = document.getElementById('detPays'); if (!el) return;
+    if (!res.success) { el.textContent = res.error || 'Could not load payments'; return; }
+    M._detail.payments = res.payments;
+    var initial = r2(base.paid - res.payments.filter(function (p) { return p.type === 'COLLECTION' && p.status === 'Active'; }).reduce(function (a, p) { return a + p.amount; }, 0));
+    var rows = [];
+    if (initial > 0) rows.push('<tr><td>' + h(V.fmtDate(base.date)) + '</td><td>Paid with bill</td><td>' + h(base.mode || '') + '</td>' + V.td(inr(initial), 1) + '<td></td><td></td></tr>');
+    res.payments.forEach(function (p) {
+      var cancelled = p.status === 'Cancelled';
+      rows.push('<tr' + (cancelled ? ' class="v-strike"' : '') + '><td>' + h(V.fmtDate(p.date)) + '</td><td>' + (p.type === 'REFUND' ? '↩️ ' + h(p.no) + (p.items.length ? '<br><small>' + h(p.items.map(function (i) { return i.name + ' ×' + i.qty; }).join(', ')) + '</small>' : '') + '<br><small>' + h(p.notes) + '</small>' : '💰 ' + h(p.no)) + '</td>'
+        + '<td>' + h(p.mode) + (p.ref ? '<br><small>' + h(p.ref) + '</small>' : '') + '</td>' + V.td((p.type === 'REFUND' ? '−' : '') + inr(p.amount) + (p.type === 'REFUND' && p.creditValue ? '<br><small>credit ' + inr(p.creditValue) + '</small>' : ''), 1)
+        + '<td><small>' + h(p.createdBy) + '</small></td><td>' + (cancelled ? '<small>cancelled: ' + h(p.cancelReason) + '</small>' : (API.isOwner() && p.type === 'COLLECTION' ? '<button type="button" class="v-btn v-sm v-danger" data-act="cancelPay" data-id="' + h(p.id) + '">✖</button>' : '')) + '</td></tr>');
+    });
+    el.innerHTML = V.table(['Date', 'What', 'Mode', 'Amount', 'By', ''], rows, { empty: 'No payments yet.' });
+  };
+  ACT.cancelPay = async function (el) {
+    var reason = (prompt('Cancel this payment? The amount becomes due again.\n\nReason (required):') || '').trim();
+    if (reason.length < 3) return;
+    var res = await API.call('cancelPayment', { paymentId: el.dataset.id, reason: reason }, { noQueue: true });
+    if (!res.success) return V.toast('❌ ' + res.error, 'error');
+    V.toast('Payment cancelled'); await loadData(); if (M._detail) M.openDetail(M._detail.type, M._detail.id);
+  };
+
+  // ═══════════ return / refund (owner) ═══════════
+  ACT.openRefund = function () {
+    var d = M._detail; if (!d) return;
+    var b = d.base, returned = {};
+    (d.payments || []).forEach(function (p) { if (p.type === 'REFUND' && p.status === 'Active') p.items.forEach(function (i) { returned[i.medicineId] = (returned[i.medicineId] || 0) + (+i.qty || 0); }); });
+    var lines = {}; (b.items || []).forEach(function (i) { var k = String(i.medicineId); var o = lines[k] = lines[k] || { id: k, name: i.medicineName || i.name, qty: 0, price: +i.price || 0 }; o.qty += +i.qty || 0; });
+    var ratio = b.subtotal > 0 ? Math.max(0, 1 - b.discount / b.subtotal) : 1;
+    M._refund = { lines: Object.keys(lines).map(function (k) { var o = lines[k]; o.left = o.qty - (returned[k] || 0); return o; }), ratio: ratio };
+    V.dialog('↩️ Return / Refund · ' + h(b.no),
+      (M._refund.lines.length ? '<p class="v-note">How many of each medicine came back?</p>' + V.table(['Medicine', 'Sold', 'Can return', 'Return now'], M._refund.lines.map(function (l, i) {
+        return '<tr><td>' + h(l.name) + '</td>' + V.td(l.qty, 1) + V.td(l.left, 1) + '<td class="num"><input class="v-in v-in-sm" type="number" min="0" max="' + l.left + '" step="1" value="0" id="rfQ' + i + '" data-input="rfCalc"' + (l.left ? '' : ' disabled') + '></td></tr>';
+      })) + '<label class="v-check"><input type="checkbox" id="rfRestock" checked data-change="rfCalc"> Put returned medicines back in stock (unopened, sellable)</label>' : '')
+      + V.field('rfAllow', (M._refund.lines.length ? 'Extra amount to reduce / give back (₹) — optional' : 'Amount to reduce / give back (₹)'), V.input('rfAllow', 'type="number" min="0" step="0.01" value="0" data-input="rfCalc"'))
+      + '<div id="rfPreview" class="v-money"></div>'
+      + '<div id="rfModeWrap" hidden><label class="v-lbl">Give money back by</label>' + V.modeButtons('rf', 'Cash', [['Cash', '💵 Cash'], ['UPI', '📱 UPI'], ['Card', '💳 Card']]) + '</div>'
+      + V.field('rfReason', 'Reason (required)', V.input('rfReason', 'maxlength="200" placeholder="e.g. doctor changed the medicine"'))
+      + '<div id="rfMsg" class="v-msg"></div><button type="button" class="v-btn v-warn v-wide" data-act="rfSave">Save return / refund</button>', { width: 560 });
+    ACT.rfCalc();
+  };
+  function rfNumbers() {
+    var d = M._detail.base, rf = M._refund, items = [], value = 0;
+    rf.lines.forEach(function (l, i) { var q = parseInt(V.val('rfQ' + i), 10) || 0; if (q > 0) { items.push({ medicineId: l.id, qty: q, name: l.name }); value += q * l.price * rf.ratio; } });
+    value = r2(value);
+    var credit = r2(value + V.num('rfAllow')), netNew = r2(d.total - d.returned - credit), back = r2(Math.max(0, (d.paid - d.refunded) - netNew));
+    return { items: items, value: value, credit: credit, netNew: netNew, back: back, balance: r2(netNew - (d.paid - d.refunded - back)) };
+  }
+  ACT.rfCalc = function () {
+    var n = rfNumbers(), el = document.getElementById('rfPreview'); if (!el) return;
+    el.innerHTML = '<div><span>Value of goods returned</span><b>' + inr(n.value) + '</b></div><div><span>Total reduction</span><b>' + inr(n.credit) + '</b></div>'
+      + '<div><span>New bill amount</span><b>' + inr(n.netNew) + '</b></div><div class="v-money-due"><span>' + (n.back > 0 ? 'Give back now' : 'Balance due after') + '</span><b>' + inr(n.back > 0 ? n.back : n.balance) + '</b></div>';
+    document.getElementById('rfModeWrap').hidden = !(n.back > 0);
+  };
+  ACT.rfSave = async function (btn) {
+    var d = M._detail, n = rfNumbers(), reason = V.val('rfReason');
+    if (n.credit <= 0) return V.msg('rfMsg', 'Choose items to return or enter an amount');
+    if (n.netNew < -0.009) return V.msg('rfMsg', 'That is more than the bill');
+    if (M._refund.lines.some(function (l, i) { return (parseInt(V.val('rfQ' + i), 10) || 0) > l.left; })) return V.msg('rfMsg', 'Return quantity is more than what can be returned');
+    if (reason.length < 3) return V.msg('rfMsg', 'Please write a reason');
+    if (!confirm(n.back > 0 ? 'Give back ' + inr(n.back) + ' to ' + d.base.patient + '?' : 'Reduce this bill by ' + inr(n.credit) + '?')) return;
+    V.busy(btn, true);
+    var res = await API.call('returnRefund', { againstType: d.type, againstId: d.id, items: JSON.stringify(n.items.map(function (i) { return { medicineId: i.medicineId, qty: i.qty }; })),
+      restock: !!(document.getElementById('rfRestock') || {}).checked, allowance: V.num('rfAllow'), mode: V.modeOf('rf'), reason: reason }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('rfMsg', res.error || 'Not saved');
+    V.toast('↩️ ' + res.refundNo + (res.refundAmount > 0 ? ' · give back ' + inr(res.refundAmount) : ' · bill reduced by ' + inr(res.creditValue)));
+    await loadData(); M.openDetail(d.type, d.id);
+  };
+
+  // ═══════════ Dues & Payments page ═══════════
+  M.patientKey = function (r) { return r.patientId ? 'id:' + r.patientId : 'n:' + String(r.patientName || '').trim().toLowerCase() + '|' + V.normPhone(r.phone); };
+  V.tabRender.pay = function () { V.pages.payments(); };
+  V.pages.payments = function () {
+    var page = document.getElementById('payments'); if (!page) return;
+    var tab = V.tabState.pay || 'dues', recs = V.data.receivables, today = V.today();
+    var totalDue = r2(recs.reduce(function (a, r) { return a + r.balance; }, 0)), keys = {};
+    recs.forEach(function (r) { keys[M.patientKey(r)] = 1; });
+    var todayColl = V.data.payments.filter(function (p) { return p.date === today && p.type === 'COLLECTION' && p.status === 'Active'; });
+    var old = recs.filter(function (r) { return r.date && V.daysBetween(r.date, today) > 30; });
+    var html = V.kpis([
+      { label: 'Total due from patients', value: inr(totalDue, 0), sub: Object.keys(keys).length + ' patient(s)', tone: totalDue > 0 ? 'warn' : 'ok' },
+      { label: 'Due for over 30 days', value: inr(old.reduce(function (a, r) { return a + r.balance; }, 0), 0), sub: old.length + ' bill(s)', tone: old.length ? 'bad' : '' },
+      { label: 'Collected today (dues)', value: inr(todayColl.reduce(function (a, p) { return a + p.amount; }, 0), 0), sub: todayColl.length + ' payment(s)' }
+    ]) + V.tabs('pay', [['dues', '🧾 Who owes'], ['history', '💰 Payments'], ['refunds', '↩️ Returns & refunds']], tab);
+    if (tab === 'dues') {
+      html += '<div class="v-toolbar"><input id="duesQ" class="v-in" type="search" placeholder="🔍 Search name, phone or bill no" value="' + h(M._duesQ || '') + '" data-input="duesSearch"></div><div id="duesList"></div>';
+    } else if (tab === 'history') {
+      html += '<div class="v-toolbar"><label>From <input id="phFrom" class="v-in" type="date" value="' + (M._phFrom || V.addDays(today, -30)) + '" data-change="phLoad"></label>'
+        + '<label>To <input id="phTo" class="v-in" type="date" value="' + (M._phTo || today) + '" data-change="phLoad"></label></div><div id="phList"></div>';
+    } else html += '<div id="rfList"></div>';
+    page.innerHTML = html;
+    if (tab === 'dues') renderDues(); else if (tab === 'history') renderHistory(); else renderRefunds();
+  };
+  ACT.duesSearch = function (el) { M._duesQ = el.value; renderDues(); };
+  function renderDues() {
+    var el = document.getElementById('duesList'); if (!el) return;
+    var q = String(M._duesQ || '').trim().toLowerCase(), groups = {}, order = [], today = V.today();
+    V.data.receivables.forEach(function (r) {
+      if (q && (r.patientName + ' ' + r.phone + ' ' + r.no + ' ' + r.id).toLowerCase().indexOf(q) === -1) return;
+      var k = M.patientKey(r); if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(r);
+    });
+    order.sort(function (a, b) { return groups[b].reduce(function (s, r) { return s + r.balance; }, 0) - groups[a].reduce(function (s, r) { return s + r.balance; }, 0); });
+    if (!order.length) { el.innerHTML = '<div class="v-empty">' + (q ? 'No match.' : '✅ No one owes the clinic anything.') + '</div>'; return; }
+    el.innerHTML = order.map(function (k) {
+      var list = groups[k], p = list[0], due = r2(list.reduce(function (a, r) { return a + r.balance; }, 0));
+      return '<div class="v-card v-due-card"><div class="v-due-head"><div><b>' + h(p.patientName || '—') + '</b> <span class="v-muted">' + h(p.phone || '') + '</span></div>'
+        + '<div class="v-due-amt">' + inr(due) + '</div></div>'
+        + '<div class="v-due-rows">' + list.map(function (r) {
+          var age = r.date ? V.daysBetween(r.date, today) : 0;
+          return '<div class="v-due-row"><button type="button" class="v-link" data-act="' + (r.type === 'OPENING' ? 'collect' : 'billDetail') + '" data-type="' + r.type + '" data-id="' + h(r.id) + '">' + h(recLabel(r)) + '</button>'
+            + '<span class="v-muted">' + h(V.fmtDate(r.date)) + (age > 30 ? ' · <span class="v-bad">' + age + ' days</span>' : '') + '</span>'
+            + '<span class="num">' + inr(r.total) + ' · paid ' + inr(r.paid - r.refunded) + '</span><b class="num">' + inr(r.balance) + '</b></div>';
+        }).join('') + '</div>'
+        + '<div class="v-actions"><button type="button" class="v-btn v-primary v-sm" data-act="collect" data-key="' + h(k) + '">💰 Collect</button>'
+        + (p.phone ? '<button type="button" class="v-btn v-wa v-sm" data-act="remindDue" data-key="' + h(k) + '">📲 Remind</button>' : '') + '</div></div>';
+    }).join('');
+  }
+  ACT.phLoad = function () { M._phFrom = V.val('phFrom'); M._phTo = V.val('phTo'); renderHistory(); };
+  async function renderHistory() {
+    var el = document.getElementById('phList'); if (!el) return;
+    var from = V.val('phFrom'), to = V.val('phTo'), list;
+    if (from >= (V.data.loadedFrom || '0000')) list = V.data.payments.filter(function (p) { return p.date >= from && p.date <= to; });
+    else { el.innerHTML = 'Loading…'; var res = await API.call('getPayments', { from: from, to: to }); list = res.success ? res.payments : []; if (!res.success) { el.textContent = res.error; return; } }
+    list = list.filter(function (p) { return p.type === 'COLLECTION'; }).sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    var tot = { Cash: 0, UPI: 0, Card: 0, Split: 0 };
+    list.forEach(function (p) { if (p.status === 'Active') { tot.Cash += p.cashAmount; tot.UPI += p.upiAmount; tot.Card += p.cardAmount; } });
+    el.innerHTML = '<p class="v-note">Total: <b>' + inr(tot.Cash + tot.UPI + tot.Card) + '</b> · Cash ' + inr(tot.Cash) + ' · UPI ' + inr(tot.UPI) + ' · Card ' + inr(tot.Card) + '</p>'
+      + V.table(['Date', 'Receipt', 'Patient', 'For', 'Mode', 'Amount', 'By', ''], list.map(function (p) {
+        var c = p.status === 'Cancelled';
+        return '<tr' + (c ? ' class="v-strike"' : '') + '><td>' + h(V.fmtDate(p.date)) + '</td><td><small>' + h(p.no) + '</small></td><td>' + h(p.patientName) + '</td>'
+          + '<td><button type="button" class="v-link" data-act="billDetail" data-type="' + h(p.againstType) + '" data-id="' + h(p.againstId) + '">' + h(p.againstNo || p.againstId) + '</button></td>'
+          + '<td>' + h(p.mode) + '</td>' + V.td(inr(p.amount), 1) + '<td><small>' + h(p.createdBy) + '</small></td>'
+          + '<td>' + (!c && API.isOwner() ? '<button type="button" class="v-btn v-sm v-danger" data-act="cancelPay" data-id="' + h(p.id) + '">✖</button>' : (c ? '<small>' + h(p.cancelReason) + '</small>' : '')) + '</td></tr>';
+      }), { empty: 'No payments in this period.' });
+  }
+  function renderRefunds() {
+    var el = document.getElementById('rfList'); if (!el) return;
+    var list = V.data.payments.filter(function (p) { return p.type === 'REFUND'; }).sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    el.innerHTML = V.table(['Date', 'No', 'Patient', 'Bill', 'Items', 'Reduced', 'Paid back', 'Reason'], list.map(function (p) {
+      return '<tr><td>' + h(V.fmtDate(p.date)) + '</td><td><small>' + h(p.no) + '</small></td><td>' + h(p.patientName) + '</td>'
+        + '<td><button type="button" class="v-link" data-act="billDetail" data-type="' + h(p.againstType) + '" data-id="' + h(p.againstId) + '">' + h(p.againstNo || p.againstId) + '</button></td>'
+        + '<td><small>' + h(p.items.map(function (i) { return i.name + ' ×' + i.qty; }).join(', ') || '—') + '</small></td>' + V.td(inr(p.creditValue), 1)
+        + V.td(p.amount ? inr(p.amount) + ' <small>' + h(p.mode) + '</small>' : '—', 1) + '<td><small>' + h(p.notes) + '</small></td></tr>';
+    }), { empty: 'No returns or refunds in the loaded period.' });
+  }
+
+  // ═══════════ cash closing ═══════════
+  var NOTES = [500, 200, 100, 50, 20, 10];
+  V.pages.cashclose = async function () {
+    var page = document.getElementById('cashclose'); if (!page) return;
+    var date = M._ccDate || V.today(), min = API.isOwner() ? '' : V.addDays(V.today(), -3);
+    page.innerHTML = '<div class="v-toolbar"><label>Day <input id="ccDate" class="v-in" type="date" value="' + date + '" max="' + V.today() + '"' + (min ? ' min="' + min + '"' : '') + ' data-change="ccDay"></label></div><div id="ccBody">Loading…</div>';
+    var res = await API.call('getCashSummary', { date: date }), el = document.getElementById('ccBody'); if (!el) return;
+    if (!res.success) { el.innerHTML = '<div class="v-empty">' + h(res.error || 'Could not load (offline?)') + '</div>'; return; }
+    var s = res.summary, c = res.closing; M._cc = res;
+    var line = function (label, o, sign) { return '<tr><td>' + label + '</td>' + V.td((sign || '') + inr(o.cash), 1) + V.td(inr(o.upi), 1) + V.td(inr(o.card), 1) + '</tr>'; };
+    var html = '<div class="v-grid2"><div class="v-card"><h3 class="v-h3">Money in and out · ' + h(V.fmtDate(date)) + '</h3>'
+      + V.table(['', 'Cash', 'UPI', 'Card'], [line('💊 Pharmacy bills (' + s.counts.bills + ')', s.bills), line('🦷 Dental receipts (' + s.counts.receipts + ')', s.receipts),
+        line('💰 Dues collected (' + s.counts.collections + ')', s.collections), line('↩️ Refunds (' + s.counts.refunds + ')', s.refunds, '−'),
+        line('💸 Expenses (' + s.counts.expenses + ')', s.expenses, '−'), line('🏭 Supplier payments (' + s.counts.suppliers + ')', s.suppliers, '−')],
+        { foot: '<tr><th>Net</th>' + V.td('<b>' + inr(s.cashIn - s.cashOut) + '</b>', 1) + V.td('<b>' + inr(s.upiIn) + '</b>', 1) + V.td('<b>' + inr(s.cardIn) + '</b>', 1) + '</tr>' })
+      + '</div><div class="v-card">';
+    if (c) {
+      html += '<h3 class="v-h3">✅ Closed by ' + h(c.closedBy) + '</h3><div class="v-money"><div><span>Opening cash</span><b>' + inr(c.openingCash) + '</b></div>'
+        + '<div><span>Expected in drawer</span><b>' + inr(c.expectedCash) + '</b></div><div><span>Counted</span><b>' + inr(c.countedCash) + '</b></div>'
+        + '<div class="v-money-due"><span>Difference</span><b class="' + (Math.abs(c.difference) > 0.009 ? 'v-bad' : 'v-ok') + '">' + inr(c.difference) + '</b></div>'
+        + '<div><span>Taken out / deposited</span><b>' + inr(c.deposited) + '</b></div><div><span>UPI ' + inr(c.upiTotal) + '</span><b>' + (c.upiVerified ? '✅ checked' : '—') + '</b></div>'
+        + '<div><span>Card ' + inr(c.cardTotal) + '</span><b>' + (c.cardVerified ? '✅ checked' : '—') + '</b></div></div>' + (c.notes ? '<p class="v-note">' + h(c.notes) + '</p>' : '')
+        + (API.isOwner() ? '<button type="button" class="v-btn" data-act="ccEdit">✏️ Change this closing</button>' : '');
+    } else html += closingForm(res);
+    html += '</div></div>';
+    if (API.isOwner()) html += '<div class="v-card"><h3 class="v-h3">Recent closings</h3>' + V.table(['Day', 'Expected', 'Counted', 'Difference', 'UPI', 'Card', 'By'], V.data.cashClosings.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).slice(0, 31).map(function (x) {
+      return '<tr><td>' + h(V.fmtDate(x.date)) + '</td>' + V.td(inr(x.expectedCash), 1) + V.td(inr(x.countedCash), 1) + V.td('<span class="' + (Math.abs(x.difference) > 0.009 ? 'v-bad' : 'v-ok') + '">' + inr(x.difference) + '</span>', 1)
+        + V.td(inr(x.upiTotal) + (x.upiVerified ? ' ✅' : ''), 1) + V.td(inr(x.cardTotal) + (x.cardVerified ? ' ✅' : ''), 1) + '<td><small>' + h(x.closedBy) + '</small></td></tr>';
+    }), { empty: 'No days closed yet.' }) + '</div>';
+    el.innerHTML = html;
+    if (!c) ACT.ccCount();
+  };
+  function closingForm(res, c) {
+    var s = res.summary, open = c ? c.openingCash : res.suggestedOpening;
+    return '<h3 class="v-h3">Close the day</h3>'
+      + V.field('ccOpen', 'Cash in drawer at start of day (₹)', V.input('ccOpen', 'type="number" min="0" step="1" value="' + open + '" data-input="ccCount"'))
+      + '<label class="v-lbl">Count the cash now</label><div class="v-notes">' + NOTES.map(function (n) {
+        return '<label>₹' + n + ' × <input class="v-in v-in-sm" type="number" min="0" step="1" id="ccN' + n + '" data-input="ccCount"></label>';
+      }).join('') + '<label>Coins ₹ <input class="v-in v-in-sm" type="number" min="0" step="1" id="ccCoins" data-input="ccCount"></label></div>'
+      + V.field('ccCounted', 'Cash counted (₹)', V.input('ccCounted', 'type="number" min="0" step="1" value="' + (c ? c.countedCash : '') + '" data-input="ccCount"'))
+      + '<div id="ccCheck" class="v-money"></div>'
+      + V.field('ccDep', 'Taken out of the drawer / deposited (₹)', V.input('ccDep', 'type="number" min="0" step="1" value="' + (c ? c.deposited : 0) + '"'))
+      + '<label class="v-check"><input type="checkbox" id="ccUpi"' + (c && c.upiVerified ? ' checked' : '') + '> UPI app shows ' + inr(s.upiIn) + ' for today</label>'
+      + '<label class="v-check"><input type="checkbox" id="ccCard"' + (c && c.cardVerified ? ' checked' : '') + '> Card machine shows ' + inr(s.cardIn) + '</label>'
+      + V.field('ccNotes', 'Notes', V.input('ccNotes', 'maxlength="300" value="' + h(c ? c.notes : '') + '"'))
+      + '<div id="ccMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="ccSave">🔒 Close the day</button>';
+  }
+  V.pages.cashclose.noAutoRefresh = true;
+  ACT.ccDay = function (el) { M._ccDate = el.value; V.pages.cashclose(); };
+  ACT.ccEdit = function () {
+    var el = document.querySelector('#ccBody .v-grid2 > .v-card:last-child'); if (!el || !M._cc) return;
+    el.innerHTML = closingForm(M._cc, M._cc.closing); ACT.ccCount();
+  };
+  ACT.ccCount = function (el) {
+    var sum = 0, any = false;
+    NOTES.forEach(function (n) { var q = V.num('ccN' + n); if (q) any = true; sum += q * n; });
+    if (V.num('ccCoins')) any = true; sum += V.num('ccCoins');
+    if (any && (!el || el.id !== 'ccCounted')) { var ce = document.getElementById('ccCounted'); if (ce) ce.value = sum; }
+    var s = M._cc && M._cc.summary, chk = document.getElementById('ccCheck'); if (!s || !chk) return;
+    var expected = r2(V.num('ccOpen') + s.cashIn - s.cashOut), counted = V.num('ccCounted'), diff = r2(counted - expected);
+    chk.innerHTML = '<div><span>Expected in drawer</span><b>' + inr(expected) + '</b></div>'
+      + (V.val('ccCounted') !== '' ? '<div class="v-money-due"><span>' + (Math.abs(diff) < 0.01 ? 'Matches ✅' : diff < 0 ? 'Short' : 'Extra') + '</span><b class="' + (Math.abs(diff) < 0.01 ? 'v-ok' : 'v-bad') + '">' + inr(diff) + '</b></div>' : '');
+  };
+  ACT.ccSave = async function (btn) {
+    if (V.val('ccCounted') === '') return V.msg('ccMsg', 'Enter the cash counted');
+    V.busy(btn, true);
+    var res = await API.call('saveCashClosing', { date: V.val('ccDate'), openingCash: V.num('ccOpen'), countedCash: V.num('ccCounted'), deposited: V.num('ccDep'),
+      upiVerified: document.getElementById('ccUpi').checked, cardVerified: document.getElementById('ccCard').checked, notes: V.val('ccNotes') }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('ccMsg', res.error || 'Not saved');
+    V.toast(Math.abs(res.difference) < 0.01 ? '✅ Day closed — cash matches' : '⚠️ Day closed — difference ' + inr(res.difference), Math.abs(res.difference) < 0.01 ? 'success' : 'warning');
+    await loadData(); V.pages.cashclose();
+  };
+
+  // ═══════════ hooks into existing screens ═══════════
+  // All Bills: payment status + details button
+  M.billBadges = function (bill) {
+    if (!V.enabled() || bill.syncStatus === 'failed') return '';
+    var s = '';
+    if (bill.balanceDue > 0.009) s += ' <span class="v-badge v-due">Due ' + inr(bill.balanceDue, 0) + '</span>';
+    if (bill.returnedValue > 0.009) s += ' <span class="v-badge v-ret">↩ ' + inr(bill.returnedValue, 0) + '</span>';
+    return s;
+  };
+  M.billButton = function (bill) {
+    if (!V.enabled() || bill.syncStatus === 'pending' || bill.syncStatus === 'saving' || bill.syncStatus === 'failed') return '';
+    return '<button type="button" class="btn-primary btn-small" data-act="billDetail" data-type="BILL" data-id="' + h(bill.billId) + '" title="Payments, returns, refunds" style="margin-right:4px;background:#8e44ad;">💰</button>';
+  };
+  V.afterRefresh.push(function () { if (document.getElementById('pp_pm')) M.mountPartPay(); });
+  document.addEventListener('DOMContentLoaded', function () { M.mountPartPay(); });
+})();
+;
+
+;/* ══ FILE: 15-suppliers.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   15-suppliers.js — suppliers, purchase invoices (many lines, paid or on
+   credit, photo/PDF attached), supplier payments + ledger, purchase returns
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V = window.V31, ACT = V.act, h = V.h, inr = V.inr, r2 = V.r2;
+  var S = V.sup = {};
+
+  // ── full-screen sheet (dialogs can open on top of it) ──
+  V.sheet = function (title, body) {
+    V.closeSheet();
+    var ov = document.createElement('div'); ov.id = 'v31Sheet'; ov.className = 'v-sheet'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', title);
+    ov.innerHTML = '<div class="v-sheet-box"><div class="v-sheet-head"><h3>' + title + '</h3><button type="button" class="v-x" data-act="closeSheet" aria-label="Close">✕</button></div><div class="v-sheet-body" id="v31SheetBody">' + body + '</div></div>';
+    document.body.appendChild(ov);
+    return ov;
+  };
+  V.closeSheet = function () { var s = document.getElementById('v31Sheet'); if (s) s.remove(); };
+  ACT.closeSheet = function () { if (!S._dirty || confirm('Close without saving?')) { S._dirty = false; V.closeSheet(); } };
+
+  S.byId = function (id) { return V.data.suppliers.find(function (x) { return x.id === id; }) || null; };
+  S.active = function () { return V.data.suppliers.filter(function (x) { return x.status !== 'Inactive'; }).sort(function (a, b) { return a.name.localeCompare(b.name); }); };
+  function medByName(n) { n = String(n || '').trim().toLowerCase(); return (window.medicines || []).find(function (m) { return String(m.name).trim().toLowerCase() === n; }) || null; }
+  function medById(id) { return (window.medicines || []).find(function (m) { return String(m.id) === String(id); }) || null; }
+  function monthEnd(ym) { if (!/^\d{4}-\d{2}$/.test(ym || '')) return ''; var d = new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0); return d.toLocaleDateString('en-CA'); }
+
+  // ═══════════ Suppliers page ═══════════
+  V.pages.suppliers = function () {
+    var page = document.getElementById('suppliers'); if (!page) return;
+    var sups = V.data.suppliers, month = V.today().slice(0, 7);
+    var owed = r2(sups.reduce(function (a, s) { return a + Math.max(0, s.balance); }, 0));
+    var monthInv = V.data.purchaseInvoices.filter(function (i) { return i.status === 'Active' && i.date.slice(0, 7) === month; });
+    var monthRet = V.data.purchaseReturns.filter(function (r) { return r.status === 'Active' && r.date.slice(0, 7) === month; });
+    var q = String(S._q || '').toLowerCase();
+    var list = sups.filter(function (s) { return !q || (s.name + ' ' + s.phone + ' ' + s.contact).toLowerCase().indexOf(q) !== -1; })
+      .sort(function (a, b) { return (b.balance - a.balance) || a.name.localeCompare(b.name); });
+    var lastInv = {}; V.data.purchaseInvoices.forEach(function (i) { if (i.status === 'Active' && (!lastInv[i.supplierId] || i.date > lastInv[i.supplierId])) lastInv[i.supplierId] = i.date; });
+    page.innerHTML = V.kpis([
+      { label: 'We owe suppliers', value: inr(owed, 0), sub: sups.filter(function (s) { return s.balance > 0.009; }).length + ' supplier(s)', tone: owed > 0 ? 'warn' : 'ok' },
+      { label: 'Purchases this month', value: inr(monthInv.reduce(function (a, i) { return a + i.total; }, 0), 0), sub: monthInv.length + ' invoice(s)' },
+      { label: 'Returned to suppliers this month', value: inr(monthRet.reduce(function (a, r) { return a + r.amount; }, 0), 0), sub: monthRet.length + ' return(s)' }
+    ])
+      + '<div class="v-toolbar"><input class="v-in" type="search" placeholder="🔍 Search suppliers" value="' + h(S._q || '') + '" data-input="supSearch">'
+      + '<button type="button" class="v-btn v-primary" data-act="newInvoice">➕ New purchase invoice</button>'
+      + '<button type="button" class="v-btn" data-act="editSupplier">➕ Add supplier</button></div>'
+      + V.table(['Supplier', 'Purchases', 'Paid', 'Returns', 'Balance owed', 'Last invoice', ''], list.map(function (s) {
+        return '<tr' + (s.status === 'Inactive' ? ' class="v-dim"' : '') + '><td><b>' + h(s.name) + '</b>' + (s.status === 'Inactive' ? ' ' + V.badge('Inactive') : '') + '<br><small class="v-muted">' + h([s.phone, s.contact].filter(Boolean).join(' · ')) + '</small></td>'
+          + V.td(inr(s.purchases, 0), 1) + V.td(inr(s.payments, 0), 1) + V.td(inr(s.returns, 0), 1)
+          + V.td('<b class="' + (s.balance > 0.009 ? 'v-bad' : s.balance < -0.009 ? 'v-ok' : '') + '">' + inr(s.balance) + '</b>' + (s.balance < -0.009 ? '<br><small>advance</small>' : ''), 1)
+          + '<td>' + h(V.fmtDate(lastInv[s.id])) + '</td><td class="v-nowrap">'
+          + '<button type="button" class="v-btn v-sm" data-act="supLedger" data-id="' + h(s.id) + '">📒 Ledger</button> '
+          + '<button type="button" class="v-btn v-sm v-primary" data-act="supPay" data-id="' + h(s.id) + '">💸 Pay</button> '
+          + '<button type="button" class="v-btn v-sm" data-act="supReturn" data-id="' + h(s.id) + '">↩️ Return</button> '
+          + '<button type="button" class="v-btn v-sm" data-act="editSupplier" data-id="' + h(s.id) + '">✏️</button></td></tr>';
+      }), { empty: 'No suppliers yet — they are created automatically from purchase invoices.' });
+  };
+  ACT.supSearch = function (el) { S._q = el.value; V.pages.suppliers(); var i = document.querySelector('#suppliers input[type=search]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } };
+
+  ACT.editSupplier = function (el) {
+    var s = el && el.dataset.id ? S.byId(el.dataset.id) : null;
+    V.dialog(s ? '✏️ ' + h(s.name) : '➕ New supplier',
+      V.field('spName', 'Name', V.input('spName', 'maxlength="120" value="' + h(s ? s.name : '') + '"'))
+      + '<div class="v-row2">' + V.field('spPhone', 'Phone', V.input('spPhone', 'type="tel" maxlength="20" value="' + h(s ? s.phone : '') + '"'))
+      + V.field('spContact', 'Contact person', V.input('spContact', 'maxlength="80" value="' + h(s ? s.contact : '') + '"')) + '</div>'
+      + V.field('spAddr', 'Address', V.input('spAddr', 'maxlength="300" value="' + h(s ? s.address : '') + '"'))
+      + V.field('spOpen', 'Amount owed before using this app (₹)', V.input('spOpen', 'type="number" step="0.01" value="' + (s ? s.openingBalance : 0) + '"'))
+      + V.field('spNotes', 'Notes', V.input('spNotes', 'maxlength="500" value="' + h(s ? s.notes : '') + '"'))
+      + (s ? '<label class="v-check"><input type="checkbox" id="spInactive"' + (s.status === 'Inactive' ? ' checked' : '') + '> Not used any more (hide)</label>' : '')
+      + '<div id="spMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="saveSupplier" data-id="' + h(s ? s.id : '') + '">Save supplier</button>', { width: 480 });
+  };
+  ACT.saveSupplier = async function (btn) {
+    if (!V.val('spName')) return V.msg('spMsg', 'Name is required');
+    V.busy(btn, true);
+    var res = await API.call('saveSupplier', { id: btn.dataset.id, name: V.val('spName'), phone: V.val('spPhone'), contact: V.val('spContact'), address: V.val('spAddr'),
+      openingBalance: V.num('spOpen'), notes: V.val('spNotes'), status: (document.getElementById('spInactive') || {}).checked ? 'Inactive' : 'Active' }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('spMsg', res.error);
+    V.close(); V.toast('✅ Supplier saved'); loadData();
+  };
+
+  // ── ledger ──
+  ACT.supLedger = async function (el) {
+    var id = el.dataset.id; S._ledgerId = id;
+    V.sheet('📒 Supplier ledger', 'Loading…');
+    var res = await API.call('getSupplierLedger', { supplierId: id }), body = document.getElementById('v31SheetBody'); if (!body) return;
+    if (!res.success) { body.textContent = res.error; return; }
+    var s = res.supplier;
+    body.innerHTML = '<div class="v-sum"><div><span>Supplier</span><b>' + h(s.name) + '</b></div><div><span>Phone</span><b>' + h(s.phone || '—') + '</b></div>'
+      + '<div class="v-sum-big"><span>Balance owed</span><b>' + inr(s.balance) + '</b></div></div>'
+      + '<div class="v-actions"><button type="button" class="v-btn v-primary" data-act="supPay" data-id="' + h(s.id) + '">💸 Pay supplier</button>'
+      + '<button type="button" class="v-btn" data-act="supReturn" data-id="' + h(s.id) + '">↩️ Return stock</button>'
+      + '<button type="button" class="v-btn" data-act="newInvoice" data-id="' + h(s.id) + '">➕ New invoice</button>'
+      + '<button type="button" class="v-btn" data-act="ledgerXlsx">⬇️ Excel</button></div>'
+      + '<h4 class="v-h4">Statement</h4>'
+      + V.table(['Date', 'Entry', 'Reference', 'We owe +', 'Paid / returned −', 'Balance', ''], [
+        '<tr><td></td><td>Opening balance</td><td></td>' + V.td(s.openingBalance ? inr(s.openingBalance) : '', 1) + '<td></td>' + V.td(inr(s.openingBalance), 1) + '<td></td></tr>'
+      ].concat(res.entries.map(function (e) {
+        var c = e.status === 'Cancelled';
+        return '<tr' + (c ? ' class="v-strike"' : '') + '><td>' + h(V.fmtDate(e.date)) + '</td><td>' + h({ PURCHASE: '🧾 Purchase', PAYMENT: '💸 Payment', RETURN: '↩️ Return', ADJUSTMENT: '✏️ Adjustment', OPENING: 'Opening' }[e.type] || e.type)
+          + (e.mode ? ' <small>' + h(e.mode) + '</small>' : '') + '<br><small class="v-muted">' + h(e.notes) + '</small></td><td><small>' + h(e.ref) + '</small></td>'
+          + V.td(e.credit ? inr(e.credit) : '', 1) + V.td(e.debit ? inr(e.debit) : '', 1) + V.td(c ? '<small>cancelled</small>' : inr(e.balanceAfter), 1)
+          + '<td>' + (!c && e.type === 'PAYMENT' && e.notes !== 'Paid with invoice' ? '<button type="button" class="v-btn v-sm v-danger" data-act="cancelSupEntry" data-id="' + h(e.id) + '">✖</button>' : '') + '</td></tr>';
+      })), {})
+      + '<h4 class="v-h4">Invoices</h4>' + invoiceTable(res.invoices)
+      + (res.returns.length ? '<h4 class="v-h4">Returns</h4>' + V.table(['Date', 'Medicine', 'Batch', 'Qty', 'Amount', 'Reason'], res.returns.map(function (r) {
+        return '<tr><td>' + h(V.fmtDate(r.date)) + '</td><td>' + h(r.medicineName) + '</td><td>' + h(r.batchNo) + '</td>' + V.td(r.qty, 1) + V.td(inr(r.amount), 1) + '<td><small>' + h(r.reason) + '</small></td></tr>';
+      })) : '')
+      + (res.olderPurchases.length ? '<details class="v-details"><summary>Older purchases (before invoices — counted as paid): ' + res.olderPurchases.length + '</summary>'
+        + V.table(['Date', 'Medicine', 'Qty', 'Cost', 'Invoice'], res.olderPurchases.map(function (p) { return '<tr><td>' + h(V.fmtDate(p.date)) + '</td><td>' + h(p.medicineName) + '</td>' + V.td(p.qty, 1) + V.td(inr(p.totalCost), 1) + '<td>' + h(p.invoiceNo) + '</td></tr>'; })) + '</details>' : '');
+    S._ledger = res;
+  };
+  ACT.ledgerXlsx = function () {
+    var r = S._ledger; if (!r || !V.xlsx) return;
+    V.xlsx.download('Ledger ' + r.supplier.name + '.xlsx', [{ name: 'Statement', rows: [['Date', 'Entry', 'Mode', 'Reference', 'Notes', 'We owe +', 'Paid/returned −', 'Balance', 'Status']]
+      .concat([['', 'Opening balance', '', '', '', r.supplier.openingBalance, '', r.supplier.openingBalance, '']])
+      .concat(r.entries.map(function (e) { return [e.date, e.type, e.mode, e.ref, e.notes, e.credit || '', e.debit || '', e.balanceAfter, e.status]; })) }]);
+  };
+  function invoiceTable(list) {
+    return V.table(['Date', 'Invoice', 'Supplier', 'Lines', 'Total', 'Paid', 'File', ''], list.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).map(function (i) {
+      var c = i.status === 'Cancelled';
+      return '<tr' + (c ? ' class="v-strike"' : '') + '><td>' + h(V.fmtDate(i.date)) + '</td><td>' + h(i.invoiceNo || '—') + '</td><td>' + h(i.supplierName) + '</td>' + V.td(i.lines, 1)
+        + V.td(inr(i.total), 1) + V.td(inr(i.paidAmount) + (i.paidAmount < i.total - 0.009 && !c ? '<br><small class="v-bad">credit ' + inr(i.total - i.paidAmount) + '</small>' : ''), 1)
+        + '<td>' + (i.attachmentUrl ? '<a href="' + h(i.attachmentUrl) + '" target="_blank" rel="noopener">📎 View</a>' : (c ? '' : '<button type="button" class="v-btn v-sm" data-act="attachInvoice" data-id="' + h(i.id) + '">📎 Add</button>')) + '</td>'
+        + '<td>' + (c ? '<small>' + h(i.cancelReason) + '</small>' : '<button type="button" class="v-btn v-sm v-danger" data-act="cancelInvoice" data-id="' + h(i.id) + '" title="Cancel invoice">✖</button>') + '</td></tr>';
+    }), { empty: 'No invoices.' });
+  }
+  ACT.cancelSupEntry = async function (el) {
+    var reason = (prompt('Cancel this supplier payment?\n\nReason (required):') || '').trim(); if (reason.length < 3) return;
+    var res = await API.call('cancelSupplierEntry', { entryId: el.dataset.id, reason: reason }, { noQueue: true });
+    if (!res.success) return V.toast('❌ ' + res.error, 'error');
+    V.toast('Cancelled'); await loadData(); if (S._ledgerId) ACT.supLedger({ dataset: { id: S._ledgerId } });
+  };
+
+  // ── pay supplier ──
+  ACT.supPay = function (el) {
+    var s = S.byId(el.dataset.id); if (!s) return;
+    V.dialog('💸 Pay ' + h(s.name),
+      '<div class="v-sum"><div class="v-sum-big"><span>Balance owed</span><b>' + inr(s.balance) + '</b></div></div>'
+      + V.field('sPayAmt', 'Amount paid (₹)', V.input('sPayAmt', 'type="number" min="1" step="0.01" class="v-in v-in-big" value="' + Math.max(0, s.balance) + '"'))
+      + '<label class="v-lbl">Paid by</label>' + V.modeButtons('spay', 'UPI', [['Cash', '💵 Cash'], ['UPI', '📱 UPI'], ['Card', '💳 Card'], ['Bank', '🏦 Bank / cheque']])
+      + '<div class="v-row2">' + V.field('sPayRef', 'Reference / cheque no.', V.input('sPayRef', 'maxlength="60"')) + V.field('sPayDate', 'Date', V.input('sPayDate', 'type="date" max="' + V.today() + '" value="' + V.today() + '"')) + '</div>'
+      + V.field('sPayNotes', 'Notes', V.input('sPayNotes', 'maxlength="300"'))
+      + '<div id="sPayMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="supPaySave" data-id="' + h(s.id) + '">Save payment</button>', { width: 460 });
+  };
+  ACT.supPaySave = async function (btn) {
+    var amt = V.num('sPayAmt'); if (!(amt > 0)) return V.msg('sPayMsg', 'Enter the amount');
+    V.busy(btn, true);
+    var res = await API.call('recordSupplierPayment', { supplierId: btn.dataset.id, amount: amt, mode: V.modeOf('spay'), ref: V.val('sPayRef'), date: V.val('sPayDate'), notes: V.val('sPayNotes') }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('sPayMsg', res.error);
+    V.close(); V.toast('✅ Paid ' + inr(amt) + ' · balance ' + inr(res.balance) + (res.warnings && res.warnings.length ? ' · ' + res.warnings[0] : ''));
+    await loadData(); if (document.getElementById('v31Sheet') && S._ledgerId === btn.dataset.id) ACT.supLedger({ dataset: { id: btn.dataset.id } });
+  };
+
+  // ── purchase return ──
+  ACT.supReturn = function (el) {
+    var sid = el && el.dataset.id || '', meds = (window.medicines || []).filter(function (m) { return (m.batches || []).length; });
+    V.dialog('↩️ Return stock to supplier',
+      V.field('prSup', 'Supplier', '<select id="prSup" class="v-in">' + S.active().map(function (s) { return '<option value="' + h(s.id) + '"' + (s.id === sid ? ' selected' : '') + '>' + h(s.name) + '</option>'; }).join('') + '</select>')
+      + V.field('prMed', 'Medicine', '<select id="prMed" class="v-in" data-change="prMedChanged"><option value="">Choose…</option>' + meds.map(function (m) { return '<option value="' + h(m.id) + '">' + h(m.name) + '</option>'; }).join('') + '</select>')
+      + V.field('prBatch', 'Batch', '<select id="prBatch" class="v-in" data-change="prBatchChanged"></select>')
+      + '<div class="v-row2">' + V.field('prQty', 'Quantity', V.input('prQty', 'type="number" min="1" step="1"')) + V.field('prRate', 'Credit per unit (₹)', V.input('prRate', 'type="number" min="0" step="0.01"')) + '</div>'
+      + V.field('prReason', 'Reason', '<input id="prReason" class="v-in" list="prReasons" maxlength="200"><datalist id="prReasons"><option>Expired</option><option>Near expiry</option><option>Damaged</option><option>Wrong item supplied</option><option>Excess stock</option></datalist>')
+      + '<div id="prMsg" class="v-msg"></div><button type="button" class="v-btn v-warn v-wide" data-act="prSave">Save return</button>', { width: 480 });
+  };
+  ACT.prMedChanged = function () {
+    var m = medById(V.val('prMed')), sel = document.getElementById('prBatch'), today = V.today();
+    sel.innerHTML = m ? (m.batches || []).map(function (b) { return '<option value="' + h(b.batchId) + '" data-cost="' + (b.cost || 0) + '" data-sup="' + h(b.supplier || '') + '">' + h(b.batchNo || '—') + ' · exp ' + h(b.expiry || '—') + (b.expiry && b.expiry < today ? ' (EXPIRED)' : '') + ' · ' + b.qty + ' units</option>'; }).join('') : '';
+    ACT.prBatchChanged();
+  };
+  ACT.prBatchChanged = function () {
+    var o = document.querySelector('#prBatch option:checked'); if (!o) return;
+    document.getElementById('prRate').value = o.dataset.cost;
+    var sup = V.data.suppliers.find(function (s) { return s.name.toLowerCase() === String(o.dataset.sup).toLowerCase(); });
+    if (sup) document.getElementById('prSup').value = sup.id;
+  };
+  ACT.prSave = async function (btn) {
+    if (!V.val('prMed') || !V.val('prBatch')) return V.msg('prMsg', 'Choose medicine and batch');
+    var qty = Number(V.val('prQty')); if (!Number.isInteger(qty) || qty < 1) return V.msg('prMsg', 'Enter a whole quantity');
+    if (V.val('prReason').length < 3) return V.msg('prMsg', 'Write the reason');
+    V.busy(btn, true);
+    var res = await API.call('purchaseReturn', { supplierId: V.val('prSup'), medicineId: V.val('prMed'), batchId: V.val('prBatch'), qty: qty, rate: V.val('prRate'), reason: V.val('prReason') }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('prMsg', res.error);
+    V.close(); V.toast('↩️ Returned · supplier credit ' + inr(res.amount)); loadData();
+  };
+
+  // ═══════════ purchase invoice ═══════════
+  var INV = S.inv = { lines: [] };
+  ACT.newInvoice = function (el) {
+    INV.lines = [{}]; S._dirty = false; INV.file = null;
+    var sid = el && el.dataset.id || '', sup = S.byId(sid);
+    V.sheet('🧾 New purchase invoice',
+      '<datalist id="invSupList">' + S.active().map(function (s) { return '<option value="' + h(s.name) + '">'; }).join('') + '</datalist>'
+      + '<datalist id="invMedList">' + (window.medicines || []).map(function (m) { return '<option value="' + h(m.name) + '">'; }).join('') + '</datalist>'
+      + '<div class="v-row3">' + V.field('invSup', 'Supplier', '<input id="invSup" class="v-in" list="invSupList" value="' + h(sup ? sup.name : '') + '" placeholder="Type or choose" data-input="invDirty">')
+      + V.field('invNo', 'Supplier invoice no.', V.input('invNo', 'maxlength="60" data-input="invDirty"'))
+      + V.field('invDate', 'Invoice date', V.input('invDate', 'type="date" max="' + V.today() + '" value="' + V.today() + '"')) + '</div>'
+      + '<div class="v-inv-tools"><button type="button" class="v-btn" data-act="invAddLine">➕ Add line</button>'
+      + '<button type="button" class="v-btn" data-act="scanBarcode" data-target="invoice">📷 Scan barcode</button>'
+      + '<span class="v-muted">Tip: a USB / Bluetooth barcode scanner works in the medicine box.</span></div>'
+      + '<div id="invLines"></div>'
+      + '<div class="v-inv-foot"><div class="v-money" id="invTotals"></div><div>'
+      + V.field('invAdj', 'Round-off / discount / extra charges (₹, minus for discount)', V.input('invAdj', 'type="number" step="0.01" value="0" data-input="invCalc"'))
+      + '<div class="v-row2">' + V.field('invPaid', 'Paid now (₹)', V.input('invPaid', 'type="number" min="0" step="0.01" value="0" data-input="invCalc"'))
+      + V.field('invMode', 'Paid by', '<select id="invMode" class="v-in"><option>Cash</option><option selected>UPI</option><option>Card</option><option>Bank</option></select>') + '</div>'
+      + V.field('invFile', 'Invoice photo or PDF (optional)', '<input id="invFile" class="v-in" type="file" accept="image/*,application/pdf" capture="environment" data-change="invFilePicked">')
+      + V.field('invNotes', 'Notes', V.input('invNotes', 'maxlength="300"'))
+      + '<div id="invMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="invSave">💾 Save invoice &amp; add stock</button></div></div>');
+    renderLines(); ACT.invCalc();
+    var f = document.getElementById(sup ? 'invNo' : 'invSup'); if (f) f.focus();
+  };
+  ACT.invDirty = function () { S._dirty = true; };
+  ACT.invAddLine = function () { INV.lines.push({}); renderLines(); var i = document.getElementById('il_med_' + (INV.lines.length - 1)); if (i) i.focus(); };
+  ACT.invDelLine = function (el) { INV.lines.splice(+el.dataset.i, 1); if (!INV.lines.length) INV.lines.push({}); renderLines(); ACT.invCalc(); };
+  function renderLines() {
+    var el = document.getElementById('invLines'); if (!el || INV._rendering) return;
+    INV._rendering = true;
+    try {
+      // leaving a field fires its "change" (which may update a line) before the table is redrawn
+      if (document.activeElement && el.contains(document.activeElement)) document.activeElement.blur();
+      drawLines(el);
+    } finally { INV._rendering = false; }
+  }
+  function drawLines(el) {
+    el.innerHTML = '<div class="tbl-wrap"><table class="table v-table v-inv-table"><thead><tr><th>Medicine</th><th>Batch no.</th><th>Expiry</th><th class="num">Qty</th><th class="num">Free</th><th class="num">Rate ₹</th><th class="num">MRP ₹</th><th class="num">Amount</th><th></th></tr></thead><tbody>'
+      + INV.lines.map(function (l, i) {
+        var m = l.medicineId ? medById(l.medicineId) : null;
+        return '<tr><td data-label="Medicine"><input id="il_med_' + i + '" class="v-in" list="invMedList" value="' + h(m ? m.name : (l.name || '')) + '" data-i="' + i + '" data-change="invMed" data-enter="invMedEnter" placeholder="Medicine name or barcode">'
+          + (l.name && !m ? '<button type="button" class="v-link" data-act="invNewMed" data-i="' + i + '">➕ Add “' + h(l.name) + '” as a new medicine</button>' : '')
+          + (m ? '<small class="v-muted">Stock ' + m.stock + ' · sells at ' + inr(m.price) + '</small>' : '') + '</td>'
+          + '<td data-label="Batch no."><input class="v-in v-in-sm" value="' + h(l.batchNo || '') + '" data-i="' + i + '" data-f="batchNo" data-input="invField" maxlength="40"></td>'
+          + '<td data-label="Expiry"><input class="v-in v-in-sm" type="month" value="' + h(l.expMonth || '') + '" data-i="' + i + '" data-f="expMonth" data-change="invField"></td>'
+          + '<td data-label="Qty"><input class="v-in v-in-xs" type="number" min="1" step="1" value="' + (l.qty || '') + '" data-i="' + i + '" data-f="qty" data-input="invField"></td>'
+          + '<td data-label="Free"><input class="v-in v-in-xs" type="number" min="0" step="1" value="' + (l.freeQty || '') + '" data-i="' + i + '" data-f="freeQty" data-input="invField"></td>'
+          + '<td data-label="Rate ₹"><input class="v-in v-in-xs" type="number" min="0" step="0.01" value="' + (l.costPrice !== undefined ? l.costPrice : '') + '" data-i="' + i + '" data-f="costPrice" data-input="invField"></td>'
+          + '<td data-label="MRP ₹"><input class="v-in v-in-xs" type="number" min="0" step="0.01" value="' + (l.mrp || '') + '" data-i="' + i + '" data-f="mrp" data-input="invField"></td>'
+          + '<td data-label="Amount" class="num" id="il_amt_' + i + '">' + inr((+l.qty || 0) * (+l.costPrice || 0)) + '</td>'
+          + '<td data-label=""><button type="button" class="v-btn v-sm v-danger" data-act="invDelLine" data-i="' + i + '" aria-label="Remove line">✖</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  S.addMedicineLine = function (m) {
+    var empty = INV.lines.findIndex(function (l) { return !l.medicineId && !l.name; });
+    var i = empty >= 0 ? empty : INV.lines.push({}) - 1;
+    INV.lines[i] = { medicineId: m.id, costPrice: m.costPrice || '', qty: '' };
+    S._dirty = true; renderLines(); ACT.invCalc();
+    var q = document.querySelector('[data-i="' + i + '"][data-f="batchNo"]'); if (q) q.focus();
+  };
+  ACT.invMed = function (el) {
+    var i = +el.dataset.i, v = el.value.trim(), m = medByName(v) || (window.medicines || []).find(function (x) { return x.barcode && x.barcode === v; });
+    INV.lines[i] = Object.assign(INV.lines[i] || {}, m ? { medicineId: m.id, name: '' } : { medicineId: '', name: v });
+    if (m && (INV.lines[i].costPrice === undefined || INV.lines[i].costPrice === '')) INV.lines[i].costPrice = m.costPrice || '';
+    S._dirty = true; renderLines(); ACT.invCalc();
+    if (m) { var q = document.querySelector('[data-i="' + i + '"][data-f="batchNo"]'); if (q) q.focus(); }
+  };
+  ACT.invMedEnter = function (el) { ACT.invMed(el); };
+  ACT.invField = function (el) {
+    var l = INV.lines[+el.dataset.i]; l[el.dataset.f] = el.value; S._dirty = true;
+    var a = document.getElementById('il_amt_' + el.dataset.i); if (a) a.textContent = inr((+l.qty || 0) * (+l.costPrice || 0));
+    ACT.invCalc();
+  };
+  ACT.invCalc = function () {
+    var items = r2(INV.lines.reduce(function (a, l) { return a + (+l.qty || 0) * (+l.costPrice || 0); }, 0)), total = r2(items + V.num('invAdj')), paid = V.num('invPaid');
+    var el = document.getElementById('invTotals'); if (!el) return;
+    el.innerHTML = '<div><span>Lines</span><b>' + INV.lines.filter(function (l) { return l.medicineId; }).length + '</b></div><div><span>Items total</span><b>' + inr(items) + '</b></div>'
+      + '<div class="v-money-due"><span>Invoice total</span><b>' + inr(total) + '</b></div>'
+      + '<div><span>' + (paid >= total - 0.009 ? 'Fully paid' : 'On credit (we owe)') + '</span><b>' + inr(Math.max(0, total - paid)) + '</b></div>';
+  };
+  ACT.invNewMed = function (el) {
+    var i = +el.dataset.i, l = INV.lines[i];
+    V.dialog('➕ New medicine',
+      V.field('nmName', 'Name', V.input('nmName', 'maxlength="120" value="' + h(l.name || '') + '"'))
+      + '<div class="v-row2">' + V.field('nmPrice', 'Selling price ₹ (per unit)', V.input('nmPrice', 'type="number" min="0" step="0.01" value="' + (l.mrp || '') + '"'))
+      + V.field('nmMin', 'Low-stock alert below', V.input('nmMin', 'type="number" min="0" step="1" value="10"')) + '</div>'
+      + '<div class="v-row2">' + V.field('nmGeneric', 'Generic name (optional)', V.input('nmGeneric', 'maxlength="120"')) + V.field('nmBarcode', 'Barcode (optional)', V.input('nmBarcode', 'maxlength="60"')) + '</div>'
+      + '<div id="nmMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="invNewMedSave" data-i="' + i + '">Create medicine</button>', { width: 460 });
+  };
+  ACT.invNewMedSave = async function (btn) {
+    var name = V.val('nmName'), price = V.num('nmPrice'); if (!name) return V.msg('nmMsg', 'Name required'); if (!(price > 0)) return V.msg('nmMsg', 'Enter the selling price');
+    V.busy(btn, true);
+    var l = INV.lines[+btn.dataset.i];
+    var res = await API.call('addMedicine', { name: name, price: price, costPrice: +l.costPrice || 0, stock: 0, minStock: V.num('nmMin') || 10, genericName: V.val('nmGeneric'), barcode: V.val('nmBarcode') }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('nmMsg', res.error);
+    await loadData();
+    l.medicineId = String(res.medicineId); l.name = '';
+    V.close(); renderLines(); ACT.invCalc();
+    var dl = document.getElementById('invMedList'); if (dl) dl.innerHTML = (window.medicines || []).map(function (m) { return '<option value="' + h(m.name) + '">'; }).join('');
+  };
+  ACT.invFilePicked = function (el) { INV.file = el.files && el.files[0] || null; };
+  // photos are shrunk to ~1600 px JPEG before upload (fast on mobile data)
+  S.fileToBase64 = function (file) {
+    return new Promise(function (resolve, reject) {
+      if (file.type === 'application/pdf') {
+        if (file.size > 5 * 1024 * 1024) return reject(new Error('PDF is larger than 5 MB'));
+        var fr = new FileReader(); fr.onload = function () { resolve({ data: String(fr.result).split(',')[1], mime: 'application/pdf' }); }; fr.onerror = reject; fr.readAsDataURL(file); return;
+      }
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+        resolve({ data: c.toDataURL('image/jpeg', 0.8).split(',')[1], mime: 'image/jpeg' });
+      };
+      img.onerror = function () { reject(new Error('Could not read the photo')); };
+      img.src = url;
+    });
+  };
+  ACT.invSave = async function (btn) {
+    var sup = V.val('invSup'); if (!sup) return V.msg('invMsg', 'Choose or type the supplier');
+    var lines = [], bad = '';
+    INV.lines.forEach(function (l, i) {
+      if (!l.medicineId && !l.name && !l.qty) return;
+      if (!l.medicineId) { bad = bad || 'Line ' + (i + 1) + ': choose a medicine from the list (or add it as new)'; return; }
+      var q = Number(l.qty), f = Number(l.freeQty || 0), c = Number(l.costPrice);
+      if (!Number.isInteger(q) || q < 1) { bad = bad || 'Line ' + (i + 1) + ': enter the quantity'; return; }
+      if (!Number.isInteger(f) || f < 0) { bad = bad || 'Line ' + (i + 1) + ': free quantity must be a whole number'; return; }
+      if (!(c >= 0) || l.costPrice === '' || l.costPrice === undefined) { bad = bad || 'Line ' + (i + 1) + ': enter the rate'; return; }
+      lines.push({ medicineId: l.medicineId, qty: q, freeQty: f, costPrice: c, mrp: +l.mrp || 0, batchNo: (l.batchNo || '').trim(), expiry: monthEnd(l.expMonth) });
+    });
+    if (bad) return V.msg('invMsg', bad);
+    if (!lines.length) return V.msg('invMsg', 'Add at least one medicine');
+    var items = r2(lines.reduce(function (a, l) { return a + l.qty * l.costPrice; }, 0)), total = r2(items + V.num('invAdj')), paid = V.num('invPaid');
+    if (paid > total + 0.009) return V.msg('invMsg', 'Paid now is more than the invoice total');
+    var known = V.data.suppliers.find(function (s) { return s.name.toLowerCase() === sup.toLowerCase(); });
+    if (!known && !confirm('“' + sup + '” is a new supplier. Create it?')) return;
+    V.busy(btn, true, '⏳ Saving invoice…');
+    var id = newId('PINV');
+    var res = await API.call('addPurchaseInvoice', { id: id, supplierId: known ? known.id : '', supplierName: sup, invoiceNo: V.val('invNo'), date: V.val('invDate'),
+      lines: JSON.stringify(lines), adjustment: V.num('invAdj'), total: total, paidAmount: paid, paymentMode: V.val('invMode'), notes: V.val('invNotes') }, { noQueue: true });
+    if (!res.success) { V.busy(btn, false); return V.msg('invMsg', res.error); }
+    var note = '';
+    if (INV.file) {
+      btn.textContent = '⏳ Uploading invoice file…';
+      try { var f = await S.fileToBase64(INV.file); var up = await API.call('uploadInvoiceAttachment', { invoiceId: id, mimeType: f.mime, data: f.data }, { noQueue: true }); if (!up.success) note = ' (file not attached: ' + up.error + ')'; }
+      catch (e) { note = ' (file not attached: ' + e.message + ')'; }
+    }
+    V.busy(btn, false); S._dirty = false; V.closeSheet();
+    V.toast('✅ Invoice saved · ' + lines.length + ' line(s) · ' + inr(total) + (res.due > 0 ? ' · owe ' + inr(res.due) : ' · paid') + note, note ? 'warning' : 'success');
+    loadData();
+  };
+  ACT.attachInvoice = function (el) {
+    var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*,application/pdf';
+    inp.onchange = async function () {
+      var file = inp.files && inp.files[0]; if (!file) return;
+      V.toast('⏳ Uploading…', 'info');
+      try { var f = await S.fileToBase64(file); var up = await API.call('uploadInvoiceAttachment', { invoiceId: el.dataset.id, mimeType: f.mime, data: f.data }, { noQueue: true });
+        V.toast(up.success ? '📎 Attached' : '❌ ' + up.error, up.success ? 'success' : 'error'); if (up.success) loadData(); }
+      catch (e) { V.toast('❌ ' + e.message, 'error'); }
+    };
+    inp.click();
+  };
+  ACT.cancelInvoice = async function (el) {
+    var reason = (prompt('Cancel this purchase invoice?\nIts stock is removed (only possible if nothing from it was sold).\n\nReason (required):') || '').trim(); if (reason.length < 3) return;
+    var res = await API.call('cancelPurchaseInvoice', { id: el.dataset.id, reason: reason }, { noQueue: true });
+    V.toast(res.success ? '✖ Invoice cancelled' : '❌ ' + res.error, res.success ? 'success' : 'error');
+    if (res.success) { await loadData(); if (document.getElementById('v31Sheet') && S._ledgerId) ACT.supLedger({ dataset: { id: S._ledgerId } }); }
+  };
+
+  // ── Purchases page: invoices list on top ──
+  S.renderPurchasesTop = function () {
+    var page = document.getElementById('purchases'); if (!page || !V.enabled() || !API.isOwner()) return;
+    var box = document.getElementById('v31InvBox');
+    if (!box) { box = document.createElement('div'); box.id = 'v31InvBox'; box.className = 'v-card'; page.insertBefore(box, page.firstChild); }
+    var list = V.data.purchaseInvoices.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).slice(0, 30);
+    box.innerHTML = '<div class="v-toolbar"><h3 class="v-h3" style="margin:0;flex:1;">🧾 Purchase invoices</h3>'
+      + '<button type="button" class="v-btn v-primary" data-act="newInvoice">➕ New purchase invoice</button>'
+      + '<button type="button" class="v-btn" data-act="supReturn">↩️ Return to supplier</button>'
+      + '<button type="button" class="v-btn" data-act="goSuppliers">🏭 Suppliers</button></div>' + invoiceTable(list);
+  };
+  ACT.goSuppliers = function () { showPage('suppliers'); };
+  V.whenShown('purchases', S.renderPurchasesTop);
+  V.afterRefresh.push(function () { var p = document.getElementById('purchases'); if (p && p.classList.contains('active')) S.renderPurchasesTop(); });
+})();
+;
+
+;/* ══ FILE: 16-stock.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   16-stock.js — medicine search (name / generic / barcode / batch),
+   barcode scanning (camera or USB/Bluetooth scanner), barcode + generic
+   name on medicines, full batch history, stock reports (valuation,
+   expiring, expiry loss, dead / slow stock, reorder list)
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V = window.V31, ACT = V.act, h = V.h, inr = V.inr, r2 = V.r2;
+  var K = V.stock = {};
+  function meds() { return window.medicines || []; }
+  function medById(id) { return meds().find(function (m) { return String(m.id) === String(id); }) || null; }
+  K.byBarcode = function (code) { code = String(code || '').trim(); if (!code) return null; return meds().find(function (m) { return m.barcode && String(m.barcode) === code; }) || null; };
+  K.search = function (q, limit) {
+    q = String(q || '').trim().toLowerCase(); if (!q) return [];
+    var words = q.split(/\s+/);
+    var score = function (m) {
+      var name = String(m.name || '').toLowerCase(), gen = String(m.genericName || '').toLowerCase(), all = name + ' ' + gen + ' ' + String(m.category || '').toLowerCase() + ' ' + String(m.barcode || '') + ' ' + String(m.batchNos || '').toLowerCase();
+      if (!words.every(function (w) { return all.indexOf(w) !== -1; })) return -1;
+      return (name.indexOf(q) === 0 ? 0 : name.indexOf(q) !== -1 ? 1 : gen.indexOf(q) !== -1 ? 2 : 3) * 1000 - (m.stock > 0 ? 1 : 0) * 100;
+    };
+    return meds().map(function (m) { return { m: m, s: score(m) }; }).filter(function (x) { return x.s >= 0; })
+      .sort(function (a, b) { return a.s - b.s || String(a.m.name).localeCompare(b.m.name); }).slice(0, limit || 10).map(function (x) { return x.m; });
+  };
+
+  // ═══════════ searchable picker in front of a <select> ═══════════
+  // select: the existing medicine <select>; qty: quantity input; add(): adds to cart
+  K.attachPicker = function (select, qty, add, opts) {
+    if (!select || select.dataset.picker) return; select.dataset.picker = '1'; opts = opts || {};
+    var wrap = document.createElement('div'); wrap.className = 'v-med-search';
+    wrap.innerHTML = '<input type="search" class="v-in" placeholder="🔍 Type medicine, generic name or scan barcode" autocomplete="off" aria-label="Search medicine">'
+      + '<button type="button" class="v-btn v-scan-btn" title="Scan barcode with camera" aria-label="Scan barcode">📷</button><div class="v-pick" role="listbox" hidden></div>';
+    select.parentNode.insertBefore(wrap, select);
+    var input = wrap.querySelector('input'), box = wrap.querySelector('.v-pick'), cam = wrap.querySelector('button'), list = [], cur = 0;
+    var choose = function (m, addNow) {
+      if (!m) return;
+      select.value = String(m.id); select.dispatchEvent(new Event('change', { bubbles: true }));
+      input.value = ''; box.hidden = true;
+      if (addNow && m.stock > 0) { if (qty) qty.value = '1'; add(); input.focus(); }
+      else if (qty) { qty.focus(); qty.select(); }
+    };
+    var draw = function () {
+      box.innerHTML = list.map(function (m, i) {
+        return '<div class="v-pick-item' + (i === cur ? ' on' : '') + (m.stock > 0 ? '' : ' v-dim') + '" role="option" data-i="' + i + '"><b>' + h(m.name) + '</b>'
+          + (m.genericName ? ' <span class="v-muted">' + h(m.genericName) + '</span>' : '') + '<span class="v-pick-r">' + inr(m.price) + ' · ' + (m.stock > 0 ? m.stock + ' in stock' : 'out of stock') + (m.expiry ? ' · exp ' + h(m.expiry) : '') + '</span></div>';
+      }).join(''); box.hidden = !list.length;
+    };
+    input.addEventListener('input', function () { list = K.search(input.value, 10); cur = 0; draw(); });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') { cur = Math.min(cur + 1, list.length - 1); draw(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { cur = Math.max(cur - 1, 0); draw(); e.preventDefault(); }
+      else if (e.key === 'Escape') box.hidden = true;
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        var bc = K.byBarcode(input.value);
+        if (bc) return choose(bc, true);                 // barcode scanner: add one straight away
+        if (list[cur]) choose(list[cur], false);
+      }
+    });
+    box.addEventListener('mousedown', function (e) { var it = e.target.closest('.v-pick-item'); if (it) { e.preventDefault(); choose(list[+it.dataset.i], false); } });
+    input.addEventListener('blur', function () { setTimeout(function () { box.hidden = true; }, 150); });
+    cam.addEventListener('click', function () { K.scan(function (code) { var m = K.byBarcode(code); if (m) choose(m, true); else { input.value = code; input.dispatchEvent(new Event('input')); V.toast('No medicine has barcode ' + code + ' — add it in Inventory → Edit', 'warning'); } }); });
+    wrap.hidden = !V.enabled();
+    K._pickers.push(wrap);
+  };
+  K._pickers = [];
+  V.afterRefresh.push(function () { K._pickers.forEach(function (w) { w.hidden = !V.enabled(); }); });
+
+  // ═══════════ camera barcode scanning ═══════════
+  K.scan = async function (onCode) {
+    var hasApi = 'BarcodeDetector' in window && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+    V.dialog('📷 Scan barcode',
+      (hasApi ? '<div class="v-scan"><video id="scanVideo" playsinline muted></video><div class="v-scan-line"></div></div><p class="v-note" id="scanState">Point the camera at the barcode…</p>'
+        : '<p class="v-note">This browser cannot read barcodes with the camera. Use a USB / Bluetooth barcode scanner (it types into the search box), or type the code:</p>')
+      + '<div class="v-row2">' + V.field('scanManual', 'Barcode', V.input('scanManual', 'inputmode="numeric" data-enter="scanManualGo"')) + '<div style="align-self:end;"><button type="button" class="v-btn v-primary" data-act="scanManualGo">Use code</button></div></div>', { width: 460 });
+    K._onCode = onCode;
+    if (!hasApi) return;
+    var video = document.getElementById('scanVideo'), stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      video.srcObject = stream; await video.play();
+      var formats = ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'itf', 'qr_code', 'data_matrix', 'codabar'];
+      try { var sup = await BarcodeDetector.getSupportedFormats(); formats = formats.filter(function (f) { return sup.indexOf(f) !== -1; }); } catch (e) {}
+      var det = new BarcodeDetector({ formats: formats });
+      var tick = async function () {
+        if (!document.getElementById('scanVideo')) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+        try { var codes = await det.detect(video); if (codes && codes.length) { stream.getTracks().forEach(function (t) { t.stop(); }); V.close(); onCode(codes[0].rawValue); return; } } catch (e) {}
+        setTimeout(tick, 250);
+      };
+      tick();
+    } catch (e) {
+      var st = document.getElementById('scanState'); if (st) st.textContent = '⚠️ Camera not available (' + (e.name === 'NotAllowedError' ? 'permission denied' : e.message) + '). Type the code below.';
+    }
+  };
+  ACT.scanManualGo = function () { var c = V.val('scanManual'); if (!c) return; var f = K._onCode; V.close(); if (f) f(c); };
+  ACT.scanBarcode = function (el) {
+    var t = el.dataset.target;
+    K.scan(function (code) {
+      var m = K.byBarcode(code);
+      if (t === 'invoice') { if (m) V.sup.addMedicineLine(m); else { V.sup.inv.lines.push({ name: code }); V.toast('Barcode ' + code + ' is not on any medicine yet', 'warning'); } return; }
+      if (t === 'field') { var f = document.getElementById(el.dataset.field); if (f) f.value = code; }
+    });
+  };
+
+  // ═══════════ medicine edit: barcode, generic, category ═══════════
+  var origEdit = window.openEditMedicine;
+  window.openEditMedicine = function (id) {
+    origEdit(id);
+    if (!V.enabled()) return;
+    var m = medById(id), btn = document.querySelector('#ssdcDialogBody button[onclick^="saveEditMedicine"]'); if (!m || !btn) return;
+    var box = document.createElement('div');
+    box.innerHTML = '<div class="v-row2">' + V.field('emBarcode', 'Barcode', '<div class="v-inline"><input id="emBarcode" class="v-in" maxlength="60" value="' + h(m.barcode || '') + '"><button type="button" class="v-btn" data-act="scanBarcode" data-target="field" data-field="emBarcode">📷</button></div>')
+      + V.field('emGeneric', 'Generic name', V.input('emGeneric', 'maxlength="120" value="' + h(m.genericName || '') + '"')) + '</div>'
+      + '<div class="v-row2">' + V.field('emCat', 'Category', '<input id="emCat" class="v-in" list="emCats" maxlength="60" value="' + h(m.category || '') + '"><datalist id="emCats">'
+      + Array.from(new Set(meds().map(function (x) { return x.category; }).filter(Boolean).concat(['Tablet', 'Capsule', 'Syrup', 'Mouthwash', 'Gel', 'Toothpaste', 'Injection', 'Ointment']))).map(function (c) { return '<option value="' + h(c) + '">'; }).join('') + '</datalist>')
+      + V.field('emMfr', 'Manufacturer', V.input('emMfr', 'maxlength="120" value="' + h(m.manufacturer || '') + '"')) + '</div>';
+    btn.parentNode.insertBefore(box, document.getElementById('emMsg'));
+  };
+  var origSaveEdit = window.saveEditMedicine;
+  window.saveEditMedicine = async function (id) {
+    if (!V.enabled() || !document.getElementById('emBarcode')) return origSaveEdit(id);
+    var price = parseFloat(_v('emPrice')), cost = parseFloat(_v('emCost'));
+    if (!_v('emName') || !(price >= 0) || !(cost >= 0)) return _msg('emMsg', 'Check name and prices');
+    if (price < cost && !confirm('Selling price is below cost price. Save anyway?')) return;
+    var res = await API.call('updateMedicine', { id: id, name: _v('emName'), price: price, costPrice: cost, minStock: _v('emMin'),
+      barcode: _v('emBarcode'), genericName: _v('emGeneric'), category: _v('emCat'), manufacturer: _v('emMfr') }, { noQueue: true });
+    if (!res.success) return _msg('emMsg', res.error);
+    closeSsdcDialog(); showToast('✅ Medicine updated', 'success'); loadData();
+  };
+  // add-medicine form: optional barcode + generic name
+  K.extendAddForm = function () {
+    var anchor = document.getElementById('newMedicineExpiry'); if (!anchor || document.getElementById('newMedicineBarcode')) return;
+    var box = document.createElement('div'); box.className = 'v31-only'; box.hidden = !V.enabled();
+    box.innerHTML = '<div class="form-group"><label for="newMedicineBarcode">Barcode (optional)</label><div class="v-inline"><input id="newMedicineBarcode" maxlength="60"><button type="button" class="v-btn" data-act="scanBarcode" data-target="field" data-field="newMedicineBarcode">📷</button></div></div>'
+      + '<div class="form-group"><label for="newMedicineGeneric">Generic name (optional)</label><input id="newMedicineGeneric" maxlength="120"></div>';
+    var grp = anchor.closest('.form-group') || anchor.parentNode; grp.parentNode.insertBefore(box, grp.nextSibling);
+  };
+  document.addEventListener('DOMContentLoaded', K.extendAddForm);
+  document.addEventListener('DOMContentLoaded', function () {
+    K.attachPicker(document.getElementById('medicineSelect'), document.getElementById('medicineQty'), function () { addMedicineToCart(); });
+    K.attachPicker(document.getElementById('cb_medSelect'), document.getElementById('cb_medQty'), function () { addCbMedicine(); });
+  });
+
+  // ═══════════ inventory: filter + batch history ═══════════
+  K.filterInv = function (list) {
+    var q = String(K._invQ || '').trim(); if (!q || !V.enabled()) return list;
+    var hits = K.search(q, 1000), ids = {}; hits.forEach(function (m) { ids[String(m.id)] = 1; });
+    return list.filter(function (m) { return ids[String(m.id)]; });
+  };
+  K.renderInvTools = function () {
+    var page = document.getElementById('inventory'); if (!page || !V.enabled()) return;
+    var bar = document.getElementById('v31InvTools');
+    if (!bar) {
+      bar = document.createElement('div'); bar.id = 'v31InvTools'; bar.className = 'v-toolbar';
+      var tw = page.querySelector('.tbl-wrap') || page.firstChild; page.insertBefore(bar, tw);
+      bar.innerHTML = '<input id="invFilter" class="v-in" type="search" placeholder="🔍 Filter by name, generic, barcode, batch" data-input="invFilter">'
+        + '<button type="button" class="v-btn" data-act="invFilterScan">📷</button>'
+        + '<button type="button" class="v-btn v-primary" data-act="stockReports">📊 Stock reports</button>';
+    }
+  };
+  ACT.invFilter = function (el) { K._invQ = el.value; updateInventoryTable(); };
+  ACT.invFilterScan = function () { K.scan(function (c) { var f = document.getElementById('invFilter'); if (f) { f.value = c; K._invQ = c; updateInventoryTable(); } }); };
+  V.whenShown('inventory', K.renderInvTools);
+  ACT.batchHistory = async function (el) {
+    var m = medById(el.dataset.id); if (!m) return;
+    V.sheet('📜 ' + h(m.name) + ' — batches &amp; history', 'Loading…');
+    var res = await API.call('getBatchHistory', { medicineId: m.id }), body = document.getElementById('v31SheetBody'); if (!body) return;
+    if (!res.success) { body.textContent = res.error; return; }
+    var t = res.totals, today = V.today(), TYPES = { PURCHASE: 'Purchased', OPENING: 'Opening', SALE: 'Sold', SALE_UNALLOCATED: 'Sold (short)', BILL_CANCEL: 'Bill cancelled', CUSTOMER_RETURN: 'Returned by patient',
+      PURCHASE_RETURN: 'Returned to supplier', PURCHASE_CANCEL: 'Purchase cancelled', EXPIRED: 'Expired (removed)', DAMAGED: 'Damaged', ADJUSTMENT: 'Count correction' };
+    K._hist = res;
+    body.innerHTML = '<div class="v-actions"><button type="button" class="v-btn" data-act="histXlsx">⬇️ Excel</button></div>'
+      + V.kpis(Object.keys(t).map(function (k) { return { label: TYPES[k] || k, value: (t[k] > 0 ? '+' : '') + t[k] }; }))
+      + '<h4 class="v-h4">Batches (first to expire is sold first)</h4>'
+      + V.table(['Batch', 'Expiry', 'Received', 'Available', 'Cost', 'MRP', 'Supplier', 'Status'], res.batches.map(function (b) {
+        var days = b.expiry ? V.daysBetween(today, b.expiry) : null;
+        return '<tr' + (b.available <= 0 || b.status !== 'Active' ? ' class="v-dim"' : '') + '><td>' + h(b.batchNo || '—') + '</td><td>' + h(b.expiry || '—')
+          + (b.expired ? ' <span class="v-badge v-due">EXPIRED</span>' : days !== null && days <= 90 ? ' <span class="v-badge v-warnb">' + days + ' days</span>' : '') + '</td>'
+          + V.td(b.received, 1) + V.td('<b>' + b.available + '</b>', 1) + V.td(inr(b.cost), 1) + V.td(b.mrp ? inr(b.mrp) : '—', 1) + '<td><small>' + h(b.supplier) + '</small></td><td>' + V.badge(b.status) + '</td></tr>';
+      }))
+      + '<h4 class="v-h4">Every stock change</h4>'
+      + V.table(['When', 'What', 'Qty', 'Stock after', 'Batch', 'Reference', 'By', 'Reason'], res.movements.slice(0, 500).map(function (x) {
+        var b = res.batches.find(function (y) { return y.batchId === x.batchId; });
+        return '<tr><td class="v-nowrap"><small>' + h(x.at) + '</small></td><td>' + h(TYPES[x.type] || x.type) + '</td>' + V.td('<b class="' + (x.qty < 0 ? 'v-bad' : 'v-ok') + '">' + (x.qty > 0 ? '+' : '') + x.qty + '</b>', 1)
+          + V.td(x.stockAfter, 1) + '<td><small>' + h(b ? b.batchNo || '—' : x.batchId) + '</small></td><td><small>' + h(x.ref) + '</small></td><td><small>' + h(x.user) + '</small></td><td><small>' + h(x.reason) + '</small></td></tr>';
+      }), { empty: 'No stock changes recorded yet.' });
+  };
+  ACT.histXlsx = function () {
+    var r = K._hist; if (!r || !V.xlsx) return;
+    V.xlsx.download('Stock history ' + r.medicine.name + '.xlsx', [
+      { name: 'Batches', rows: [['Batch', 'Expiry', 'Received', 'Available', 'Cost', 'MRP', 'Supplier', 'Status', 'Received at']].concat(r.batches.map(function (b) { return [b.batchNo, b.expiry, b.received, b.available, b.cost, b.mrp, b.supplier, b.status, b.receivedAt]; })) },
+      { name: 'Movements', rows: [['When', 'Type', 'Qty', 'Stock after', 'Batch ID', 'Reference', 'By', 'Reason']].concat(r.movements.map(function (x) { return [x.at, x.type, x.qty, x.stockAfter, x.batchId, x.ref, x.user, x.reason]; })) }]);
+  };
+
+  // ═══════════ stock reports ═══════════
+  V.tabRender.stk = function () { renderReports(); };
+  ACT.stockReports = async function () {
+    V.sheet('📊 Stock reports', 'Loading…');
+    var res = await API.call('getInventoryReport', { deadDays: 90 }); if (!document.getElementById('v31SheetBody')) return;
+    if (!res.success) { document.getElementById('v31SheetBody').textContent = res.error; return; }
+    K._rep = res; renderReports();
+  };
+  function reportRows(tab) {
+    var r = K._rep, today = V.today(), list = r.medicines.slice();
+    if (tab === 'value') return { title: 'Stock valuation', head: ['Medicine', 'Category', 'Sellable', 'Value at cost', 'Value at selling price', 'Expired qty', 'Expired value'],
+      rows: list.sort(function (a, b) { return b.costValue - a.costValue; }).map(function (m) { return [m.name, m.category, m.sellable, m.costValue, m.saleValue, m.expired, m.expiredValue]; }),
+      foot: ['Total', '', '', r.totals.costValue, r.totals.saleValue, '', r.totals.expiredValue] };
+    if (tab === 'expiring') {
+      var rows = [];
+      meds().forEach(function (m) { (m.batches || []).forEach(function (b) { if (b.expiry && b.qty > 0) { var d = V.daysBetween(today, b.expiry); if (d <= 90) rows.push([m.name, b.batchNo, b.expiry, d < 0 ? 'EXPIRED' : d, b.qty, r2(b.qty * (b.cost || 0)), b.supplier]); } }); });
+      rows.sort(function (a, b) { return String(a[2]).localeCompare(b[2]); });
+      return { title: 'Expired and expiring within 90 days', head: ['Medicine', 'Batch', 'Expiry', 'Days left', 'Qty', 'Value at cost', 'Supplier'], rows: rows,
+        note: 'Return near-expiry stock to the supplier (Suppliers → Return) or remove expired strips (Inventory → 📦 Stock → Expired).' };
+    }
+    if (tab === 'loss') return { title: 'Expiry & damage loss', head: ['Date', 'Medicine', 'Why', 'Qty', 'Loss at cost', 'Reason'],
+      rows: r.expiryLoss.rows.map(function (x) { return [x.date, x.medicineName, x.type === 'EXPIRED' ? 'Expired' : 'Damaged', x.qty, x.value, x.reason]; }),
+      foot: ['Total', '', '', '', r.expiryLoss.total, ''],
+      pre: V.table(['Month', 'Loss'], Object.keys(r.expiryLoss.byMonth).sort().reverse().map(function (k) { return '<tr><td>' + h(k) + '</td>' + V.td(inr(r.expiryLoss.byMonth[k]), 1) + '</tr>'; }), { empty: 'No expiry or damage losses recorded.' }) };
+    if (tab === 'dead') return { title: 'Dead stock — no sale in ' + r.deadDays + ' days', head: ['Medicine', 'Sellable', 'Value at cost', 'Last sold'],
+      rows: list.filter(function (m) { return m.dead; }).sort(function (a, b) { return b.costValue - a.costValue; }).map(function (m) { return [m.name, m.sellable, m.costValue, m.lastSale || 'never']; }),
+      foot: ['Total', '', r.totals.deadValue, ''], note: 'Money locked in medicines nobody is buying. Consider returning them to the supplier or not re-ordering.' };
+    if (tab === 'slow') return { title: 'Slow moving — more than 6 months of stock', head: ['Medicine', 'Sellable', 'Sold (90 days)', 'Days of stock', 'Value at cost'],
+      rows: list.filter(function (m) { return m.slow; }).sort(function (a, b) { return b.daysCover - a.daysCover; }).map(function (m) { return [m.name, m.sellable, m.sold90, m.daysCover, m.costValue]; }) };
+    if (tab === 'reorder') return { title: 'Re-order list (low stock or < 30 days left)', head: ['Medicine', 'Sellable', 'Minimum', 'Sold (30 days)', 'Suggested order'],
+      rows: list.filter(function (m) { var perDay = m.sold90 / 90; return m.sellable < (m.minStock || 10) || (perDay > 0 && m.sellable / perDay < 30); })
+        .map(function (m) { var need = Math.max((m.minStock || 10) * 2, Math.ceil(m.sold30 * 1.5)) - m.sellable; return [m.name, m.sellable, m.minStock || 10, m.sold30, Math.max(0, Math.ceil(need))]; })
+        .sort(function (a, b) { return b[4] - a[4]; }) };
+    return { title: '', head: [], rows: [] };
+  }
+  function renderReports() {
+    var body = document.getElementById('v31SheetBody'); if (!body || !K._rep) return;
+    var tab = V.tabState.stk || 'value', d = reportRows(tab), r = K._rep;
+    K._cur = d;
+    var fmt = function (v, i) { return typeof v === 'number' && /value|cost|price|loss/i.test(d.head[i]) ? inr(v) : h(v === undefined || v === null ? '' : v); };
+    body.innerHTML = V.kpis([{ label: 'Stock value at cost', value: inr(r.totals.costValue, 0) }, { label: 'At selling price', value: inr(r.totals.saleValue, 0) },
+      { label: 'Expired stock (at cost)', value: inr(r.totals.expiredValue, 0), tone: r.totals.expiredValue > 0 ? 'bad' : '' }, { label: 'Dead stock (at cost)', value: inr(r.totals.deadValue, 0), tone: r.totals.deadValue > 0 ? 'warn' : '' },
+      { label: 'Expiry & damage loss (all time)', value: inr(r.expiryLoss.total, 0) }])
+      + V.tabs('stk', [['value', '💰 Valuation'], ['expiring', '⏳ Expiring'], ['loss', '🗑️ Expiry loss'], ['dead', '🧊 Dead stock'], ['slow', '🐢 Slow moving'], ['reorder', '🛒 Re-order']], tab)
+      + '<div class="v-toolbar"><h3 class="v-h3" style="flex:1;margin:0;">' + h(d.title) + '</h3><button type="button" class="v-btn" data-act="stkXlsx">⬇️ Excel</button><button type="button" class="v-btn" data-act="stkPdf">🖨️ PDF / Print</button></div>'
+      + (d.note ? '<p class="v-note">' + h(d.note) + '</p>' : '') + (d.pre || '')
+      + V.table(d.head, d.rows.map(function (row) { return '<tr>' + row.map(function (v, i) { return V.td(fmt(v, i), typeof v === 'number'); }).join('') + '</tr>'; }),
+        { empty: 'Nothing here 👍', foot: d.foot ? '<tr>' + d.foot.map(function (v, i) { return '<th' + (typeof v === 'number' ? ' class="num"' : '') + '>' + fmt(v, i) + '</th>'; }).join('') + '</tr>' : '' });
+  }
+  ACT.stkXlsx = function () { var d = K._cur; if (d && V.xlsx) V.xlsx.download(d.title + ' ' + V.today() + '.xlsx', [{ name: d.title.slice(0, 31), rows: [d.head].concat(d.rows).concat(d.foot ? [d.foot] : []) }]); };
+  ACT.stkPdf = function () { var d = K._cur; if (d && V.report) V.report.print(d.title, d.head, d.rows, d.foot); };
+})();
+;
+
+;/* ══ FILE: 17-clinic.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   17-clinic.js — patient profile (medical & dental history, allergies),
+   patient records (treatments, bills, prescriptions, exams, visits),
+   treatment price list, follow-ups, prescription / exam / receipt
+   history from the server (same on every device)
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V = window.V31, ACT = V.act, h = V.h, inr = V.inr, r2 = V.r2;
+  var C = V.clinic = {};
+  var DOCTORS = ['Dr. T. Venkat Rao', 'Dr. T. Sai Vakula'];
+  var BLOOD = ['', 'A+', 'A−', 'B+', 'B−', 'AB+', 'AB−', 'O+', 'O−'];
+  function sel(id, opts, cur) { return '<select id="' + id + '" class="v-in">' + opts.map(function (o) { var v = Array.isArray(o) ? o[0] : o, l = Array.isArray(o) ? o[1] : (o || '—'); return '<option value="' + h(v) + '"' + (String(v) === String(cur || '') ? ' selected' : '') + '>' + h(l) + '</option>'; }).join('') + '</select>'; }
+  function ta(id, val, ph) { return '<textarea id="' + id + '" class="v-in" rows="2" maxlength="2000" placeholder="' + h(ph || '') + '">' + h(val || '') + '</textarea>'; }
+
+  // ═══════════ patient profile (add / edit) ═══════════
+  C.openProfile = function (id) {
+    var p = id ? V.patientById(id) : null;
+    V.dialog(p ? '✏️ ' + h(p.name) : '➕ New patient',
+      '<div class="v-row2">' + V.field('ppName', 'Full name', V.input('ppName', 'maxlength="120" value="' + h(p ? p.name : '') + '"'))
+      + V.field('ppPhone', 'Mobile', V.input('ppPhone', 'type="tel" maxlength="15" value="' + h(p ? p.phone : '') + '"')) + '</div>'
+      + '<div class="v-row3">' + V.field('ppAge', 'Age', V.input('ppAge', 'maxlength="5" value="' + h(p ? p.age : '') + '"'))
+      + V.field('ppSex', 'Sex', sel('ppSex', [['', '—'], ['M', 'Male'], ['F', 'Female'], ['O', 'Other']], p && p.sex))
+      + V.field('ppDob', 'Date of birth', V.input('ppDob', 'type="date" value="' + h(p ? p.dob : '') + '"')) + '</div>'
+      + '<div class="v-row3">' + V.field('ppDoctor', 'Doctor', sel('ppDoctor', [''].concat(DOCTORS), p && p.doctor))
+      + V.field('ppBlood', 'Blood group', sel('ppBlood', BLOOD, p && p.bloodGroup))
+      + V.field('ppStatus', 'Status', sel('ppStatus', ['Active', 'Due', 'Follow-up', 'Inactive'], p ? p.status : 'Active')) + '</div>'
+      + V.field('ppAllergies', '⚠️ Allergies (medicines, latex, food…)', V.input('ppAllergies', 'maxlength="500" value="' + h(p ? p.allergies : '') + '" placeholder="e.g. Penicillin, Ibuprofen"'))
+      + V.field('ppAlerts', 'Medical alerts (shown on screen)', V.input('ppAlerts', 'maxlength="500" value="' + h(p ? p.alerts : '') + '" placeholder="e.g. Diabetic, on blood thinners, pregnant"'))
+      + V.field('ppMed', 'Medical history', ta('ppMed', p && p.medicalHistory, 'BP, diabetes, heart, asthma, thyroid, surgeries…'))
+      + V.field('ppMeds', 'Current medicines', ta('ppMeds', p && p.medications, 'e.g. Metformin 500 BD, Aspirin 75 OD'))
+      + V.field('ppDental', 'Dental history', ta('ppDental', p && p.dentalHistory, 'Previous RCT, extractions, braces, habits (tobacco, grinding)…'))
+      + '<div class="v-row2">' + V.field('ppAddr', 'Address', V.input('ppAddr', 'maxlength="300" value="' + h(p ? p.address : '') + '"'))
+      + V.field('ppEmerg', 'Emergency contact', V.input('ppEmerg', 'maxlength="120" value="' + h(p ? p.emergencyContact : '') + '" placeholder="Name · phone"')) + '</div>'
+      + V.field('ppTreat', 'Current treatment (short note)', V.input('ppTreat', 'maxlength="300" value="' + h(p ? p.treatment : '') + '"'))
+      + (p && +p.balance > 0 ? '<p class="v-note">Old balance from before billing: <b>' + inr(p.balance) + '</b> — collect it from 💰 Dues &amp; Payments.</p>' : '')
+      + '<div id="ppMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="ppSave" data-id="' + h(p ? p.id : '') + '">💾 Save patient</button>', { width: 640 });
+  };
+  ACT.ppSave = function (btn) {
+    var name = V.val('ppName'); if (!name) return V.msg('ppMsg', 'Enter the name');
+    var phone = V.val('ppPhone');
+    if (phone && V.normPhone(phone).length !== 10) return V.msg('ppMsg', 'Mobile number should have 10 digits');
+    var id = btn.dataset.id, old = id ? V.patientById(id) : null;
+    if (!old) {
+      var dup = V.patients().find(function (x) { return String(x.name).trim().toLowerCase() === name.toLowerCase() && phone && V.normPhone(x.phone) === V.normPhone(phone); });
+      if (dup && !confirm(name + ' with this mobile number already exists. Save another record anyway?')) return;
+    }
+    var today = V.today(), p = Object.assign({}, old || { id: 'PT-' + Date.now(), balance: 0, addedOn: today, lastVisit: today }, {
+      name: name, phone: phone, age: V.val('ppAge'), sex: V.val('ppSex'), dob: V.val('ppDob'), doctor: V.val('ppDoctor'), bloodGroup: V.val('ppBlood'), status: V.val('ppStatus') || 'Active',
+      allergies: V.val('ppAllergies'), alerts: V.val('ppAlerts'), medicalHistory: V.val('ppMed'), medications: V.val('ppMeds'), dentalHistory: V.val('ppDental'),
+      address: V.val('ppAddr'), emergencyContact: V.val('ppEmerg'), treatment: V.val('ppTreat') });
+    var list = window._patients || (window._patients = []);
+    var i = list.findIndex(function (x) { return String(x.id) === String(p.id); });
+    if (i >= 0) list[i] = p; else list.push(p);
+    try { localStorage.setItem('pt_records', JSON.stringify(list)); } catch (e) {}
+    V.close(); renderPatientsTable(); updatePatientStats();
+    API.call('savePatient', { id: p.id, name: p.name, phone: p.phone, age: p.age, sex: p.sex, doctor: p.doctor, treatment: p.treatment, balance: p.balance || 0, alerts: p.alerts,
+      status: p.status, lastVisit: p.lastVisit, addedOn: p.addedOn, allergies: p.allergies, medicalHistory: p.medicalHistory, medications: p.medications, dentalHistory: p.dentalHistory,
+      bloodGroup: p.bloodGroup, address: p.address, emergencyContact: p.emergencyContact, dob: p.dob }).then(function (res) {
+      if (res.success) V.toast('✅ Patient saved');
+      else if (res.queued) { p.syncStatus = 'pending'; V.toast('📴 Saved on this device — will sync', 'warning'); renderPatientsTable(); }
+      else V.toast('❌ Not saved: ' + res.error, 'error');
+    });
+  };
+  ACT.ptEdit = function (el) { C.openProfile(el.dataset.id); };
+  ACT.ptNew = function () { C.openProfile(''); };
+  ACT.ptRecords = function (el) { C.openRecords(el.dataset.id); };
+
+  // ═══════════ patient records (everything about one patient) ═══════════
+  V.tabRender.rec = function () { renderRecords(); };
+  C.openRecords = async function (id, tab) {
+    var p = V.patientById(id); if (!p) return;
+    C._rec = { p: p, data: null }; V.tabState.rec = tab || 'overview';
+    V.sheet('📁 ' + h(p.name), 'Loading records…');
+    var res = await API.call('getPatientHistory', { patientId: p.id, name: p.name, phone: p.phone });
+    if (!document.getElementById('v31SheetBody')) return;
+    if (!res.success) { document.getElementById('v31SheetBody').innerHTML = '<div class="v-empty">' + h(res.error || 'Could not load (offline?)') + '</div>'; return; }
+    C._rec.data = res; renderRecords();
+  };
+  function renderRecords() {
+    var body = document.getElementById('v31SheetBody'), R = C._rec; if (!body || !R || !R.data) return;
+    var p = V.patientById(R.p.id) || R.p, d = R.data, tab = V.tabState.rec || 'overview', today = V.today();
+    var fu = d.followUps.filter(function (f) { return f.status === 'Pending'; })[0];
+    var openTr = d.treatments.filter(function (t) { return t.status === 'Planned' || t.status === 'In progress'; });
+    var head = '<div class="v-rec-head"><div><b>' + h(p.name) + '</b> <span class="v-muted">' + h([p.phone, p.age ? p.age + ' yrs' : '', p.sex, p.bloodGroup].filter(Boolean).join(' · ')) + '</span></div>'
+      + '<div class="v-actions"><button type="button" class="v-btn v-sm" data-act="ptEdit" data-id="' + h(p.id) + '">✏️ Edit</button>'
+      + '<button type="button" class="v-btn v-sm v-primary" data-act="trPlan" data-id="' + h(p.id) + '">➕ Treatment</button>'
+      + '<button type="button" class="v-btn v-sm" data-act="fuNew" data-id="' + h(p.id) + '">🔔 Follow-up</button>'
+      + (d.outstanding > 0 ? '<button type="button" class="v-btn v-sm v-warn" data-act="recCollect">💰 Collect ' + inr(d.outstanding, 0) + '</button>' : '') + '</div></div>'
+      + V.alertsHtml(p);
+    var tabs = V.tabs('rec', [['overview', '🩺 Overview'], ['treat', '🦷 Treatments (' + d.treatments.length + ')'], ['bills', '💰 Bills (' + (d.bills.length + d.receipts.length) + ')'],
+      ['rx', '📋 Prescriptions (' + d.prescriptions.length + ')'], ['exams', '🔬 Exams (' + d.exams.length + ')'], ['visits', '📅 Visits']], tab), html = '';
+    if (tab === 'overview') {
+      var lastVisit = [].concat(d.bills.map(function (b) { return b.date; }), d.receipts.map(function (r) { return r.date; }), d.prescriptions.map(function (r) { return r.date; }), d.exams.map(function (e) { return e.date; })).filter(Boolean).sort().pop();
+      html = V.kpis([{ label: 'Outstanding', value: inr(d.outstanding, 0), tone: d.outstanding > 0 ? 'warn' : 'ok' },
+        { label: 'Total billed', value: inr(d.bills.filter(function (b) { return b.status !== 'Cancelled'; }).reduce(function (a, b) { return a + b.total; }, 0) + d.receipts.reduce(function (a, r) { return a + r.amount; }, 0), 0) },
+        { label: 'Last visit', value: V.fmtDate(lastVisit) }, { label: 'Next follow-up', value: fu ? V.fmtDate(fu.dueDate) : '—', sub: fu ? h(fu.reason) : '' }])
+        + '<div class="v-grid2"><div class="v-card"><h4 class="v-h4">Medical</h4><dl class="v-dl">'
+        + [['Allergies', p.allergies], ['Alerts', p.alerts], ['Medical history', p.medicalHistory], ['Current medicines', p.medications], ['Blood group', p.bloodGroup]]
+          .map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + (x[1] ? h(x[1]) : '<span class="v-muted">—</span>') + '</dd>'; }).join('') + '</dl></div>'
+        + '<div class="v-card"><h4 class="v-h4">Dental</h4><dl class="v-dl"><dt>Dental history</dt><dd>' + (p.dentalHistory ? h(p.dentalHistory) : '<span class="v-muted">—</span>') + '</dd>'
+        + '<dt>Open treatments</dt><dd>' + (openTr.length ? openTr.map(function (t) { return h(t.treatment) + (t.tooth ? ' (' + h(t.tooth) + ')' : '') + ' ' + V.badge(t.status); }).join('<br>') : '<span class="v-muted">none</span>') + '</dd>'
+        + '<dt>Last diagnosis</dt><dd>' + (d.exams[0] ? h(d.exams[0].final_diag || d.exams[0].prov_diag || '—') + ' <small class="v-muted">' + h(V.fmtDate(d.exams[0].date)) + '</small>' : '<span class="v-muted">—</span>') + '</dd>'
+        + '<dt>Address</dt><dd>' + h(p.address || '—') + '</dd><dt>Emergency</dt><dd>' + h(p.emergencyContact || '—') + '</dd></dl></div></div>';
+    } else if (tab === 'treat') {
+      html = '<div class="v-actions"><button type="button" class="v-btn v-primary" data-act="trPlan" data-id="' + h(p.id) + '">➕ Plan / add treatment</button>'
+        + (openTr.length ? '<button type="button" class="v-btn" data-act="trBillOpen">🦷 Make receipt for treatments</button>' : '') + '</div>'
+        + V.table(['Date', 'Treatment', 'Tooth', 'Doctor', 'Price', 'Status', 'Receipt', ''], d.treatments.map(function (t) {
+          return '<tr><td>' + h(V.fmtDate(t.date)) + '</td><td><b>' + h(t.treatment) + '</b>' + (t.notes ? '<br><small class="v-muted">' + h(t.notes) + '</small>' : '') + '</td><td>' + h(t.tooth) + '</td><td><small>' + h(t.doctor) + '</small></td>'
+            + V.td(inr(t.price), 1) + '<td>' + V.badge(t.status) + (t.completedOn ? '<br><small>' + h(V.fmtDate(t.completedOn)) + '</small>' : '') + '</td><td><small>' + h(t.receiptNo) + '</small></td><td class="v-nowrap">'
+            + (t.status === 'Planned' ? '<button type="button" class="v-btn v-sm" data-act="trStatus" data-id="' + h(t.id) + '" data-s="In progress">▶ Start</button> ' : '')
+            + (t.status !== 'Completed' && t.status !== 'Cancelled' ? '<button type="button" class="v-btn v-sm v-primary" data-act="trStatus" data-id="' + h(t.id) + '" data-s="Completed">✓ Done</button> ' : '')
+            + '<button type="button" class="v-btn v-sm" data-act="trPlan" data-id="' + h(p.id) + '" data-tid="' + h(t.id) + '">✏️</button></td></tr>';
+        }), { empty: 'No treatments recorded yet.' });
+    } else if (tab === 'bills') {
+      html = V.table(['Date', 'Bill / receipt', 'Details', 'Total', 'Paid', 'Due', ''], d.bills.map(function (b) {
+        return '<tr' + (b.status === 'Cancelled' ? ' class="v-strike"' : '') + '><td>' + h(V.fmtDate(b.date)) + '</td><td>💊 ' + h(b.billNo || b.billId) + '</td><td><small>' + h(b.items.map(function (i) { return i.medicineName + ' ×' + i.qty; }).join(', ')) + '</small></td>'
+          + V.td(inr(b.total), 1) + V.td(inr(b.paidAmount - b.refundedAmount), 1) + V.td(b.balanceDue > 0 ? '<b class="v-bad">' + inr(b.balanceDue) + '</b>' : '—', 1)
+          + '<td><button type="button" class="v-btn v-sm" data-act="billDetail" data-type="BILL" data-id="' + h(b.billId) + '">💰</button></td></tr>';
+      }).concat(d.receipts.map(function (r) {
+        return '<tr><td>' + h(V.fmtDate(r.date)) + '</td><td>🦷 ' + h(r.no || '—') + '</td><td><small>' + h(r.treatments) + '</small></td>' + V.td(inr(r.amount), 1) + V.td(inr(r.paidAmount), 1)
+          + V.td(r.balanceDue > 0 ? '<b class="v-bad">' + inr(r.balanceDue) + '</b>' : '—', 1) + '<td>' + (r.recordId ? '<button type="button" class="v-btn v-sm" data-act="billDetail" data-type="RECEIPT" data-id="' + h(r.recordId) + '">💰</button>' : '') + '</td></tr>';
+      })).sort(function (a, b) { return 0; }), { empty: 'No bills yet.' });
+    } else if (tab === 'rx') {
+      html = d.prescriptions.length ? d.prescriptions.map(function (r, i) {
+        return '<div class="v-card v-rx"><div class="v-rx-head"><b>' + h(V.fmtDate(r.date)) + '</b> <span class="v-muted">' + h(r.doctor || '') + (r.followUpDate ? ' · follow-up ' + h(V.fmtDate(r.followUpDate)) : '') + '</span>'
+          + '<span><button type="button" class="v-btn v-sm" data-act="rxLoadSrv" data-i="' + i + '" data-src="rec">✏️ Use again</button> <button type="button" class="v-btn v-sm" data-act="rxPrintSrv" data-i="' + i + '" data-src="rec">🖨️</button></span></div>'
+          + '<pre class="v-pre">' + h(r.prescription) + '</pre></div>';
+      }).join('') : '<div class="v-empty">No prescriptions yet.</div>';
+    } else if (tab === 'exams') {
+      html = d.exams.length ? d.exams.map(function (e, i) {
+        return '<div class="v-card"><div class="v-rx-head"><b>' + h(V.fmtDate(e.date)) + '</b> <span class="v-muted">' + h(e.doctor) + '</span>'
+          + '<span><button type="button" class="v-btn v-sm" data-act="efLoadSrv" data-i="' + i + '" data-src="rec">✏️ Open</button> <button type="button" class="v-btn v-sm" data-act="efPrintSrv" data-i="' + i + '" data-src="rec">🖨️</button></span></div>'
+          + '<dl class="v-dl">' + [['Provisional diagnosis', e.prov_diag], ['Final diagnosis', e.final_diag], ['Treatment plan', e.treatments], ['Notes', e.tp_notes], ['Missing teeth', e.missing_teeth], ['Caries', e.caries]]
+            .filter(function (x) { return x[1]; }).map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + h(x[1]) + '</dd>'; }).join('') + '</dl></div>';
+      }).join('') : '<div class="v-empty">No exam forms yet.</div>';
+    } else {
+      html = '<h4 class="v-h4">Follow-ups</h4>' + V.table(['Due', 'Reason', 'Status', ''], d.followUps.map(function (f) {
+        return '<tr><td>' + h(V.fmtDate(f.dueDate)) + '</td><td>' + h(f.reason) + '</td><td>' + V.badge(f.status === 'Pending' && f.dueDate < today ? 'Overdue' : f.status) + '</td><td>'
+          + (f.status === 'Pending' ? '<button type="button" class="v-btn v-sm v-primary" data-act="fuDone" data-id="' + h(f.id) + '">✓ Done</button>' : '') + '</td></tr>';
+      }), { empty: 'No follow-ups.' })
+        + '<h4 class="v-h4">Appointments</h4>' + V.table(['Date', 'Time', 'Reason', 'Doctor', 'Status'], d.appointments.map(function (a) {
+          return '<tr><td>' + h(V.fmtDate(a.date)) + '</td><td>' + h(a.time) + '</td><td>' + h(a.reason) + '</td><td><small>' + h(a.doctor) + '</small></td><td>' + V.badge(a.status) + '</td></tr>';
+        }), { empty: 'No appointments.' });
+    }
+    body.innerHTML = head + tabs + '<div class="v-rec-body">' + html + '</div>';
+  }
+  ACT.recCollect = function () {
+    var R = C._rec; if (!R) return;
+    var p = R.p, nm = String(p.name).trim().toLowerCase(), ph = V.normPhone(p.phone);
+    V.money.openCollect(V.data.receivables.filter(function (r) { return r.patientId ? r.patientId === String(p.id) : String(r.patientName).trim().toLowerCase() === nm && (!ph || !r.phone || V.normPhone(r.phone) === ph); }));
+  };
+  async function reloadRecords() { if (C._rec && document.getElementById('v31SheetBody')) { var t = V.tabState.rec; await C.openRecords(C._rec.p.id, t); } }
+
+  // ── plan / edit a treatment ──
+  C.master = function () { return V.data.treatmentMaster.filter(function (t) { return t.status !== 'Inactive'; }).sort(function (a, b) { return (a.category + a.name).localeCompare(b.category + b.name); }); };
+  ACT.trPlan = function (el) {
+    var p = V.patientById(el.dataset.id); if (!p) return;
+    var t = el.dataset.tid && C._rec && C._rec.data ? C._rec.data.treatments.find(function (x) { return x.id === el.dataset.tid; }) : null;
+    var groups = {}; C.master().forEach(function (m) { (groups[m.category || 'Other'] = groups[m.category || 'Other'] || []).push(m); });
+    V.dialog((t ? '✏️ ' : '➕ ') + 'Treatment · ' + h(p.name),
+      V.field('tpT', 'Treatment', '<select id="tpT" class="v-in" data-change="tpPick"><option value="">Choose from price list…</option>'
+        + Object.keys(groups).map(function (g) { return '<optgroup label="' + h(g) + '">' + groups[g].map(function (m) { return '<option value="' + h(m.id) + '" data-price="' + m.price + '"' + (t && t.treatmentId === m.id ? ' selected' : '') + '>' + h(m.name) + (m.price ? ' — ' + inr(m.price, 0) : '') + '</option>'; }).join('') + '</optgroup>'; }).join('')
+        + '<option value="__other"' + (t && !t.treatmentId ? ' selected' : '') + '>Other (type below)</option></select>')
+      + '<div id="tpOtherWrap"' + (t && !t.treatmentId ? '' : ' hidden') + '>' + V.field('tpName', 'Treatment name', V.input('tpName', 'maxlength="200" value="' + h(t && !t.treatmentId ? t.treatment : '') + '"')) + '</div>'
+      + '<div class="v-row3">' + V.field('tpTooth', 'Tooth / area', V.input('tpTooth', 'maxlength="60" placeholder="e.g. 36, UL quadrant" value="' + h(t ? t.tooth : '') + '"'))
+      + V.field('tpPrice', 'Price ₹', V.input('tpPrice', 'type="number" min="0" step="1" value="' + (t ? t.price : '') + '"'))
+      + V.field('tpStatus', 'Status', sel('tpStatus', ['Planned', 'In progress', 'Completed', 'Cancelled'], t ? t.status : 'Planned')) + '</div>'
+      + '<div class="v-row2">' + V.field('tpDoctor', 'Doctor', sel('tpDoctor', [''].concat(DOCTORS), t ? t.doctor : p.doctor)) + V.field('tpDate', 'Date', V.input('tpDate', 'type="date" value="' + (t ? t.date : V.today()) + '"')) + '</div>'
+      + V.field('tpNotes', 'Notes', V.input('tpNotes', 'maxlength="1000" value="' + h(t ? t.notes : '') + '"'))
+      + '<div id="tpMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="tpSave" data-id="' + h(p.id) + '" data-tid="' + h(t ? t.id : '') + '">Save treatment</button>', { width: 520 });
+  };
+  ACT.tpPick = function (el) {
+    document.getElementById('tpOtherWrap').hidden = el.value !== '__other';
+    var o = el.options[el.selectedIndex]; if (o && o.dataset.price && +o.dataset.price > 0) document.getElementById('tpPrice').value = o.dataset.price;
+  };
+  ACT.tpSave = async function (btn) {
+    var p = V.patientById(btn.dataset.id), tid = V.val('tpT'), m = C.master().find(function (x) { return x.id === tid; });
+    var name = tid === '__other' ? V.val('tpName') : (m ? m.name : ''); if (!name) return V.msg('tpMsg', 'Choose a treatment');
+    V.busy(btn, true);
+    var res = await API.call('savePatientTreatment', { id: btn.dataset.tid || newId('PTR'), patientId: p.id, patientName: p.name, phone: p.phone, treatmentId: m ? m.id : '', treatment: name,
+      tooth: V.val('tpTooth'), price: V.val('tpPrice'), status: V.val('tpStatus'), doctor: V.val('tpDoctor'), date: V.val('tpDate'), notes: V.val('tpNotes') });
+    V.busy(btn, false);
+    if (!res.success && !res.queued) return V.msg('tpMsg', res.error);
+    V.close(); V.toast(res.queued ? '📴 Saved on this device' : '✅ Treatment saved'); loadData(); reloadRecords();
+  };
+  ACT.trStatus = async function (el) {
+    var res = await API.call('setPatientTreatmentStatus', { id: el.dataset.id, status: el.dataset.s });
+    if (!res.success && !res.queued) return V.toast('❌ ' + res.error, 'error');
+    V.toast(el.dataset.s === 'Completed' ? '✓ Marked done' : '▶ Started');
+    loadData(); reloadRecords();
+  };
+  // bill open treatments → treatment receipt page, prefilled
+  ACT.trBillOpen = function () {
+    var R = C._rec; if (!R) return;
+    var open = R.data.treatments.filter(function (t) { return (t.status === 'Planned' || t.status === 'In progress' || t.status === 'Completed') && !t.receiptNo; });
+    if (!open.length) return V.toast('No unbilled treatments', 'info');
+    V.dialog('🦷 Which treatments go on the receipt?', open.map(function (t, i) {
+      return '<label class="v-check"><input type="checkbox" id="tb' + i + '" checked> ' + h(t.treatment) + (t.tooth ? ' (' + h(t.tooth) + ')' : '') + ' — <b>' + inr(t.price) + '</b> ' + V.badge(t.status) + '</label>';
+    }).join('') + '<button type="button" class="v-btn v-primary v-wide" data-act="trBillGo">Continue to receipt</button>', { width: 480 });
+    C._billable = open;
+  };
+  ACT.trBillGo = function () {
+    var chosen = C._billable.filter(function (t, i) { return document.getElementById('tb' + i).checked; }); if (!chosen.length) return;
+    var p = C._rec.p; V.close(); V.closeSheet();
+    showPage('treatmentreceipt');
+    C.fillReceipt(p, chosen);
+  };
+  C.fillReceipt = function (p, list) {
+    var pi = document.getElementById('tr_patient'); if (pi) { pi.value = p.name; pi.dataset.patientId = p.id; }
+    var tt = document.getElementById('tr_treatment_text'); if (tt) tt.value = list.map(function (t) { return t.treatment + (t.tooth ? ' (' + t.tooth + ')' : ''); }).join('\n');
+    var total = r2(list.reduce(function (a, t) { return a + (+t.price || 0); }, 0));
+    var am = document.getElementById('tr_amount'); if (am) am.value = total || '';
+    var w = document.getElementById('tr_words'); if (w && total) w.value = V.words(total);
+    C._receiptTreatments = list.map(function (t) { return t.id; });
+    C._receiptItems = list.map(function (t) { return { name: t.treatment, tooth: t.tooth, price: t.price }; });
+    if (typeof updateTreatmentPreview === 'function') updateTreatmentPreview();
+  };
+
+  // ═══════════ treatment receipt page: price list chips + patient link ═══════════
+  C.enhanceReceiptPage = function () {
+    var ta = document.getElementById('tr_treatment_text'); if (!ta || document.getElementById('v31TrPick')) return;
+    var box = document.createElement('div'); box.id = 'v31TrPick'; box.className = 'v31-only v-tr-pick'; box.hidden = !V.enabled();
+    ta.parentNode.parentNode.insertBefore(box, ta.parentNode.nextSibling);
+    C.renderChips();
+    V.attachPatientPicker(document.getElementById('tr_patient'), { onPick: function (p) { C.showPlanned(p); } });
+  };
+  C.renderChips = function () {
+    var box = document.getElementById('v31TrPick'); if (!box) return;
+    var list = C.master().slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    box.innerHTML = '<div class="v-lbl">Add from price list <small class="v-muted">(tap to add · amount adds up)</small></div><div class="v-chips">'
+      + list.map(function (t) { return '<button type="button" class="v-chip" data-act="trChip" data-id="' + h(t.id) + '">' + h(t.name) + (t.price ? ' · ' + inr(t.price, 0) : '') + '</button>'; }).join('')
+      + (API.isOwner() ? '<button type="button" class="v-chip v-chip-edit" data-act="priceList">✏️ Edit prices</button>' : '') + '</div><div id="v31Planned"></div>';
+  };
+  ACT.trChip = function (el) {
+    var t = V.data.treatmentMaster.find(function (x) { return x.id === el.dataset.id; }); if (!t) return;
+    var ta = document.getElementById('tr_treatment_text'); ta.value = (ta.value.trim() ? ta.value.trim() + '\n' : '') + t.name;
+    if (t.price) { var am = document.getElementById('tr_amount'); var tot = r2((parseFloat(am.value) || 0) + t.price); am.value = tot; var w = document.getElementById('tr_words'); if (w) w.value = V.words(tot); }
+    C._receiptItems = (C._receiptItems || []).concat([{ name: t.name, price: t.price }]);
+    if (typeof updateTreatmentPreview === 'function') updateTreatmentPreview();
+  };
+  C.showPlanned = function (p) {
+    var el = document.getElementById('v31Planned'); if (!el) return;
+    var open = V.data.patientTreatments.filter(function (t) { return (t.patientId ? t.patientId === String(p.id) : t.patientName.toLowerCase() === String(p.name).toLowerCase()) && !t.receiptNo && t.status !== 'Cancelled'; });
+    el.innerHTML = open.length ? '<div class="v-note">🦷 ' + h(p.name) + ' has ' + open.length + ' unbilled treatment(s): ' + open.map(function (t) { return h(t.treatment) + ' ' + inr(t.price, 0); }).join(', ')
+      + ' <button type="button" class="v-link" data-act="trUsePlanned" data-id="' + h(p.id) + '">Put them on this receipt</button></div>' : '';
+    C._planned = open;
+  };
+  ACT.trUsePlanned = function (el) { var p = V.patientById(el.dataset.id); if (p && C._planned) C.fillReceipt(p, C._planned); };
+  V.whenShown('treatmentreceipt', C.enhanceReceiptPage);
+  document.addEventListener('DOMContentLoaded', function () { setTimeout(C.enhanceReceiptPage, 400); });
+  // what the receipt save sends (used by 02-treatment-payment / printTreatmentReceipt)
+  C.receiptExtras = function () {
+    var out = { patientId: V.patientIdFor('tr_patient'), treatmentRecordIds: JSON.stringify(C._receiptTreatments || []), items: JSON.stringify(C._receiptItems || []) };
+    var p = out.patientId ? V.patientById(out.patientId) : null; if (p) out.phone = p.phone || '';
+    return out;
+  };
+  C.clearReceiptExtras = function () { C._receiptTreatments = []; C._receiptItems = []; var pi = document.getElementById('tr_patient'); if (pi && pi._v31Clear) pi._v31Clear(); var pl = document.getElementById('v31Planned'); if (pl) pl.innerHTML = ''; };
+
+  // ═══════════ treatment price list (owner) ═══════════
+  ACT.priceList = function () {
+    var list = V.data.treatmentMaster.slice().sort(function (a, b) { return (a.category + a.name).localeCompare(b.category + b.name); });
+    V.dialog('🦷 Treatment price list',
+      '<p class="v-note">These prices fill in automatically on receipts and treatment plans. Change any time.</p>'
+      + V.table(['Treatment', 'Category', 'Price ₹', 'In use', ''], list.map(function (t, i) {
+        return '<tr><td><input class="v-in" id="pl_n' + i + '" value="' + h(t.name) + '" maxlength="120"></td><td><input class="v-in v-in-sm" id="pl_c' + i + '" value="' + h(t.category) + '" maxlength="60"></td>'
+          + '<td class="num"><input class="v-in v-in-sm" type="number" min="0" step="1" id="pl_p' + i + '" value="' + t.price + '"></td>'
+          + '<td><input type="checkbox" id="pl_a' + i + '"' + (t.status !== 'Inactive' ? ' checked' : '') + ' aria-label="In use"></td>'
+          + '<td><button type="button" class="v-btn v-sm v-primary" data-act="plSave" data-i="' + i + '">Save</button></td></tr>';
+      }), { scroll: true })
+      + '<h4 class="v-h4">Add a treatment</h4><div class="v-row3">' + V.field('plNewN', 'Name', V.input('plNewN', 'maxlength="120"')) + V.field('plNewC', 'Category', V.input('plNewC', 'maxlength="60"'))
+      + V.field('plNewP', 'Price ₹', V.input('plNewP', 'type="number" min="0" step="1"')) + '</div><div id="plMsg" class="v-msg"></div>'
+      + '<button type="button" class="v-btn v-primary" data-act="plAdd">➕ Add</button>', { width: 720 });
+    C._pl = list;
+  };
+  ACT.plSave = async function (btn) {
+    var i = +btn.dataset.i, t = C._pl[i];
+    V.busy(btn, true, '…');
+    var res = await API.call('saveTreatment', { id: t.id, name: V.val('pl_n' + i), category: V.val('pl_c' + i), price: V.num('pl_p' + i), status: document.getElementById('pl_a' + i).checked ? 'Active' : 'Inactive' }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('plMsg', res.error);
+    btn.textContent = '✓'; await loadData(); C.renderChips();
+  };
+  ACT.plAdd = async function (btn) {
+    if (!V.val('plNewN')) return V.msg('plMsg', 'Enter the name');
+    V.busy(btn, true);
+    var res = await API.call('saveTreatment', { name: V.val('plNewN'), category: V.val('plNewC'), price: V.num('plNewP') }, { noQueue: true });
+    V.busy(btn, false);
+    if (!res.success) return V.msg('plMsg', res.error);
+    await loadData(); C.renderChips(); ACT.priceList();
+  };
+
+  // ═══════════ follow-ups ═══════════
+  V.pages.followups = function () {
+    var page = document.getElementById('followups'); if (!page) return;
+    var today = V.today(), week = V.addDays(today, 7), all = V.data.followUps.filter(function (f) { return f.status === 'Pending'; });
+    var over = all.filter(function (f) { return f.dueDate < today; }), now = all.filter(function (f) { return f.dueDate === today; }), soon = all.filter(function (f) { return f.dueDate > today && f.dueDate <= week; }), later = all.filter(function (f) { return f.dueDate > week; });
+    var done = V.data.followUps.filter(function (f) { return f.status === 'Done'; }).slice(-10).reverse();
+    var block = function (title, list, tone) {
+      return '<div class="v-card"><h3 class="v-h3">' + title + ' <span class="v-count' + (tone ? ' ' + tone : '') + '">' + list.length + '</span></h3>'
+        + (list.length ? list.sort(function (a, b) { return a.dueDate.localeCompare(b.dueDate); }).map(function (f) {
+          var p = f.patientId ? V.patientById(f.patientId) : null;
+          return '<div class="v-fu"><div><b>' + h(f.patientName) + '</b> <span class="v-muted">' + h(f.phone || (p && p.phone) || '') + '</span><br><small>' + h(V.fmtDate(f.dueDate)) + ' · ' + h(f.reason || 'Review') + (f.doctor ? ' · ' + h(f.doctor) : '') + '</small></div>'
+            + '<div class="v-actions">' + ((f.phone || (p && p.phone)) ? '<button type="button" class="v-btn v-sm v-wa" data-act="fuWa" data-id="' + h(f.id) + '">📲</button>' : '')
+            + '<button type="button" class="v-btn v-sm" data-act="fuBook" data-id="' + h(f.id) + '">📅 Book</button>'
+            + '<button type="button" class="v-btn v-sm v-primary" data-act="fuDone" data-id="' + h(f.id) + '">✓ Done</button>'
+            + '<button type="button" class="v-btn v-sm" data-act="fuCancel" data-id="' + h(f.id) + '" aria-label="Cancel follow-up">✖</button></div></div>';
+        }).join('') : '<div class="v-empty">None 👍</div>') + '</div>';
+    };
+    page.innerHTML = V.kpis([{ label: 'Overdue', value: over.length, tone: over.length ? 'bad' : 'ok' }, { label: 'Due today', value: now.length, tone: now.length ? 'warn' : '' }, { label: 'Next 7 days', value: soon.length }])
+      + '<div class="v-toolbar"><button type="button" class="v-btn v-primary" data-act="fuNew">➕ Add follow-up</button>'
+      + (over.length + now.length ? '<span class="v-muted">Tip: 📲 sends a ready-made WhatsApp reminder.</span>' : '') + '</div>'
+      + block('⚠️ Overdue', over, 'bad') + block('📅 Today', now, 'warn') + block('🗓️ Next 7 days', soon) + (later.length ? block('Later', later) : '')
+      + (done.length ? '<details class="v-details"><summary>Recently done (' + done.length + ')</summary>' + done.map(function (f) { return '<div class="v-fu v-dim"><div>' + h(f.patientName) + ' · ' + h(V.fmtDate(f.dueDate)) + ' · ' + h(f.reason) + '</div><small>' + h(f.doneBy) + '</small></div>'; }).join('') + '</details>' : '');
+  };
+  ACT.fuNew = function (el) {
+    var p = el && el.dataset.id ? V.patientById(el.dataset.id) : null;
+    V.dialog('🔔 New follow-up',
+      V.field('fuName', 'Patient', V.input('fuName', 'maxlength="120" value="' + h(p ? p.name : '') + '"'))
+      + V.field('fuPhone', 'Mobile', V.input('fuPhone', 'type="tel" maxlength="15" value="' + h(p ? p.phone : '') + '"'))
+      + '<div class="v-row2">' + V.field('fuDays', 'After', '<select id="fuDays" class="v-in" data-change="fuDaysPick"><option value="">Choose…</option><option value="3">3 days</option><option value="7" selected>1 week</option><option value="14">2 weeks</option><option value="30">1 month</option><option value="90">3 months</option><option value="180">6 months</option></select>')
+      + V.field('fuDate', 'Date', V.input('fuDate', 'type="date" min="' + V.today() + '" value="' + V.addDays(V.today(), 7) + '"')) + '</div>'
+      + V.field('fuReason', 'Reason', '<input id="fuReason" class="v-in" list="fuReasons" maxlength="200" value="Review"><datalist id="fuReasons"><option>Review</option><option>RCT next sitting</option><option>Suture removal</option><option>Crown fitting</option><option>Braces adjustment</option><option>6-month check-up & cleaning</option><option>Denture trial</option></datalist>')
+      + V.field('fuDoctor', 'Doctor', sel('fuDoctor', [''].concat(DOCTORS), p && p.doctor))
+      + '<div id="fuMsg" class="v-msg"></div><button type="button" class="v-btn v-primary v-wide" data-act="fuSave" data-pid="' + h(p ? p.id : '') + '">Save follow-up</button>', { width: 460 });
+    var inp = document.getElementById('fuName');
+    V.attachPatientPicker(inp, { phone: 'fuPhone' }); if (p) inp.dataset.patientId = p.id;
+  };
+  ACT.fuDaysPick = function (el) { if (el.value) document.getElementById('fuDate').value = V.addDays(V.today(), +el.value); };
+  ACT.fuSave = async function (btn) {
+    var name = V.val('fuName'); if (!name) return V.msg('fuMsg', 'Enter the patient'); if (!V.val('fuDate')) return V.msg('fuMsg', 'Choose the date');
+    var pid = V.patientIdFor('fuName', 'fuPhone') || btn.dataset.pid;
+    V.busy(btn, true);
+    var f = { id: newId('FU'), patientId: pid, patientName: name, phone: V.val('fuPhone'), dueDate: V.val('fuDate'), reason: V.val('fuReason'), doctor: V.val('fuDoctor'), source: 'Manual', status: 'Pending' };
+    var res = await API.call('saveFollowUp', f);
+    V.busy(btn, false);
+    if (!res.success && !res.queued) return V.msg('fuMsg', res.error);
+    V.data.followUps.push(f); V.close(); V.toast('🔔 Follow-up on ' + V.fmtDate(f.dueDate)); if (!res.queued) loadData(); V.refresh(); reloadRecords();
+  };
+  C.createFollowUp = function (o) {   // from prescription / treatment screens
+    var f = Object.assign({ id: newId('FU'), status: 'Pending', source: 'Prescription' }, o);
+    V.data.followUps.push(f);
+    return API.call('saveFollowUp', f);
+  };
+  async function setFu(id, status) {
+    var res = await API.call('setFollowUpStatus', { id: id, status: status });
+    if (!res.success && !res.queued) return V.toast('❌ ' + res.error, 'error');
+    var f = V.data.followUps.find(function (x) { return x.id === id; }); if (f) f.status = status;
+    V.refresh(); if (!res.queued) loadData(); reloadRecords();
+  }
+  ACT.fuDone = function (el) { setFu(el.dataset.id, 'Done'); };
+  ACT.fuCancel = function (el) { if (confirm('Cancel this follow-up?')) setFu(el.dataset.id, 'Cancelled'); };
+  ACT.fuWa = function (el) {
+    var f = V.data.followUps.find(function (x) { return x.id === el.dataset.id; }); if (!f) return;
+    var p = f.patientId ? V.patientById(f.patientId) : null, phone = f.phone || (p && p.phone);
+    var msg = '*🦷 Sri Sai Speciality Dental Care*\n\nHello *' + f.patientName + '*! 😊\nThis is a reminder for your *' + (f.reason || 'review') + '* visit '
+      + (f.dueDate <= V.today() ? '(due now)' : 'on *' + V.fmtDate(f.dueDate) + '*') + '.\nPlease call us to book a convenient time.\n\n📞 ' + (CONFIG.clinicPhone || '') + '\n🕐 ' + (CONFIG.clinicTimings || '');
+    openWhatsApp(V.waPhone(phone), msg);
+  };
+  ACT.fuBook = function (el) {
+    var f = V.data.followUps.find(function (x) { return x.id === el.dataset.id; }); if (!f) return;
+    showPage('appointments');
+    setTimeout(function () {
+      if (typeof openAddApptModal === 'function') openAddApptModal();
+      var set = function (id, v) { var e = document.getElementById(id); if (e && v) e.value = v; };
+      set('appt_patient', f.patientName); set('appt_phone', f.phone); set('appt_bookDate', f.dueDate); set('appt_reason', f.reason); set('appt_doctor', f.doctor);
+    }, 120);
+  };
+
+  // ═══════════ server history: prescriptions, exams, receipts ═══════════
+  var HIST = { rx: { kind: 'prescriptions', list: 'rx_history_list', title: '☁️ All prescriptions (every device)' },
+    ef: { kind: 'exams', list: 'ef_history_list', title: '☁️ All exam forms (every device)' },
+    tr: { kind: 'receipts', list: 'tr_history_list', title: '☁️ All treatment receipts (every device)' } };
+  C.histState = {};
+  C.mountHistory = function (key) {
+    var cfg = HIST[key], anchor = document.getElementById(cfg.list); if (!anchor || !V.enabled()) return;
+    var box = document.getElementById('v31Hist_' + key);
+    if (!box) {
+      box = document.createElement('details'); box.id = 'v31Hist_' + key; box.className = 'v-details v-srv-hist';
+      box.innerHTML = '<summary>' + cfg.title + '</summary><div class="v-toolbar"><input class="v-in" type="search" placeholder="🔍 Search name, medicine, diagnosis…" data-enter="histSearch" data-k="' + key + '">'
+        + '<button type="button" class="v-btn" data-act="histSearch" data-k="' + key + '">Search</button></div><div class="v-hist-list"></div>';
+      anchor.parentNode.insertBefore(box, anchor.nextSibling);
+      box.addEventListener('toggle', function () { if (box.open && !C.histState[key]) C.loadHistory(key, true); });
+    }
+  };
+  C.loadHistory = async function (key, reset) {
+    var cfg = HIST[key], box = document.getElementById('v31Hist_' + key); if (!box) return;
+    var st = C.histState[key] = reset ? { records: [], cursor: '', q: (box.querySelector('input') || {}).value || '' } : C.histState[key];
+    var listEl = box.querySelector('.v-hist-list'); if (reset) listEl.innerHTML = 'Loading…';
+    var res = await API.call('getRecentRecords', { kind: cfg.kind, limit: 30, cursor: st.cursor, q: st.q });
+    if (!res.success) { listEl.textContent = res.error || 'Could not load (offline?)'; return; }
+    st.records = st.records.concat(res.records); st.cursor = res.cursor;
+    listEl.innerHTML = (st.records.length ? st.records.map(function (r, i) { return histRow(key, r, i); }).join('') : '<div class="v-empty">Nothing found.</div>')
+      + (res.cursor ? '<button type="button" class="v-btn v-wide" data-act="histMore" data-k="' + key + '">⬇ Load older</button>' : '');
+  };
+  function histRow(key, r, i) {
+    var btns = key === 'rx' ? '<button type="button" class="v-btn v-sm" data-act="rxLoadSrv" data-i="' + i + '">✏️ Use</button> <button type="button" class="v-btn v-sm" data-act="rxPrintSrv" data-i="' + i + '">🖨️</button>'
+      : key === 'ef' ? '<button type="button" class="v-btn v-sm" data-act="efLoadSrv" data-i="' + i + '">✏️ Open</button> <button type="button" class="v-btn v-sm" data-act="efPrintSrv" data-i="' + i + '">🖨️</button>'
+        : (r.recordId ? '<button type="button" class="v-btn v-sm" data-act="billDetail" data-type="RECEIPT" data-id="' + h(r.recordId) + '">💰</button> ' : '') + '<button type="button" class="v-btn v-sm" data-act="trPrintSrv" data-i="' + i + '">🖨️</button>';
+    var title = key === 'rx' ? r.patientName : r.patient, sub = key === 'rx' ? String(r.prescription || '').replace(/\s+/g, ' ').slice(0, 90)
+      : key === 'ef' ? (r.final_diag || r.prov_diag || r.treatments || '') : (r.no ? r.no + ' · ' : '') + inr(r.amount) + (r.balanceDue > 0 ? ' · due ' + inr(r.balanceDue) : '') + ' · ' + String(r.treatments || '').slice(0, 60);
+    return '<div class="v-hist-row"><div><b>' + h(title || '—') + '</b> <span class="v-muted">' + h(V.fmtDate(r.date)) + (r.createdBy ? ' · ' + h(r.createdBy) : '') + '</span><br><small>' + h(sub) + '</small></div><div class="v-actions">' + btns + '</div></div>';
+  }
+  ACT.histSearch = function (el) { C.loadHistory(el.dataset.k, true); };
+  ACT.histMore = function (el) { C.loadHistory(el.dataset.k, false); };
+  function srcRec(el, key) { return el.dataset.src === 'rec' ? (C._rec && C._rec.data && C._rec.data[key === 'rx' ? 'prescriptions' : 'exams'][+el.dataset.i]) : (C.histState[key] && C.histState[key].records[+el.dataset.i]); }
+  ACT.rxLoadSrv = function (el) {
+    var r = srcRec(el, 'rx'); if (!r) return;
+    if (el.dataset.src === 'rec') { V.closeSheet(); showPage('prescription'); }
+    var set = function (id, v) { var e = document.getElementById(id); if (e) e.value = v || ''; };
+    set('rx_name', r.patientName); set('rx_age', r.age); set('rx_sex', r.sex); set('rx_date', V.today()); set('rx_content', r.prescription);
+    if (typeof updateRxPreview === 'function') updateRxPreview();
+    window.scrollTo(0, 0); V.toast('Loaded — change if needed, then print');
+  };
+  ACT.rxPrintSrv = function (el) {
+    var r = srcRec(el, 'rx'); if (!r) return;
+    var keep = ['rx_name', 'rx_age', 'rx_sex', 'rx_date', 'rx_content'].map(function (id) { var e = document.getElementById(id); return e ? e.value : ''; });
+    var set = function (id, v) { var e = document.getElementById(id); if (e) e.value = v || ''; };
+    set('rx_name', r.patientName); set('rx_age', r.age); set('rx_sex', r.sex); set('rx_date', r.date); set('rx_content', r.prescription);
+    var html = buildPrescriptionHTML();
+    ['rx_name', 'rx_age', 'rx_sex', 'rx_date', 'rx_content'].forEach(function (id, i) { set(id, keep[i]); });
+    printBillHtml(html);
+  };
+  function examFromServer(r) {
+    var teeth = {}, parse = function (s) { String(s || '').split(',').forEach(function (x) { var m = x.trim().match(/^(\d+):(.*)$/); if (m) teeth[m[1]] = m[2].trim(); }); };
+    parse(r.upper_teeth); parse(r.lower_teeth);
+    return Object.assign({}, r, { teeth: teeth, treatments: String(r.treatments || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean) });
+  }
+  ACT.efLoadSrv = function (el) {
+    var r = srcRec(el, 'ef'); if (!r) return;
+    if (el.dataset.src === 'rec') { V.closeSheet(); showPage('examform'); }
+    if (typeof loadExamData === 'function') loadExamData(examFromServer(r));
+    window.scrollTo(0, 0);
+  };
+  ACT.efPrintSrv = function (el) { var r = srcRec(el, 'ef'); if (r && typeof buildExamPrintHTML === 'function') printBillHtml(buildExamPrintHTML(examFromServer(r))); };
+  ACT.trPrintSrv = function (el) {
+    var r = C.histState.tr && C.histState.tr.records[+el.dataset.i]; if (!r) return;
+    var ids = ['tr_no', 'tr_date', 'tr_patient', 'tr_amount', 'tr_words', 'tr_treatment_text'], keep = ids.map(function (id) { var e = document.getElementById(id); return e ? e.value : ''; });
+    var set = function (id, v) { var e = document.getElementById(id); if (e) e.value = v === undefined || v === null ? '' : v; };
+    set('tr_no', r.no); set('tr_date', r.date); set('tr_patient', r.patient); set('tr_amount', r.paidAmount !== undefined && r.paidAmount < r.amount ? r.paidAmount : r.amount);
+    set('tr_words', r.amountWords || V.words(r.amount)); set('tr_treatment_text', String(r.treatments || '').split(/,\s*|\n/).join('\n'));
+    var html = buildTreatmentReceiptHTML(true);
+    ids.forEach(function (id, i) { set(id, keep[i]); });
+    printBillHtml(html);
+  };
+  V.whenShown('prescription', function () { C.mountHistory('rx'); C.attachRx(); });
+  V.whenShown('examform', function () { C.mountHistory('ef'); C.attachEf(); });
+  V.whenShown('treatmentreceipt', function () { C.mountHistory('tr'); });
+
+  // prescription page: patient link, allergy banner, follow-up after N days
+  C.attachRx = function () {
+    var n = document.getElementById('rx_name'); if (!n || !V.enabled()) return;
+    V.attachPatientPicker(n, { onPick: function (p) { var a = document.getElementById('rx_age'), s = document.getElementById('rx_sex'); if (a && !a.value) a.value = p.age || ''; if (s && !s.value && p.sex) s.value = p.sex; } });
+    var c = document.getElementById('rx_content');
+    if (c && !document.getElementById('rxFuDays')) {
+      var box = document.createElement('div'); box.className = 'v31-only v-inline-row';
+      box.innerHTML = '<label for="rxFuDays">🔔 Follow-up after</label><select id="rxFuDays" class="v-in v-in-sm"><option value="">No follow-up</option><option value="3">3 days</option><option value="5">5 days</option><option value="7">1 week</option><option value="14">2 weeks</option><option value="30">1 month</option><option value="180">6 months</option></select>'
+        + '<label for="rxDoctor">Doctor</label>' + sel('rxDoctor', [''].concat(DOCTORS), '');
+      c.parentNode.insertBefore(box, c.nextSibling);
+    }
+  };
+  C.rxExtras = function () {
+    var out = { patientId: V.patientIdFor('rx_name'), doctor: V.val('rxDoctor') }, days = parseInt(V.val('rxFuDays'), 10);
+    if (days > 0) {
+      out.followUpDate = V.addDays(V.val('rx_date') || V.today(), days);
+      var p = out.patientId ? V.patientById(out.patientId) : null;
+      C.createFollowUp({ patientId: out.patientId, patientName: V.val('rx_name'), phone: p ? p.phone : '', dueDate: out.followUpDate, reason: 'Review after prescription', doctor: out.doctor });
+      var s = document.getElementById('rxFuDays'); if (s) s.value = '';
+    }
+    return out;
+  };
+  C.attachEf = function () { var n = document.getElementById('ef_patient'); if (n && V.enabled()) V.attachPatientPicker(n, { phone: 'ef_phone', onPick: function (p) { var a = document.getElementById('ef_age'), s = document.getElementById('ef_sex'); if (a && !a.value) a.value = p.age || ''; if (s && !s.value && p.sex) s.value = p.sex; } }); };
+
+  // ═══════════ patients page: records + edit buttons, real outstanding ═══════════
+  C.rowButtons = function (p) {
+    if (!V.enabled()) return '';
+    return '<button type="button" data-act="ptRecords" data-id="' + h(p.id) + '" class="v-btn v-sm" title="All records">📁</button> '
+      + '<button type="button" data-act="ptEdit" data-id="' + h(p.id) + '" class="v-btn v-sm" title="Edit profile">✏️</button> ';
+  };
+  C.balanceOf = function (p) { return V.enabled() ? V.outstandingOf(p) : (parseFloat(p.balance) || 0); };
+  C.totalDue = function () { return r2(V.data.receivables.reduce(function (a, r) { return a + r.balance; }, 0)); };
+  // New Bill / Combined bill: link the patient, show allergies
+  document.addEventListener('DOMContentLoaded', function () {
+    V.attachPatientPicker(document.getElementById('patientName'), { phone: 'patientPhone' });
+    V.attachPatientPicker(document.getElementById('cb_patient'), { phone: 'cb_phone' });
+  });
+  V.afterRefresh.push(function () { var b = document.getElementById('v31TrPick'); if (b) { b.hidden = !V.enabled(); C.renderChips(); } });
+})();
+;
+
+;/* ══ FILE: 18-finance.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   18-finance.js — owner finance: profit dashboard, monthly & annual
+   (April–March) statements, receivables / payables, full report list,
+   Excel (.xlsx) and PDF export. No GST (the pharmacy is not registered).
+   Data for any period comes from the server (getReportData), so old
+   months work even though only recent data is kept on the phone.
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V = window.V31, ACT = V.act, h = V.h, inr = V.inr, r2 = V.r2;
+  var F = V.fin = { cache: {} };
+
+  // ═══════════ Excel (.xlsx) writer — no library, works offline ═══════════
+  var X = V.xlsx = {};
+  var CRC = (function () { var t = []; for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function crc32(u8) { var c = 0xFFFFFFFF; for (var i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+  function zip(files) {     // files: [{name, data(Uint8Array)}] → Blob (stored, no compression)
+    var enc = new TextEncoder(), parts = [], central = [], off = 0;
+    var u16 = function (v) { return [v & 255, (v >>> 8) & 255]; }, u32 = function (v) { return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]; };
+    files.forEach(function (f) {
+      var name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+      var head = [].concat([0x50, 0x4b, 0x03, 0x04], u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(size), u32(size), u16(name.length), u16(0));
+      parts.push(new Uint8Array(head), name, f.data);
+      central.push(new Uint8Array([].concat([0x50, 0x4b, 0x01, 0x02], u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0x21), u32(crc), u32(size), u32(size), u16(name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(off))), name);
+      off += head.length + name.length + size;
+    });
+    var cdSize = central.reduce(function (a, p) { return a + p.length; }, 0);
+    var end = new Uint8Array([].concat([0x50, 0x4b, 0x05, 0x06], u16(0), u16(0), u16(files.length), u16(files.length), u32(cdSize), u32(off), u16(0)));
+    return new Blob(parts.concat(central, [end]), { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+  function xesc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); }
+  function colName(i) { var s = ''; i++; while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+  X.build = function (sheets) {   // sheets: [{name, rows: [[cell…]]}] — first row is the header (bold)
+    var enc = new TextEncoder(), files = [], used = {};
+    sheets = sheets.map(function (s, i) {
+      var n = String(s.name || 'Sheet' + (i + 1)).replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31).trim() || 'Sheet' + (i + 1);
+      while (used[n.toLowerCase()]) n = n.slice(0, 28) + ' ' + (i + 1); used[n.toLowerCase()] = 1;
+      return { name: n, rows: s.rows || [] };
+    });
+    files.push({ name: '[Content_Types].xml', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+      + sheets.map(function (s, i) { return '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'; }).join('') + '</Types>') });
+    files.push({ name: '_rels/.rels', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>') });
+    files.push({ name: 'xl/workbook.xml', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+      + sheets.map(function (s, i) { return '<sheet name="' + xesc(s.name) + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>'; }).join('') + '</sheets></workbook>') });
+    files.push({ name: 'xl/_rels/workbook.xml.rels', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + sheets.map(function (s, i) { return '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>'; }).join('')
+      + '<Relationship Id="rId' + (sheets.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>') });
+    files.push({ name: 'xl/styles.xml', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8F0FE"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="3"><xf/><xf fontId="1" fillId="2" applyFont="1" applyFill="1"/><xf numFmtId="164" applyNumberFormat="1"/></cellXfs></styleSheet>') });
+    sheets.forEach(function (s, si) {
+      var widths = [], xml = s.rows.map(function (row, r) {
+        return '<row r="' + (r + 1) + '">' + row.map(function (v, c) {
+          var ref = colName(c) + (r + 1), len = String(v === null || v === undefined ? '' : v).length; widths[c] = Math.max(widths[c] || 8, Math.min(len + 2, 60));
+          if (v === null || v === undefined || v === '') return '';
+          if (typeof v === 'number' && isFinite(v)) return '<c r="' + ref + '"' + (r === 0 ? ' s="1"' : (Math.round(v) !== v ? ' s="2"' : '')) + '><v>' + v + '</v></c>';
+          return '<c r="' + ref + '" t="inlineStr"' + (r === 0 ? ' s="1"' : '') + '><is><t xml:space="preserve">' + xesc(v) + '</t></is></c>';
+        }).join('') + '</row>';
+      }).join('');
+      files.push({ name: 'xl/worksheets/sheet' + (si + 1) + '.xml', data: enc.encode('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+        + (widths.length ? '<cols>' + widths.map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols>' : '')
+        + '<sheetData>' + xml + '</sheetData></worksheet>') });
+    });
+    return zip(files);
+  };
+  X.download = function (filename, sheets) {
+    var blob = X.build(sheets), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename.replace(/[\\/:*?"<>|]/g, '_'); document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+    V.toast('⬇️ ' + a.download);
+  };
+
+  // ═══════════ printable report (PDF via print → Save as PDF) ═══════════
+  V.report = {
+    print: function (title, head, rows, foot, sub) {
+      var cell = function (v) { return typeof v === 'number' ? '<td class="n">' + v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) + '</td>' : '<td>' + h(v === null || v === undefined ? '' : v) + '</td>'; };
+      var html = '<style>@page{size:A4 ' + (head.length > 6 ? 'landscape' : 'portrait') + ';margin:10mm}#__rep{font-family:Arial,sans-serif;color:#111;font-size:11px}#__rep h1{font-size:16px;margin:0}#__rep .s{color:#555;margin:2px 0 10px}'
+        + '#__rep table{border-collapse:collapse;width:100%}#__rep th,#__rep td{border:1px solid #bbb;padding:4px 6px;text-align:left;vertical-align:top}#__rep th{background:#e8f0fe}#__rep td.n,#__rep th.n{text-align:right;white-space:nowrap}#__rep tfoot th{background:#f3f3f3}</style>'
+        + '<div id="__rep"><h1>Sri Sai Speciality Dental Care — ' + h(title) + '</h1><div class="s">' + h(sub || '') + ' · printed ' + new Date().toLocaleString('en-IN') + '</div>'
+        + '<table><thead><tr>' + head.map(function (x) { return '<th>' + h(x) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function (r) { return '<tr>' + r.map(cell).join('') + '</tr>'; }).join('') + '</tbody>'
+        + (foot ? '<tfoot><tr>' + foot.map(function (v) { return '<th' + (typeof v === 'number' ? ' class="n"' : '') + '>' + (typeof v === 'number' ? v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : h(v || '')) + '</th>'; }).join('') + '</tr></tfoot>' : '') + '</table></div>';
+      _doPrintRegular(html);
+    }
+  };
+
+  // ═══════════ tiny SVG charts with hover tooltip ═══════════
+  var SER = ['#2a78d6', '#eb6834'];
+  var tip;
+  function tipShow(e, html) {
+    if (!tip) { tip = document.createElement('div'); tip.className = 'v-tip'; tip.setAttribute('role', 'tooltip'); document.body.appendChild(tip); }
+    tip.innerHTML = html; tip.hidden = false;
+    var x = e.clientX + 14, y = e.clientY + 14, w = tip.offsetWidth, hgt = tip.offsetHeight;
+    if (x + w > window.innerWidth - 8) x = e.clientX - w - 14; if (y + hgt > window.innerHeight - 8) y = e.clientY - hgt - 14;
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  }
+  function tipHide() { if (tip) tip.hidden = true; }
+  function nice(max) { if (max <= 0) return 1; var p = Math.pow(10, Math.floor(Math.log10(max))), m = max / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p; }
+  function compact(v) { var a = Math.abs(v); return (v < 0 ? '−' : '') + (a >= 1e7 ? (a / 1e7).toFixed(1).replace(/\.0$/, '') + 'Cr' : a >= 1e5 ? (a / 1e5).toFixed(1).replace(/\.0$/, '') + 'L' : a >= 1e3 ? (a / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : String(Math.round(a))); }
+  // columns: labels[], series: [{name, values[]}] stacked (all ≥ 0) or single (may be negative)
+  F.columns = function (el, labels, series, opts) {
+    opts = opts || {}; if (!el) return;
+    var W = Math.max(el.clientWidth || 600, 280), H = opts.height || 220, padL = 44, padB = 24, padT = 10, plotW = W - padL - 8, plotH = H - padT - padB;
+    var tops = labels.map(function (_, i) { return series.reduce(function (a, s) { return a + Math.max(0, s.values[i] || 0); }, 0); });
+    var lows = labels.map(function (_, i) { return series.reduce(function (a, s) { return a + Math.min(0, s.values[i] || 0); }, 0); });
+    var max = nice(Math.max.apply(null, tops.concat([0]))), min = Math.min.apply(null, lows.concat([0])); min = min < 0 ? -nice(-min) : 0;
+    var y = function (v) { return padT + plotH * (max - v) / (max - min || 1); }, band = plotW / Math.max(labels.length, 1), bw = Math.min(24, band * 0.6);
+    var svg = '<svg width="' + W + '" height="' + H + '" role="img" aria-label="' + h(opts.label || '') + '">';
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (f) { var v = min + (max - min) * f, yy = y(v); svg += '<line x1="' + padL + '" x2="' + (W - 8) + '" y1="' + yy + '" y2="' + yy + '" class="v-grid"/><text x="' + (padL - 6) + '" y="' + (yy + 4) + '" class="v-axis" text-anchor="end">' + compact(v) + '</text>'; });
+    var step = Math.ceil(labels.length / Math.max(1, Math.floor(plotW / 54)));
+    labels.forEach(function (lab, i) {
+      var cx = padL + band * i + band / 2, x = cx - bw / 2, base = y(0), up = base, down = base;
+      series.forEach(function (s, si) {
+        var v = s.values[i] || 0; if (!v) return;
+        var hgt = Math.abs(y(v) - y(0)), yy;
+        if (v > 0) { yy = up - hgt; up = yy - (hgt > 3 ? 2 : 0); } else { yy = down; down = yy + hgt + 2; }
+        var r = Math.min(4, hgt / 2, bw / 2), topRound = v > 0 && up === yy - (hgt > 3 ? 2 : 0) && si === series.length - 1;
+        svg += '<path d="' + (v > 0 ? 'M' + x + ',' + (yy + hgt) + 'V' + (yy + r) + 'Q' + x + ',' + yy + ' ' + (x + r) + ',' + yy + 'H' + (x + bw - r) + 'Q' + (x + bw) + ',' + yy + ' ' + (x + bw) + ',' + (yy + r) + 'V' + (yy + hgt) + 'Z'
+          : 'M' + x + ',' + yy + 'V' + (yy + hgt - r) + 'Q' + x + ',' + (yy + hgt) + ' ' + (x + r) + ',' + (yy + hgt) + 'H' + (x + bw - r) + 'Q' + (x + bw) + ',' + (yy + hgt) + ' ' + (x + bw) + ',' + (yy + hgt - r) + 'V' + yy + 'Z')
+          + '" fill="' + (s.color || SER[si]) + '"/>';
+        void topRound;
+      });
+      svg += '<rect x="' + (padL + band * i) + '" y="' + padT + '" width="' + band + '" height="' + plotH + '" fill="transparent" class="v-hit" data-i="' + i + '"/>';
+      if (i % step === 0) svg += '<text x="' + cx + '" y="' + (H - 6) + '" class="v-axis" text-anchor="middle">' + h(lab) + '</text>';
+    });
+    svg += '<line x1="' + padL + '" x2="' + (W - 8) + '" y1="' + y(0) + '" y2="' + y(0) + '" class="v-base"/></svg>';
+    el.innerHTML = (series.length > 1 ? '<div class="v-legend">' + series.map(function (s, si) { return '<span><i style="background:' + (s.color || SER[si]) + '"></i>' + h(s.name) + '</span>'; }).join('') + '</div>' : '') + svg;
+    el.querySelectorAll('.v-hit').forEach(function (r) {
+      r.addEventListener('mousemove', function (e) { var i = +r.dataset.i; tipShow(e, '<b>' + h(labels[i]) + '</b>' + series.map(function (s, si) { return '<div>' + (series.length > 1 ? '<i style="background:' + (s.color || SER[si]) + '"></i>' : '') + h(s.name) + ': <b>' + inr(s.values[i] || 0, 0) + '</b></div>'; }).join('') + (series.length > 1 ? '<div>Total: <b>' + inr(tops[i] + lows[i], 0) + '</b></div>' : '')); });
+      r.addEventListener('mouseleave', tipHide);
+    });
+  };
+  F.hbars = function (el, rows, opts) {   // rows: [[label, value]] — single series, sorted
+    if (!el) return; opts = opts || {};
+    if (!rows.length) { el.innerHTML = '<div class="v-empty">No data</div>'; return; }
+    var max = Math.max.apply(null, rows.map(function (r) { return r[1]; }).concat([1]));
+    el.innerHTML = '<div class="v-hbars" role="list">' + rows.map(function (r) {
+      return '<div class="v-hbar" role="listitem" title="' + h(r[0]) + ': ' + inr(r[1], 0) + '"><span class="v-hbar-l">' + h(r[0]) + '</span><span class="v-hbar-t"><span style="width:' + Math.max(1, 100 * r[1] / max) + '%;background:' + (opts.color || SER[0]) + '"></span></span><span class="v-hbar-v">' + inr(r[1], 0) + '</span></div>';
+    }).join('') + '</div>';
+  };
+
+  // ═══════════ periods ═══════════
+  function fyStart(d) { var y = +d.slice(0, 4), m = +d.slice(5, 7); return (m >= 4 ? y : y - 1) + '-04-01'; }
+  function monthStart(d) { return d.slice(0, 8) + '01'; }
+  function monthEnd(d) { var x = new Date(+d.slice(0, 4), +d.slice(5, 7), 0); return x.toLocaleDateString('en-CA'); }
+  F.period = function (key) {
+    var t = V.today(), lm = V.addDays(monthStart(t), -1);
+    switch (key) {
+      case 'today': return [t, t, 'Today'];
+      case 'month': return [monthStart(t), t, 'This month'];
+      case 'lastmonth': return [monthStart(lm), lm, 'Last month'];
+      case 'fy': return [fyStart(t), t, 'This financial year (from 1 April)'];
+      case 'lastfy': var s = fyStart(t), ps = (+s.slice(0, 4) - 1) + '-04-01'; return [ps, V.addDays(s, -1), 'Last financial year ' + ps.slice(0, 4) + '–' + s.slice(2, 4)];
+      case '12m': return [monthStart(V.addDays(monthStart(t), -335)), t, 'Last 12 months'];
+      default: return [F._from || monthStart(t), F._to || t, 'Custom'];
+    }
+  };
+  F.load = async function (from, to) {
+    var key = from + '|' + to;
+    if (F.cache[key] && Date.now() - F.cache[key].at < 120000) return F.cache[key].data;
+    var res = await API.call('getReportData', { from: from, to: to });
+    if (!res.success) throw new Error(res.error || 'Could not load (are you online?)');
+    F.cache[key] = { at: Date.now(), data: res }; return res;
+  };
+
+  // ═══════════ the numbers ═══════════
+  function monthsBetween(from, to) { var out = [], d = monthStart(from); while (d <= to) { out.push(d.slice(0, 7)); d = V.addDays(monthEnd(d), 1); } return out; }
+  F.compute = function (d) {
+    var bills = d.bills.filter(function (b) { return b.status !== 'Cancelled'; }), receipts = d.receipts, pays = d.payments.filter(function (p) { return p.status === 'Active'; });
+    var exp = d.expenses, loss = d.stockChanges.filter(function (m) { return m.type === 'EXPIRED' || m.type === 'DAMAGED'; });
+    var byMonth = {}, byDay = {}, m = function (k) { return byMonth[k] = byMonth[k] || { sales: 0, ret: 0, cogs: 0, costBack: 0, dental: 0, dentalRet: 0, expenses: 0, loss: 0, collections: 0, bills: 0, receipts: 0 }; };
+    var day = function (k) { return byDay[k] = byDay[k] || { bills: 0, sales: 0, dental: 0, cash: 0, upi: 0, card: 0, credit: 0, cogs: 0, ret: 0, costBack: 0, dentalRet: 0, exp: 0, loss: 0 }; };
+    var add = function (o, mode, amt, c, u, k) { if (c || u || k) { o.cash += c; o.upi += u; o.card += k; } else if (/upi/i.test(mode)) o.upi += amt; else if (/card/i.test(mode)) o.card += amt; else if (/credit/i.test(mode)) {} else o.cash += amt; };
+    var collLater = {}; pays.forEach(function (p) { if (p.type === 'COLLECTION') collLater[p.againstId] = (collLater[p.againstId] || 0) + p.amount; });
+    bills.forEach(function (b) {
+      var o = m(b.date.slice(0, 7)), dd = day(b.date); o.sales += b.total; o.cogs += b.costTotal; o.bills++; dd.bills++; dd.sales += b.total; dd.cogs += b.costTotal;
+      var initial = r2((b.paidAmount !== undefined ? b.paidAmount : b.total) - (collLater[b.billId] || 0)); o.collections += initial;
+      add(dd, b.paymentMode, initial, b.cashAmount, b.upiAmount, b.cardAmount); dd.credit += Math.max(0, b.total - initial);
+    });
+    receipts.forEach(function (r) {
+      var o = m(r.date.slice(0, 7)), dd = day(r.date); o.dental += r.amount; o.receipts++; dd.dental += r.amount;
+      var initial = r2((r.paidAmount !== undefined ? r.paidAmount : r.amount) - (collLater[r.recordId] || 0)); o.collections += initial; add(dd, r.paymentMode, initial, 0, 0, 0); dd.credit += Math.max(0, r.amount - initial);
+    });
+    pays.forEach(function (p) {
+      var o = m(p.date.slice(0, 7)), dd = day(p.date);
+      if (p.type === 'COLLECTION') { o.collections += p.amount; add(dd, p.mode, p.amount, p.cashAmount, p.upiAmount, p.cardAmount); }
+      else { if (p.againstType === 'BILL') { o.ret += p.creditValue; o.costBack += p.costReversed; dd.ret += p.creditValue; dd.costBack += p.costReversed; } else { o.dentalRet += p.creditValue; dd.dentalRet += p.creditValue; } o.collections -= p.amount; }
+    });
+    exp.forEach(function (e) { m(e.date.slice(0, 7)).expenses += e.amount; day(e.date).exp += e.amount; });
+    loss.forEach(function (x) { m(x.date.slice(0, 7)).loss += -x.value; day(x.date).loss += -x.value; });
+    for (var dk = d.from; dk <= d.to; dk = V.addDays(dk, 1)) day(dk);     // every day of the period, even quiet ones
+    var months = monthsBetween(d.from, d.to).map(function (k) {
+      var o = m(k), netSales = o.sales - o.ret, cogs = o.cogs - o.costBack, gp = netSales - cogs, dental = o.dental - o.dentalRet;
+      return { month: k, sales: r2(o.sales), returns: r2(o.ret), netSales: r2(netSales), cogs: r2(cogs), grossProfit: r2(gp), dental: r2(dental), revenue: r2(netSales + dental),
+        expenses: r2(o.expenses), loss: r2(o.loss), profit: r2(gp + dental - o.expenses - o.loss), collections: r2(o.collections), bills: o.bills, receipts: o.receipts };
+    });
+    var T = months.reduce(function (a, x) { Object.keys(x).forEach(function (k) { if (typeof x[k] === 'number') a[k] = r2((a[k] || 0) + x[k]); }); return a; }, {});
+    var purchases = r2(d.purchaseInvoices.filter(function (i) { return i.status === 'Active'; }).reduce(function (a, i) { return a + i.total; }, 0)
+      + d.purchases.filter(function (p) { return !p.invoiceId; }).reduce(function (a, p) { return a + p.totalCost; }, 0));
+    return { months: months, totals: T, byDay: byDay, purchases: purchases, data: d };
+  };
+
+  // ═══════════ Finance page ═══════════
+  V.tabRender.fin = function () { V.pages.finance(); };
+  V.pages.finance = async function () {
+    var page = document.getElementById('finance'); if (!page) return;
+    var key = F._period || 'month', p = F.period(key), tab = V.tabState.fin || 'dash';
+    page.innerHTML = '<div class="v-toolbar v-periods">' + [['today', 'Today'], ['month', 'This month'], ['lastmonth', 'Last month'], ['fy', 'This FY'], ['lastfy', 'Last FY'], ['12m', '12 months'], ['custom', 'Custom']].map(function (x) {
+      return '<button type="button" class="v-chip' + (x[0] === key ? ' on' : '') + '" data-act="finPeriod" data-p="' + x[0] + '">' + x[1] + '</button>';
+    }).join('') + (key === 'custom' ? '<label>From <input type="date" class="v-in" id="finFrom" value="' + p[0] + '" data-change="finCustom"></label><label>To <input type="date" class="v-in" id="finTo" value="' + p[1] + '" max="' + V.today() + '" data-change="finCustom"></label>' : '')
+      + '<span class="v-muted">' + h(V.fmtDate(p[0])) + ' – ' + h(V.fmtDate(p[1])) + '</span></div>'
+      + V.tabs('fin', [['dash', '📊 Dashboard'], ['statement', '📄 Statement'], ['reports', '🗂️ Reports']], tab) + '<div id="finBody"><div class="v-empty">Loading…</div></div>';
+    var body = document.getElementById('finBody'), data;
+    try { data = await F.load(p[0], p[1]); } catch (e) { if (body) body.innerHTML = '<div class="v-empty">⚠️ ' + h(e.message) + '</div>'; return; }
+    if (!document.getElementById('finBody')) return;
+    F._c = F.compute(data); F._label = p[2];
+    if (tab === 'dash') renderDash(); else if (tab === 'statement') renderStatement(); else renderReportList();
+  };
+  V.pages.finance.noAutoRefresh = true;
+  ACT.finPeriod = function (el) { F._period = el.dataset.p; V.pages.finance(); };
+  ACT.finCustom = function () { F._from = V.val('finFrom'); F._to = V.val('finTo'); if (F._from && F._to && F._to >= F._from) V.pages.finance(); };
+
+  function renderDash() {
+    var c = F._c, T = c.totals, el = document.getElementById('finBody');
+    var due = r2(V.data.receivables.reduce(function (a, r) { return a + r.balance; }, 0)), owe = r2(V.data.suppliers.reduce(function (a, s) { return a + Math.max(0, s.balance); }, 0));
+    var margin = T.netSales > 0 ? Math.round(100 * T.grossProfit / T.netSales) : 0;
+    el.innerHTML = '<div class="v-hero"><div class="v-hero-l">Operating profit · ' + h(F._label) + '</div><div class="v-hero-v' + (T.profit < 0 ? ' v-bad' : '') + '">' + inr(T.profit || 0, 0) + '</div>'
+      + '<div class="v-hero-s">Revenue ' + inr(T.revenue || 0, 0) + ' − medicine cost ' + inr(T.cogs || 0, 0) + ' − expenses ' + inr(T.expenses || 0, 0) + (T.loss ? ' − expiry/damage ' + inr(T.loss, 0) : '') + '</div></div>'
+      + V.kpis([{ label: 'Pharmacy sales (net of returns)', value: inr(T.netSales || 0, 0), sub: (T.bills || 0) + ' bills · margin ' + margin + '%' },
+        { label: 'Pharmacy gross profit', value: inr(T.grossProfit || 0, 0), sub: 'after medicine cost ' + inr(T.cogs || 0, 0) },
+        { label: 'Dental treatment revenue', value: inr(T.dental || 0, 0), sub: (T.receipts || 0) + ' receipts' },
+        { label: 'Clinic expenses', value: inr(T.expenses || 0, 0) },
+        { label: 'Money received', value: inr(T.collections || 0, 0), sub: 'cash basis, after refunds' },
+        { label: 'Patients owe now', value: inr(due, 0), tone: due > 0 ? 'warn' : 'ok' },
+        { label: 'We owe suppliers now', value: inr(owe, 0), tone: owe > 0 ? 'warn' : 'ok' },
+        { label: 'Purchases in period', value: inr(c.purchases, 0) }])
+      + '<div class="v-grid2"><div class="v-card"><h3 class="v-h3">Revenue by ' + (c.months.length > 1 ? 'month' : 'day') + '</h3><div id="finRev" class="v-chart"></div></div>'
+      + '<div class="v-card"><h3 class="v-h3">Operating profit by ' + (c.months.length > 1 ? 'month' : 'day') + '</h3><div id="finProfit" class="v-chart"></div></div></div>'
+      + '<div class="v-grid2"><div class="v-card"><h3 class="v-h3">Where the money went (expenses)</h3><div id="finExp"></div></div>'
+      + '<div class="v-card"><h3 class="v-h3">Top medicines by profit</h3><div id="finMeds"></div></div></div>';
+    var labels, rev1, rev2, prof;
+    if (c.months.length > 1) {
+      labels = c.months.map(function (m) { return new Date(m.month + '-15').toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }); });
+      rev1 = c.months.map(function (m) { return m.netSales; }); rev2 = c.months.map(function (m) { return m.dental; }); prof = c.months.map(function (m) { return m.profit; });
+    } else {
+      var days = Object.keys(c.byDay).sort(); labels = days.map(function (d) { return d.slice(8); });
+      rev1 = days.map(function (d) { var o = c.byDay[d]; return r2(o.sales - o.ret); }); rev2 = days.map(function (d) { var o = c.byDay[d]; return r2(o.dental - o.dentalRet); });
+      prof = days.map(function (d) { var o = c.byDay[d]; return r2(o.sales - o.ret - (o.cogs - o.costBack) + o.dental - o.dentalRet - o.exp - o.loss); });
+    }
+    F.columns(document.getElementById('finRev'), labels, [{ name: 'Pharmacy', values: rev1 }, { name: 'Dental', values: rev2 }], { label: 'Revenue: pharmacy and dental' });
+    F.columns(document.getElementById('finProfit'), labels, [{ name: 'Operating profit', values: prof }], { label: 'Operating profit' });
+    var cats = {}; c.data.expenses.forEach(function (e) { cats[e.category || 'Other'] = (cats[e.category || 'Other'] || 0) + e.amount; });
+    F.hbars(document.getElementById('finExp'), Object.keys(cats).map(function (k) { return [k, r2(cats[k])]; }).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 8));
+    F.hbars(document.getElementById('finMeds'), REPORTS.meds.build(c).rows.slice(0, 8).map(function (r) { return [r[0], r[5]]; }));
+  }
+  function renderStatement() {
+    var c = F._c, el = document.getElementById('finBody'), rows = statementRows(c);
+    el.innerHTML = '<div class="v-toolbar"><span class="v-muted" style="flex:1;">Accrual basis: sales and treatments are counted on the bill date, even if paid later. No GST.</span>'
+      + '<button type="button" class="v-btn" data-act="finStmtX">⬇️ Excel</button><button type="button" class="v-btn" data-act="finStmtP">🖨️ PDF / Print</button></div>'
+      + V.table(rows.head, rows.body.map(function (r) { return '<tr' + (r.strong ? ' class="v-strong"' : '') + '>' + r.cells.map(function (v, i) { return i ? V.td(typeof v === 'number' ? inr(v) : h(v), 1) : '<td>' + h(v) + '</td>'; }).join('') + '</tr>'; }), { cls: 'v-stmt' });
+    F._stmt = rows;
+  }
+  function statementRows(c) {
+    var ms = c.months, T = c.totals, cols = ms.length > 1 && ms.length <= 13;
+    var lines = [['Pharmacy sales', 'sales'], ['Less: returns', 'returns', -1], ['Net pharmacy sales', 'netSales', 1, true], ['Less: cost of medicines sold', 'cogs', -1], ['Pharmacy gross profit', 'grossProfit', 1, true],
+      ['Dental treatment revenue', 'dental'], ['Total revenue', 'revenue', 1, true], ['Less: clinic expenses', 'expenses', -1], ['Less: expired / damaged stock', 'loss', -1], ['Operating profit', 'profit', 1, true], ['Money received (cash basis)', 'collections']];
+    var head = ['', ].concat(cols ? ms.map(function (m) { return new Date(m.month + '-15').toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }); }) : []).concat(['Total']);
+    var body = lines.map(function (l) {
+      var sign = l[2] === -1 ? -1 : 1;
+      return { strong: !!l[3], cells: [l[0]].concat(cols ? ms.map(function (m) { return sign * (m[l[1]] || 0); }) : []).concat([sign * (T[l[1]] || 0)]) };
+    });
+    return { head: head, body: body };
+  }
+  ACT.finStmtX = function () { var r = F._stmt; if (r) X.download('Statement ' + F._label + '.xlsx', [{ name: 'Statement', rows: [r.head].concat(r.body.map(function (b) { return b.cells; })) }]); };
+  ACT.finStmtP = function () { var r = F._stmt, p = F.period(F._period || 'month'); if (r) V.report.print('Profit & loss statement', r.head, r.body.map(function (b) { return b.cells; }), null, F._label + ' · ' + p[0] + ' to ' + p[1] + ' · no GST'); };
+
+  // ═══════════ the report list ═══════════
+  function sum(list, f) { return r2(list.reduce(function (a, x) { return a + (+f(x) || 0); }, 0)); }
+  function aging(d) { var a = V.daysBetween(d, V.today()); return a <= 30 ? '0–30 days' : a <= 60 ? '31–60 days' : a <= 90 ? '61–90 days' : 'over 90 days'; }
+  var REPORTS = F.reports = {
+    daily: { name: '📅 Daily sales & collections', build: function (c) {
+      var days = Object.keys(c.byDay).sort().filter(function (d) { var o = c.byDay[d]; return o.bills || o.sales || o.dental || o.cash || o.upi || o.card; });
+      var rows = days.map(function (d) { var o = c.byDay[d]; return [d, o.bills, r2(o.sales), r2(o.dental), r2(o.sales + o.dental), r2(o.cash), r2(o.upi), r2(o.card), r2(o.credit)]; });
+      return { head: ['Date', 'Bills', 'Pharmacy ₹', 'Dental ₹', 'Total ₹', 'Cash ₹', 'UPI ₹', 'Card ₹', 'Pay later ₹'], rows: rows, foot: ['Total', sum(rows, function (r) { return r[1]; })].concat([2, 3, 4, 5, 6, 7, 8].map(function (i) { return sum(rows, function (r) { return r[i]; }); })) };
+    } },
+    monthly: { name: '🗓️ Monthly sales', build: function (c) {
+      var rows = c.months.map(function (m) { return [m.month, m.bills, m.netSales, m.receipts, m.dental, m.revenue, m.collections]; });
+      return { head: ['Month', 'Bills', 'Pharmacy (net) ₹', 'Receipts', 'Dental ₹', 'Total revenue ₹', 'Money received ₹'], rows: rows, foot: ['Total'].concat([1, 2, 3, 4, 5, 6].map(function (i) { return sum(rows, function (r) { return r[i]; }); })) };
+    } },
+    profit: { name: '💊 Pharmacy profit by month', build: function (c) {
+      var rows = c.months.map(function (m) { return [m.month, m.sales, m.returns, m.netSales, m.cogs, m.grossProfit, m.netSales > 0 ? Math.round(1000 * m.grossProfit / m.netSales) / 10 : 0]; });
+      return { head: ['Month', 'Sales ₹', 'Returns ₹', 'Net sales ₹', 'Medicine cost ₹', 'Gross profit ₹', 'Margin %'], rows: rows, foot: ['Total'].concat([1, 2, 3, 4, 5].map(function (i) { return sum(rows, function (r) { return r[i]; }); })).concat(['']) };
+    } },
+    meds: { name: '💊 Medicine-wise profitability', build: function (c) {
+      var o = {};
+      c.data.bills.filter(function (b) { return b.status !== 'Cancelled'; }).forEach(function (b) { b.items.forEach(function (i) { var k = i.medicineName || i.medicineId; var x = o[k] = o[k] || { qty: 0, sales: 0, cost: 0 }; x.qty += i.qty; x.sales += i.amount; x.cost += i.qty * (i.costPrice || 0); }); });
+      c.data.payments.forEach(function (p) { if (p.type === 'REFUND' && p.status === 'Active') p.items.forEach(function (i) { var x = o[i.name]; if (x) { x.qty -= i.qty; x.sales -= i.value; } }); });
+      var rows = Object.keys(o).map(function (k) { var x = o[k], pr = r2(x.sales - x.cost); return [k, x.qty, r2(x.sales), r2(x.cost), x.qty ? r2(x.sales / x.qty) : 0, pr, x.sales > 0 ? Math.round(1000 * pr / x.sales) / 10 : 0]; }).sort(function (a, b) { return b[5] - a[5]; });
+      return { head: ['Medicine', 'Qty sold', 'Sales ₹', 'Cost ₹', 'Avg price ₹', 'Profit ₹', 'Margin %'], rows: rows, foot: ['Total', sum(rows, function (r) { return r[1]; }), sum(rows, function (r) { return r[2]; }), sum(rows, function (r) { return r[3]; }), '', sum(rows, function (r) { return r[5]; }), ''] };
+    } },
+    dental: { name: '🦷 Dental treatment revenue', build: function (c) {
+      var o = {}, add = function (k, amt) { k = String(k || 'Treatment').trim(); var x = o[k] = o[k] || { n: 0, amt: 0 }; x.n++; x.amt += amt; };
+      c.data.receipts.forEach(function (r) {
+        var items = []; try { items = JSON.parse(r.items || '[]'); } catch (e) {}
+        if (items.length && items.every(function (i) { return i.price; })) items.forEach(function (i) { add(i.name, +i.price || 0); });
+        else { var parts = String(r.treatments || 'Treatment').split(/\n|,\s*/).map(function (s) { return s.trim(); }).filter(Boolean); parts.forEach(function (p) { add(p.replace(/\s*\(.*\)$/, ''), r.amount / parts.length); }); }
+      });
+      var rows = Object.keys(o).map(function (k) { return [k, o[k].n, r2(o[k].amt)]; }).sort(function (a, b) { return b[2] - a[2]; });
+      return { head: ['Treatment', 'Times', 'Revenue ₹'], rows: rows, foot: ['Total', sum(rows, function (r) { return r[1]; }), sum(rows, function (r) { return r[2]; })], note: 'Receipts with several treatments and no item prices are split evenly between them.' };
+    } },
+    doctor: { name: '👨‍⚕️ Doctor-wise performance', build: function (c) {
+      var o = {}, g = function (k) { k = k || '(not set)'; return o[k] = o[k] || { bills: 0, ph: 0, rc: 0, dental: 0, pts: {} }; };
+      c.data.bills.filter(function (b) { return b.status !== 'Cancelled'; }).forEach(function (b) { var x = g(b.doctor); x.bills++; x.ph += b.total - b.returnedValue; x.pts[(b.patientName || '').toLowerCase()] = 1; });
+      c.data.receipts.forEach(function (r) { var x = g(r.doctor); x.rc++; x.dental += r.amount; x.pts[(r.patient || '').toLowerCase()] = 1; });
+      var rows = Object.keys(o).map(function (k) { var x = o[k]; return [k, Object.keys(x.pts).length, x.bills, r2(x.ph), x.rc, r2(x.dental), r2(x.ph + x.dental)]; }).sort(function (a, b) { return b[6] - a[6]; });
+      return { head: ['Doctor', 'Patients', 'Pharmacy bills', 'Pharmacy ₹', 'Dental receipts', 'Dental ₹', 'Total ₹'], rows: rows };
+    } },
+    expenses: { name: '💸 Expense analysis', build: function (c) {
+      var o = {}; c.data.expenses.forEach(function (e) { var k = e.category || 'Other'; var x = o[k] = o[k] || { n: 0, amt: 0, months: {} }; x.n++; x.amt += e.amount; });
+      var total = sum(c.data.expenses, function (e) { return e.amount; });
+      var rows = Object.keys(o).map(function (k) { return [k, o[k].n, r2(o[k].amt), total ? Math.round(1000 * o[k].amt / total) / 10 : 0]; }).sort(function (a, b) { return b[2] - a[2]; });
+      return { head: ['Category', 'Entries', 'Amount ₹', 'Share %'], rows: rows, foot: ['Total', sum(rows, function (r) { return r[1]; }), total, 100] };
+    } },
+    purchases: { name: '🛒 Purchase analysis (by supplier)', build: function (c) {
+      var o = {}, g = function (k) { return o[k] = o[k] || { inv: 0, total: 0, paid: 0, ret: 0, lines: 0 }; };
+      c.data.purchaseInvoices.filter(function (i) { return i.status === 'Active'; }).forEach(function (i) { var x = g(i.supplierName); x.inv++; x.total += i.total; x.paid += i.paidAmount; x.lines += i.lines; });
+      c.data.purchases.filter(function (p) { return !p.invoiceId; }).forEach(function (p) { var x = g(p.supplier || '(unknown)'); x.total += p.totalCost; x.paid += p.totalCost; x.lines++; });
+      c.data.purchaseReturns.filter(function (r) { return r.status === 'Active'; }).forEach(function (r) { g(r.supplierName).ret += r.amount; });
+      var rows = Object.keys(o).map(function (k) { var x = o[k]; return [k, x.inv, x.lines, r2(x.total), r2(x.paid), r2(x.ret)]; }).sort(function (a, b) { return b[3] - a[3]; });
+      return { head: ['Supplier', 'Invoices', 'Lines', 'Purchased ₹', 'Paid with invoice ₹', 'Returned ₹'], rows: rows, foot: ['Total'].concat([1, 2, 3, 4, 5].map(function (i) { return sum(rows, function (r) { return r[i]; }); })) };
+    } },
+    purchaseMeds: { name: '🛒 Purchase analysis (by medicine)', build: function (c) {
+      var o = {}; c.data.purchases.forEach(function (p) { var x = o[p.medicineName] = o[p.medicineName] || { qty: 0, free: 0, cost: 0 }; x.qty += p.qty; x.free += p.freeQty || 0; x.cost += p.totalCost; });
+      var rows = Object.keys(o).map(function (k) { var x = o[k]; return [k, x.qty, x.free, r2(x.cost), x.qty ? r2(x.cost / x.qty) : 0]; }).sort(function (a, b) { return b[3] - a[3]; });
+      return { head: ['Medicine', 'Units received', 'Free units', 'Cost ₹', 'Cost per unit ₹'], rows: rows, foot: ['Total', sum(rows, function (r) { return r[1]; }), sum(rows, function (r) { return r[2]; }), sum(rows, function (r) { return r[3]; }), ''] };
+    } },
+    supplierDue: { name: '🏭 Supplier outstanding (today)', now: true, build: function () {
+      var rows = V.data.suppliers.filter(function (s) { return Math.abs(s.balance) > 0.009; }).sort(function (a, b) { return b.balance - a.balance; }).map(function (s) { return [s.name, s.phone, s.purchases, s.payments, s.returns, s.balance]; });
+      return { head: ['Supplier', 'Phone', 'Purchased ₹', 'Paid ₹', 'Returned ₹', 'Balance owed ₹'], rows: rows, foot: ['Total', '', '', '', '', sum(rows, function (r) { return r[5]; })] };
+    } },
+    patientDue: { name: '👥 Patient outstanding (today, by age)', now: true, build: function () {
+      var o = {}; V.data.receivables.forEach(function (r) { var k = V.money.patientKey(r), x = o[k] = o[k] || { name: r.patientName, phone: r.phone, b: { '0–30 days': 0, '31–60 days': 0, '61–90 days': 0, 'over 90 days': 0 }, t: 0, oldest: r.date }; x.b[aging(r.date || V.today())] += r.balance; x.t += r.balance; if (r.date < x.oldest) x.oldest = r.date; });
+      var rows = Object.keys(o).map(function (k) { var x = o[k]; return [x.name, x.phone, x.oldest, r2(x.b['0–30 days']), r2(x.b['31–60 days']), r2(x.b['61–90 days']), r2(x.b['over 90 days']), r2(x.t)]; }).sort(function (a, b) { return b[7] - a[7]; });
+      return { head: ['Patient', 'Phone', 'Oldest bill', '0–30 days ₹', '31–60 ₹', '61–90 ₹', '90+ ₹', 'Total due ₹'], rows: rows, foot: ['Total', '', ''].concat([3, 4, 5, 6, 7].map(function (i) { return sum(rows, function (r) { return r[i]; }); })) };
+    } },
+    refunds: { name: '↩️ Refund analysis', build: function (c) {
+      var list = c.data.payments.filter(function (p) { return p.type === 'REFUND' && p.status === 'Active'; });
+      var rows = list.map(function (p) { return [p.date, p.no, p.patientName, p.againstNo || p.againstId, p.items.map(function (i) { return i.name + ' ×' + i.qty; }).join(', '), p.creditValue, p.amount, p.mode, p.notes]; });
+      return { head: ['Date', 'No', 'Patient', 'Bill', 'Items', 'Reduced ₹', 'Paid back ₹', 'Mode', 'Reason'], rows: rows, foot: ['Total', '', '', '', '', sum(rows, function (r) { return r[5]; }), sum(rows, function (r) { return r[6]; }), '', ''] };
+    } },
+    closings: { name: '🧮 Cash closings', build: function (c) {
+      var rows = c.data.cashClosings.slice().sort(function (a, b) { return a.date.localeCompare(b.date); }).map(function (x) { return [x.date, x.openingCash, x.cashIn, x.cashOut, x.expectedCash, x.countedCash, x.difference, x.deposited, x.upiTotal, x.upiVerified ? 'yes' : 'no', x.closedBy]; });
+      return { head: ['Date', 'Opening ₹', 'Cash in ₹', 'Cash out ₹', 'Expected ₹', 'Counted ₹', 'Difference ₹', 'Deposited ₹', 'UPI ₹', 'UPI checked', 'By'], rows: rows, foot: ['Total', '', '', '', '', '', sum(rows, function (r) { return r[6]; }), '', '', '', ''] };
+    } },
+    stockLoss: { name: '🗑️ Expired & damaged stock', build: function (c) {
+      var rows = c.data.stockChanges.filter(function (m) { return m.type === 'EXPIRED' || m.type === 'DAMAGED'; }).map(function (m) { return [m.date, m.medicineName, m.type === 'EXPIRED' ? 'Expired' : 'Damaged', -m.qty, -m.value, m.reason, m.user]; });
+      return { head: ['Date', 'Medicine', 'Why', 'Qty', 'Loss at cost ₹', 'Reason', 'By'], rows: rows, foot: ['Total', '', '', sum(rows, function (r) { return r[3]; }), sum(rows, function (r) { return r[4]; }), '', ''] };
+    } },
+    movements: { name: '📦 Stock movements (all medicines)', build: function (c) {
+      var T = ['OPENING', 'PURCHASE', 'SALE', 'CUSTOMER_RETURN', 'BILL_CANCEL', 'PURCHASE_RETURN', 'PURCHASE_CANCEL', 'EXPIRED', 'DAMAGED', 'ADJUSTMENT'], o = {};
+      c.data.stockChanges.forEach(function (m) { var t = m.type === 'SALE_UNALLOCATED' ? 'SALE' : m.type; var x = o[m.medicineName] = o[m.medicineName] || {}; x[t] = (x[t] || 0) + m.qty; });
+      var rows = Object.keys(o).sort().map(function (k) { var x = o[k], net = 0; var r = [k].concat(T.map(function (t) { net += x[t] || 0; return x[t] || 0; })); r.push(net); return r; });
+      return { head: ['Medicine', 'Opening', 'Purchased', 'Sold', 'Returned by patients', 'Bills cancelled', 'Returned to supplier', 'Purchases cancelled', 'Expired', 'Damaged', 'Corrections', 'Net change'],
+        rows: rows, foot: ['Total'].concat(T.map(function (t, i) { return sum(rows, function (r) { return r[i + 1]; }); })).concat([sum(rows, function (r) { return r[11]; })]),
+        note: 'Units in (+) and out (−) in the period, from the stock register. Use 📜 History in Inventory for one medicine batch by batch.' };
+    } },
+    annual: { name: '📘 Annual statement (financial year)', build: function (c) {
+      var r = statementRows(Object.assign({}, c, { months: [] }));
+      return { head: ['', 'Amount ₹'], rows: r.body.map(function (b) { return b.cells; }), note: 'Choose “This FY” or “Last FY” above for the April–March year.' };
+    } }
+  };
+  function renderReportList() {
+    var el = document.getElementById('finBody'), cur = F._rep;
+    el.innerHTML = '<div class="v-rep-grid">' + Object.keys(REPORTS).map(function (k) {
+      return '<button type="button" class="v-rep' + (k === cur ? ' on' : '') + '" data-act="finRep" data-k="' + k + '">' + h(REPORTS[k].name) + (REPORTS[k].now ? '<small>as of today</small>' : '') + '</button>';
+    }).join('') + '<button type="button" class="v-rep" data-act="stockReports">📊 Stock reports<small>valuation, dead, slow, re-order</small></button>'
+      + '<button type="button" class="v-rep v-rep-all" data-act="finAllX">⬇️ Everything in one Excel file</button></div><div id="finRepOut"></div>';
+    if (cur) showReport(cur);
+  }
+  function showReport(k) {
+    var r = REPORTS[k].build(F._c), el = document.getElementById('finRepOut'); if (!el) return; F._rep = k; F._repData = r;
+    var fmt = function (v, i) { return typeof v === 'number' ? (/₹/.test(r.head[i]) ? inr(v) : v.toLocaleString('en-IN')) : h(v === null || v === undefined ? '' : v); };
+    el.innerHTML = '<div class="v-card"><div class="v-toolbar"><h3 class="v-h3" style="flex:1;margin:0;">' + h(REPORTS[k].name) + '</h3><button type="button" class="v-btn" data-act="finRepX">⬇️ Excel</button><button type="button" class="v-btn" data-act="finRepP">🖨️ PDF / Print</button></div>'
+      + (r.note ? '<p class="v-note">' + h(r.note) + '</p>' : '')
+      + V.table(r.head, r.rows.map(function (row) { return '<tr>' + row.map(function (v, i) { return V.td(fmt(v, i), typeof v === 'number'); }).join('') + '</tr>'; }),
+        { empty: 'Nothing in this period.', foot: r.foot ? '<tr>' + r.foot.map(function (v, i) { return '<th' + (typeof v === 'number' ? ' class="num"' : '') + '>' + fmt(v, i) + '</th>'; }).join('') + '</tr>' : '' }) + '</div>';
+    document.querySelectorAll('.v-rep').forEach(function (b) { b.classList.toggle('on', b.dataset.k === k); });
+  }
+  ACT.finRep = function (el) { showReport(el.dataset.k); };
+  ACT.finRepX = function () { var r = F._repData, k = F._rep; if (r) X.download(REPORTS[k].name.replace(/^\W+\s*/, '') + ' ' + (REPORTS[k].now ? V.today() : F._label) + '.xlsx', [{ name: REPORTS[k].name.replace(/^\W+\s*/, ''), rows: [r.head].concat(r.rows).concat(r.foot ? [r.foot] : []) }]); };
+  ACT.finRepP = function () { var r = F._repData, k = F._rep, p = F.period(F._period || 'month'); if (r) V.report.print(REPORTS[k].name.replace(/^\W+\s*/, ''), r.head, r.rows, r.foot, REPORTS[k].now ? 'As of ' + V.fmtDate(V.today()) : F._label + ' · ' + p[0] + ' to ' + p[1]); };
+  ACT.finAllX = function () {
+    var c = F._c; if (!c) return;
+    var sheets = [{ name: 'Statement', rows: (function () { var r = statementRows(c); return [r.head].concat(r.body.map(function (b) { return b.cells; })); })() }];
+    Object.keys(REPORTS).forEach(function (k) { if (k === 'annual') return; var r = REPORTS[k].build(c); sheets.push({ name: REPORTS[k].name.replace(/^\W+\s*/, ''), rows: [r.head].concat(r.rows).concat(r.foot ? [r.foot] : []) }); });
+    sheets.push({ name: 'Bills', rows: [['Date', 'Bill no', 'Patient', 'Doctor', 'Total', 'Paid', 'Due', 'Returned', 'Mode', 'Status']].concat(c.data.bills.map(function (b) { return [b.date, b.billNo || b.billId, b.patientName, b.doctor, b.total, b.paidAmount, b.balanceDue, b.returnedValue, b.paymentMode, b.status]; })) });
+    sheets.push({ name: 'Dental receipts', rows: [['Date', 'Receipt no', 'Patient', 'Doctor', 'Amount', 'Paid', 'Due', 'Treatments']].concat(c.data.receipts.map(function (r) { return [r.date, r.no, r.patient, r.doctor, r.amount, r.paidAmount, r.balanceDue, r.treatments]; })) });
+    sheets.push({ name: 'Expenses', rows: [['Date', 'Category', 'Amount', 'Vendor', 'Mode', 'Notes']].concat(c.data.expenses.map(function (e) { return [e.date, e.category, e.amount, e.vendor, e.mode, e.notes]; })) });
+    X.download('SSDC reports ' + F._label + '.xlsx', sheets);
+  };
+})();
+;
+
+;/* ══ FILE: 19-system.js ══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   19-system.js — owner settings for v3.1 (staff credit, how much history
+   the phone keeps, treatment prices), system health check, restore drill,
+   older bills on demand, dashboard tiles (dues, follow-ups, day closing)
+   ════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var V = window.V31, ACT = V.act, h = V.h, inr = V.inr;
+  var Y = V.sys = {};
+
+  // ── Settings page panels ──
+  Y.renderSettings = function () {
+    if (!V.enabled() || !API.isOwner()) return;
+    var page = document.getElementById('settings'); if (!page) return;
+    var box = document.getElementById('v31Settings');
+    if (!box) { box = document.createElement('div'); box.id = 'v31Settings'; var admin = document.getElementById('adminPanels'); page.insertBefore(box, admin || null); }
+    var st = V.data.settings || {}, win = (API.session && API.session.features && API.session.features.windowDays) || 365;
+    box.innerHTML = '<div class="v-card"><h3 class="v-h3">🩺 System health</h3><div id="sysHealth"><button type="button" class="v-btn v-primary" data-act="sysHealth">Run health check</button></div></div>'
+      + '<div class="v-card"><h3 class="v-h3">💰 Payments &amp; history</h3>'
+      + '<label class="v-check"><input type="checkbox" id="setCredit"' + (st.staffCreditAllowed !== false ? ' checked' : '') + '> Staff may let a patient pay part now / later</label>'
+      + V.field('setWindow', 'Keep this many days of bills on phones/PCs (older ones load when needed)', '<select id="setWindow" class="v-in" style="max-width:220px;">'
+        + [90, 180, 365, 730].map(function (d) { return '<option value="' + d + '"' + (d === win ? ' selected' : '') + '>' + (d >= 365 ? d / 365 + ' year' + (d > 365 ? 's' : '') : d + ' days') + '</option>'; }).join('') + '</select>')
+      + '<div id="setMsg" class="v-msg"></div><button type="button" class="v-btn v-primary" data-act="setSave">Save</button></div>'
+      + '<div class="v-card"><h3 class="v-h3">🦷 Treatment price list</h3><p class="v-note">' + V.data.treatmentMaster.filter(function (t) { return t.status !== 'Inactive'; }).length
+      + ' treatments. Prices fill in on receipts and treatment plans.</p><button type="button" class="v-btn" data-act="priceList">✏️ Edit prices</button></div>';
+  };
+  ACT.setSave = async function (btn) {
+    V.busy(btn, true);
+    var a = await API.call('saveSettings', { settingKey: 'staff_credit_allowed', settingValue: document.getElementById('setCredit').checked ? 'yes' : 'no' }, { noQueue: true });
+    var b = await API.call('saveSettings', { settingKey: 'load_window_days', settingValue: V.val('setWindow') }, { noQueue: true });
+    V.busy(btn, false);
+    if (!a.success || !b.success) return V.msg('setMsg', (a.error || b.error));
+    V.msg('setMsg', '✅ Saved', true); API.dataVersion = ''; loadData();
+  };
+  ACT.sysHealth = async function () {
+    var el = document.getElementById('sysHealth'); el.innerHTML = 'Checking…';
+    var r = await API.call('healthCheck');
+    if (!r.success) { el.textContent = r.error || 'Could not check'; return; }
+    el.innerHTML = '<p class="' + (r.ok ? 'v-ok' : 'v-bad') + '" style="font-weight:700;">' + (r.ok ? '✅ Everything looks good' : '⚠️ Some things need attention') + ' · server ' + h(r.version) + '</p>'
+      + '<ul class="v-checks">' + r.checks.map(function (c) { return '<li class="' + (c.ok ? 'ok' : 'bad') + '">' + (c.ok ? '✅' : '❌') + ' <b>' + h(c.name) + '</b> <span class="v-muted">' + h(c.detail) + '</span></li>'; }).join('') + '</ul>'
+      + '<div class="v-actions"><button type="button" class="v-btn" data-act="sysHealth">↻ Check again</button><button type="button" class="v-btn v-primary" data-act="sysDrill">🧪 Run restore drill</button></div>'
+      + '<p class="v-note">The restore drill makes a fresh backup, checks every cell, then opens the backup with the app’s own loader and compares the result with the live data — proof the backup can really be restored. Takes ~30 seconds.</p>';
+  };
+  ACT.sysDrill = async function (btn) {
+    V.busy(btn, true, '⏳ Running drill…');
+    var r = await API.call('restoreDrill', {}, { noQueue: true });
+    V.busy(btn, false);
+    if (!r.success) return V.toast('❌ ' + (r.error || 'Drill failed'), 'error');
+    V.toast(r.drill.ok ? '✅ Restore drill passed — ' + r.drill.cells.toLocaleString('en-IN') + ' cells identical' : '❌ Drill found problems: ' + r.drill.problems.join('; '), r.drill.ok ? 'success' : 'error');
+    ACT.sysHealth();
+  };
+  V.whenShown('settings', function () { setTimeout(Y.renderSettings, 0); });
+
+  // ── All Bills: load older bills from the server ──
+  Y.renderOlder = function () {
+    if (!V.enabled() || !API.isOwner()) return;
+    var page = document.getElementById('allbills'); if (!page) return;
+    var box = document.getElementById('v31Older');
+    if (!box) { box = document.createElement('div'); box.id = 'v31Older'; box.className = 'v-card'; var c = document.getElementById('cancelledBillsWrap'); page.insertBefore(box, c || null); }
+    var from = V.data.loadedFrom;
+    box.innerHTML = '<div class="v-toolbar"><span class="v-muted" style="flex:1;">Showing bills from ' + h(V.fmtDate(from)) + '. Older bills stay safe on the server.</span>'
+      + '<input id="oldQ" class="v-in" type="search" placeholder="Search older bills (name, phone, bill no)" data-enter="olderLoad"><button type="button" class="v-btn" data-act="olderLoad">⬇ Load older bills</button></div><div id="oldList"></div>';
+    Y._older = null;
+  };
+  ACT.olderLoad = async function () {
+    var el = document.getElementById('oldList'); if (!el) return;
+    var st = Y._older || (Y._older = { bills: [], before: V.data.loadedFrom, q: V.val('oldQ') });
+    if (st.q !== V.val('oldQ')) { st.bills = []; st.before = V.data.loadedFrom; st.q = V.val('oldQ'); }
+    el.insertAdjacentHTML('beforeend', '<p class="v-muted" id="oldLoading">Loading…</p>');
+    var r = await API.call('getBills', { before: st.before, limit: 100, q: st.q });
+    var l = document.getElementById('oldLoading'); if (l) l.remove();
+    if (!r.success) { V.toast(r.error, 'error'); return; }
+    st.bills = st.bills.concat(r.bills); st.before = r.nextBefore || st.before; st.more = r.more;
+    el.innerHTML = V.table(['Date', 'Bill', 'Patient', 'Items', 'Total', 'Status', ''], st.bills.map(function (b) {
+      return '<tr' + (b.status === 'Cancelled' ? ' class="v-strike"' : '') + '><td>' + h(V.fmtDate(b.date)) + '</td><td><small>' + h(b.billNo || b.billId) + '</small></td><td>' + h(b.patientName) + '</td>'
+        + '<td><small>' + h(b.items.map(function (i) { return i.medicineName + ' ×' + i.qty; }).join(', ')) + '</small></td>' + V.td(inr(b.total), 1) + '<td>' + V.badge(b.status === 'Cancelled' ? 'Cancelled' : b.paymentStatus) + '</td>'
+        + '<td><button type="button" class="v-btn v-sm" data-act="billDetail" data-type="BILL" data-id="' + h(b.billId) + '">💰</button></td></tr>';
+    }), { empty: 'No older bills.' }) + (st.more ? '<button type="button" class="v-btn v-wide" data-act="olderLoad">⬇ Load more</button>' : '');
+  };
+  V.whenShown('allbills', function () { setTimeout(Y.renderOlder, 0); });
+
+  // ── Dashboard tiles ──
+  Y.renderDash = function () {
+    var page = document.getElementById('dashboard'); if (!page) return;
+    var box = document.getElementById('v31Dash');
+    if (!V.enabled()) { if (box) box.remove(); return; }
+    if (!box) { box = document.createElement('div'); box.id = 'v31Dash'; var sg = page.querySelector('.stats-grid'); page.insertBefore(box, sg ? sg.nextSibling : page.firstChild); }
+    var today = V.today(), due = V.data.receivables.reduce(function (a, r) { return a + r.balance; }, 0);
+    var fu = V.data.followUps.filter(function (f) { return f.status === 'Pending' && f.dueDate <= today; });
+    var closed = V.data.cashClosings.some(function (c) { return c.date === today; });
+    var owe = V.data.suppliers.reduce(function (a, s) { return a + Math.max(0, s.balance); }, 0);
+    var tiles = [
+      '<button type="button" class="v-tile" data-act="goPage" data-p="payments"><span>💰 Patients owe</span><b>' + inr(due, 0) + '</b><small>' + V.data.receivables.length + ' open bill(s)</small></button>',
+      '<button type="button" class="v-tile' + (fu.length ? ' warn' : '') + '" data-act="goPage" data-p="followups"><span>🔔 Follow-ups due</span><b>' + fu.length + '</b><small>today &amp; overdue</small></button>',
+      '<button type="button" class="v-tile' + (closed ? ' ok' : '') + '" data-act="goPage" data-p="cashclose"><span>🧮 Cash closing</span><b>' + (closed ? '✅ Done' : 'Not yet') + '</b><small>for today</small></button>'
+    ];
+    if (API.isOwner()) tiles.push('<button type="button" class="v-tile" data-act="goPage" data-p="suppliers"><span>🏭 We owe suppliers</span><b>' + inr(owe, 0) + '</b><small>' + V.data.suppliers.filter(function (s) { return s.balance > 0.009; }).length + ' supplier(s)</small></button>');
+    box.innerHTML = '<div class="v-tiles">' + tiles.join('') + '</div>';
+  };
+  ACT.goPage = function (el) { showPage(el.dataset.p); if (typeof closeSidebar === 'function') try { closeSidebar(); } catch (e) {} };
+  V.afterRefresh.push(Y.renderDash);
+  V.whenShown('dashboard', function () { setTimeout(Y.renderDash, 0); });
+})();
 ;
 
 ;/* ══ FILE: 99-speed.js ══════════════════════════════════════════════ */
