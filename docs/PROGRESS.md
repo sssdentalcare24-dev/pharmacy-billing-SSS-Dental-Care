@@ -14,6 +14,7 @@ Owner action still needed once: `docs/DEPLOYMENT.md` §A (paste Code.gs → migr
 | 6 Performance & PWA | ✅ measured (Lighthouse 99, no regression); next: paginated loading, medicine search box, minified build |
 | 7 UI/UX refresh | ⏳ not started |
 | 8 Testing | ✅ 34 automated tests (23 server, 11 browser) passing |
+| Android app | ✅ `android-app/` — Capacitor 8 project for Android Studio: native Bluetooth printer bridge, Android printing / Save as PDF, CSV sharing, WhatsApp/UPI links, back button, clinic icon + splash; 4 tests. APK is built by the owner in Android Studio (`android-app/README.md`) |
 | 9 Deployment | ✅ website on `main`/GitHub Pages · ⏳ owner updates the Apps Script once (`DEPLOYMENT.md` §A) |
 
 ## What changed and why

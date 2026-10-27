@@ -1,0 +1,25 @@
+{
+  "appId": "in.srisaidentalcare.billing",
+  "appName": "SSDC Billing",
+  "webDir": "www",
+  "backgroundColor": "#1e3f5a",
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "native",
+      "initialViewportFitValueHint": "auto",
+      "style": "DARK"
+    },
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Looking for printers…",
+        "cancel": "Cancel",
+        "availableDevices": "Printers nearby",
+        "noDeviceFound": "No printer found — switch the printer on and try again"
+      }
+    }
+  }
+}

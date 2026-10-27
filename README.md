@@ -23,6 +23,7 @@ Pharmacy billing, batch-wise medicine inventory, purchases, expenses, reports, p
 | `sw.js`, `manifest.webmanifest`, `assets/` | Offline/instant loading, app install, icons |
 | `apps-script/Code.gs` | Google Apps Script server (login, permissions, validation, stock, backups, migration) |
 | `apps-script/appsscript.json` | Apps Script settings (Asia/Kolkata, web app) |
+| `android-app/` | **Android app** (Capacitor 8 + Android Studio) — see [android-app/README.md](android-app/README.md) |
 | `tests/` | `npm test` — 23 server tests + 11 browser tests on simulated Google services |
 
 ## Security model (v3)

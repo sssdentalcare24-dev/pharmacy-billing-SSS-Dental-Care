@@ -2130,6 +2130,8 @@ Reason (required):`) || '').trim();
                 '<title>Bill - Sri Sai Speciality Dental Care</title>' +
                 '<style>html,body{margin:0;padding:0;background:white;color:#000;font-family:"Bookman Old Style","Book Antiqua",Bookman,Georgia,serif;-webkit-print-color-adjust:exact;print-color-adjust:exact;}@page{margin:10mm;size:A4 portrait;}@media print{html,body{margin:0;padding:0;}.no-print{display:none!important;}}</style>' +
                 '</head><body>' + html + '</body></html>';
+            // Android app: print through Android's print service (printer or "Save as PDF")
+            if (typeof window.ssdcNativePrint === 'function') { window.ssdcNativePrint(fullHtml); return; }
             var old = document.getElementById('__printIframe');
             if (old) old.remove();
             var iframe = document.createElement('iframe');
@@ -7833,7 +7835,8 @@ async function loadMovements(id) {
   }
 
   // ── Service worker ────────────────────────────────────────────────
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  // (not inside the Android app: it already has the files on the phone)
+  if ('serviceWorker' in navigator && !window.SSDC_NATIVE && !window.SSDC_APP_BUILD && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     window.addEventListener('load', function () {
       navigator.serviceWorker.register('sw.js').catch(function () {});
     });
