@@ -1,3 +1,5 @@
 node_modules/
+# The clinic server link for the APK — never in git
+api-url.txt
 # www/ and android/app/src/main/assets/public are kept in git on purpose,
 # so the project opens in Android Studio right after "npm install".

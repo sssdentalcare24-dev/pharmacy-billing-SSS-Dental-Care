@@ -62,6 +62,8 @@ cd android-app
 npm run sync
 ```
 
+**Server link inside the app:** create `android-app/api-url.txt` containing the clinic's Apps Script link (`https://script.google.com/macros/s/…/exec`) before `npm run sync`. The app then never asks for it on a new phone. This file is in `.gitignore` — keep it off GitHub.
+
 Then in Android Studio: increase `versionCode` (and `versionName`) in `android/app/build.gradle`, build the APK again and install it over the old one. Data is not lost — it lives in Google Sheets; only unsent offline items are kept on the phone (they are kept across updates).
 
 ## Files

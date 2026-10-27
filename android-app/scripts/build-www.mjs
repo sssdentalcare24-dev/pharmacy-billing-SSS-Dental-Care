@@ -24,15 +24,22 @@ await build({
   outfile: join(www, 'js', 'native.js'), legalComments: 'none',
 });
 
+// The clinic's Apps Script link, built into the APK so phones never ask for it.
+// Kept OUT of git: android-app/api-url.txt (one line) or the SSDC_API_URL environment variable.
+const urlFile = join(app, 'api-url.txt');
+const apiUrl = (process.env.SSDC_API_URL || (existsSync(urlFile) ? readFileSync(urlFile, 'utf8') : '')).trim();
+if (apiUrl && !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(apiUrl)) throw new Error('api-url.txt: not an Apps Script /exec link: ' + apiUrl);
+const boot = 'window.SSDC_APP_BUILD = true;' + (apiUrl ? ' window.SSDC_API_URL = ' + JSON.stringify(apiUrl) + ';' : '');
+
 let html = readFileSync(join(site, 'index.html'), 'utf8');
 const appTag = '<script defer src="js/app.min.js"></script>';
 if (!html.includes(appTag)) throw new Error('index.html: app.min.js script tag not found');
 html = html
   .replace(appTag, '<script defer src="js/native.js"></script>\n    ' + appTag)          // native bridge loads first
-  .replace('<head>', '<head>\n    <script>window.SSDC_APP_BUILD = true;</script>')            // app copy: no website service worker
+  .replace('<head>', '<head>\n    <script>' + boot + '</script>')                            // app copy: no website service worker (+ built-in server link)
   .replace(', viewport-fit=cover', '')                                                     // keep content below the status bar
   .replace('<link rel="manifest" href="manifest.webmanifest">', '');                        // not needed inside the app
 writeFileSync(join(www, 'index.html'), html);
 
 if (!existsSync(join(www, 'index.html'))) throw new Error('build failed');
-console.log('www/ ready: index.html, js/app.min.js, js/native.js, assets/');
+console.log('www/ ready: index.html, js/app.min.js, js/native.js, assets/' + (apiUrl ? ' · server link built in' : ' · no server link (phones will ask once)'));

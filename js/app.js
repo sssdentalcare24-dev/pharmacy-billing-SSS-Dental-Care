@@ -72,16 +72,24 @@
   API.isOwner = function () { var u = API.user(); return !!u && u.role === 'OWNER'; };
   API.loadSession();
 
-  API.ensureUrl = function () {
-    if (apiUrl()) return true;
-    var url = (prompt('First-time setup on this device:\n\nPaste your Google Apps Script Web App link\n(ends with /exec).') || '').trim();
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) {
-      if (url) alert('That does not look like an Apps Script link (https://script.google.com/macros/s/.../exec).');
-      return false;
-    }
+  // The Android app can carry the clinic's server link inside the app (set when the APK is built,
+  // never in this public code), so phones don't ask for it. The website still asks once per browser.
+  var URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/;
+  function builtInUrl() { var u = window.SSDC_API_URL; return typeof u === 'string' && URL_RE.test(u) ? u : ''; }
+  function saveUrl(url) {
     var cfg = {}; try { cfg = JSON.parse(localStorage.getItem('medistock_config') || '{}'); } catch (e) {}
     cfg.apiUrl = url; localStorage.setItem('medistock_config', JSON.stringify(cfg));
     if (window.CONFIG) window.CONFIG.apiUrl = url;
+  }
+  API.ensureUrl = function () {
+    if (apiUrl()) return true;
+    if (builtInUrl()) { saveUrl(builtInUrl()); return true; }
+    var url = (prompt('First-time setup on this device:\n\nPaste your Google Apps Script Web App link\n(ends with /exec).') || '').trim();
+    if (!URL_RE.test(url)) {
+      if (url) alert('That does not look like an Apps Script link (https://script.google.com/macros/s/.../exec).');
+      return false;
+    }
+    saveUrl(url);
     return true;
   };
 

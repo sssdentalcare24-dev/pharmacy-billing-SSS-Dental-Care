@@ -93,12 +93,14 @@ test('the repository holds no secrets: no keystore, passwords, tokens or deploym
   assert.ok(!files.some(f => /\.(jks|keystore|p12|pem|key)$/i.test(f) || /keystore\.properties$|\.env$/i.test(f)), 'key or env file committed');
   const bad = [];
   for (const f of files) {
-    if (/node_modules|\.(png|webp|jpg|ico|jar|gradle|min\.js)$/i.test(f) || f.startsWith('tests/')) continue;
+    if (/node_modules|\.(png|webp|jpg|ico|jar)$/i.test(f) || f.startsWith('tests/')) continue;
     let s; try { s = fs.readFileSync(path.join(root, f), 'utf8'); } catch (e) { continue; }
     if (/-----BEGIN (RSA |EC )?PRIVATE KEY-----/.test(s)) bad.push(f + ': private key');
     if (/AKIA[0-9A-Z]{16}/.test(s)) bad.push(f + ': cloud key');
     if (/(storePassword|keyPassword)\s*=\s*\S+/.test(s) && !/example|template/i.test(f)) bad.push(f + ': keystore password');
     if (/ghp_[A-Za-z0-9]{30,}/.test(s)) bad.push(f + ': GitHub token');
+    // the clinic's real Apps Script link stays off GitHub (only the test placeholder may appear)
+    for (const m of s.matchAll(/script\.google\.com\/macros\/s\/([\w-]+)\/exec/g)) if (m[1] !== 'AKfycbTESTDEPLOYMENT') bad.push(f + ': real Apps Script link');
   }
   assert.deepEqual(bad, []);
 });

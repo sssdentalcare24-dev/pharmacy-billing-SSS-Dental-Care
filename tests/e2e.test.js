@@ -258,3 +258,17 @@ test('new app against the OLD Apps Script shows a clear "update the server" mess
     assert.deepEqual(t.errors, []);
   } finally { await t.close(); }
 });
+
+test('Android build: a server link built into the app is used — phones are not asked for it', async () => {
+  const t = await setup();
+  try {
+    const API_URL = 'https://script.google.com/macros/s/AKfycbTESTDEPLOYMENT/exec';
+    await t.page.addInitScript(u => { window.SSDC_API_URL = u; }, API_URL);
+    await t.page.reload();
+    await t.login('owner', t.temp.owner, OWNER_PW);
+    assert.ok(!t.dialogs.some(d => /Apps Script Web App link/.test(d)), 'no question about the server link: ' + t.dialogs.join(' | '));
+    assert.equal(await t.page.evaluate(() => JSON.parse(localStorage.getItem('medistock_config') || '{}').apiUrl), API_URL);
+    assert.deepEqual(t.errors, []);
+  } finally { await t.close(); }
+});
+
