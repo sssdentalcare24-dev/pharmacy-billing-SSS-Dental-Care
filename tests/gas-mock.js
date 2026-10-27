@@ -91,7 +91,8 @@ function createGas(opts = {}) {
   }
   function folderObj(name) {
     folders[name] = folders[name] || { name };
-    return { name, getFiles: () => iter(Object.keys(driveFiles).filter(id => driveFiles[id].folder === name && !driveFiles[id].trashed).map(fileObj)) };
+    return { name, getFiles: () => iter(Object.keys(driveFiles).filter(id => driveFiles[id].folder === name && !driveFiles[id].trashed).map(fileObj)),
+      createFile: (blob) => { const id = 'FILE_' + crypto.randomBytes(6).toString('hex'); driveFiles[id] = { name: blob.name, folder: name, trashed: false, blob }; return fileObj(id); } };
   }
 
   // ── Utilities ──
@@ -111,6 +112,10 @@ function createGas(opts = {}) {
     getUuid: () => crypto.randomUUID(),
     DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
     computeDigest: (alg, value) => Array.from(crypto.createHash('sha256').update(String(value), 'utf8').digest()).map(b => b > 127 ? b - 256 : b),
+    computeHmacSha256Signature: (value, key) => Array.from(crypto.createHmac('sha256', String(key)).update(String(value), 'utf8').digest()).map(b => b > 127 ? b - 256 : b),
+    base64Encode: (bytes) => Buffer.from((typeof bytes === 'string' ? Buffer.from(bytes, 'utf8') : bytes.map(b => b < 0 ? b + 256 : b))).toString('base64'),
+    base64Decode: (str) => { if (!/^[A-Za-z0-9+/=\s]*$/.test(str)) throw new Error('Could not decode string.'); return Array.from(Buffer.from(str, 'base64')).map(b => b > 127 ? b - 256 : b); },
+    newBlob: (bytes, mime, name) => ({ bytes, mime, name, getBytes: () => bytes, getContentType: () => mime, getName: () => name }),
   };
 
   const sandbox = {

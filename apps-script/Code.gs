@@ -16,16 +16,32 @@
 //  • Backups: one-click + daily/weekly/monthly automatic copies, verified,
 //    with e-mail alert on failure.
 //
-// FIRST-TIME SETUP (owner, from the Apps Script editor):
+// New in v3.1 (see docs/PROGRESS.md):
+//  • Money: part payments / pay later on bills and dental receipts, collecting
+//    balances later, returns + refunds (stock back to its batch), payment
+//    history, patient outstanding, daily cash closing + UPI/card reconciliation.
+//  • Suppliers: master, multi-line purchase invoices (paid / credit), supplier
+//    payments, ledger + outstanding, purchase returns, invoice attachments.
+//  • Clinic: medical/dental history + allergies, treatment price list, patient
+//    treatment records, follow-ups, prescription/exam history from the server.
+//  • Reports: inventory valuation, expiry loss, dead/slow stock, batch history,
+//    report data for any period (older data is loaded on demand).
+//  • Device data key (patient data cached on phones is encrypted), health
+//    check, restore drill, faster refresh (unchanged data is not re-sent).
+//
+// UPDATE FROM v3.0 (owner, from the Apps Script editor):
 //   1. Paste this file, Save.
-//   2. Select function  migrateToV3DryRun  → Run → read the log.
-//   3. Select function  migrateToV3        → Run (makes a backup first).
-//   4. Select function  installTriggers    → Run (daily backup + stock e-mail).
-//   5. Deploy → Manage deployments → Edit → New version → Deploy.
+//   2. Select function  migrateToV31DryRun → Run → read the log (changes nothing).
+//   3. Select function  migrateToV31       → Run (verified backup first; only ADDS tabs/columns).
+//   4. Deploy → Manage deployments → Edit (pencil) → Version: New version → Deploy.
+//
+// FIRST-TIME SETUP on an empty / v2 spreadsheet:
+//   migrateToV3DryRun → migrateToV3 → migrateToV31 → installTriggers → Deploy.
 // ════════════════════════════════════════════════════════════════════════════
 
-var VERSION = '3.0.0';
-var SCHEMA_VERSION = 3;
+var VERSION = '3.1.0';
+var SCHEMA_VERSION = 4;          // 3 = v3.0 tables, 4 = v3.1 tables (migrateToV31)
+var MIN_SCHEMA = 3;              // the app works (without v3.1 features) from schema 3
 var DEFAULT_SS_ID = "1rOwubjghrsuWiGXR8X1A1841_8yd-cmMQIj44QBqNaA";  // override with Script Property SS_ID (staging copy)
 
 var IDLE_MINUTES      = 180;   // session ends after 3 h without any request
@@ -37,6 +53,7 @@ var DEFAULT_STAFF_MAX_DISCOUNT_PCT = 10;
 var CACHE_TTL_SECONDS = 600;
 var CACHE_CHUNK       = 30000;
 var STAFF_BILL_DAYS   = 3;     // staff see only recent bills (for reprint)
+var DEFAULT_WINDOW_DAYS = 365; // owner: bills/receipts/payments older than this load on demand (Settings: load_window_days)
 
 var OWNER = 'OWNER', STAFF = 'STAFF', ANY = 'ANY';
 
@@ -57,8 +74,19 @@ var BASE_HEADERS = {
   Users:             ['Username','Role','Password Hash','Salt','Active','Must Change Password','Failed Attempts','Locked Until','Created At','Last Login At','Display Name'],
   AuditLog:          ['Timestamp','User','Role','Action','Target ID','Details','Result'],
   StockMovements:    ['Movement ID','Timestamp','Medicine ID','Medicine Name','Batch ID','Qty Change','Type','Reference','User','Reason','Stock After'],
-  Batches:           ['Batch ID','Medicine ID','Batch No','Expiry','Qty Received','Qty Available','Cost Price','MRP','Supplier','Purchase ID','Received At','Status']
+  Batches:           ['Batch ID','Medicine ID','Batch No','Expiry','Qty Received','Qty Available','Cost Price','MRP','Supplier','Purchase ID','Received At','Status'],
+  // new in v3.1
+  Payments:          ['Payment ID','Payment No','Date','Type','Against Type','Against ID','Against No','Patient ID','Patient Name','Phone','Amount','Mode','Cash Amount','UPI Amount','Card Amount','Reference','Notes','Credit Value','Items','Cost Reversed','Created By','Created At','Status','Cancelled At','Cancelled By','Cancel Reason'],
+  CashClosings:      ['Closing ID','Date','Opening Cash','Cash In','Cash Out','Expected Cash','Counted Cash','Difference','Deposited','UPI Total','Card Total','UPI Verified','Card Verified','Notes','Closed By','Closed At','Status','Details'],
+  Suppliers:         ['Supplier ID','Name','Phone','Contact Person','Address','Notes','Opening Balance','Status','Created At','Created By','Updated At'],
+  SupplierLedger:    ['Entry ID','Date','Supplier ID','Supplier Name','Type','Reference','Debit','Credit','Mode','Notes','Created By','Created At','Status','Cancelled At','Cancelled By','Cancel Reason'],
+  PurchaseInvoices:  ['Invoice ID','Date','Supplier ID','Supplier Name','Invoice No','Lines','Items Total','Adjustment','Total','Paid Amount','Payment Mode','Payment Ref','Notes','Attachment URL','Attachment ID','Status','Created By','Created At','Cancelled At','Cancelled By','Cancel Reason'],
+  PurchaseReturns:   ['Return ID','Date','Supplier ID','Supplier Name','Medicine ID','Medicine Name','Batch ID','Batch No','Qty','Rate','Amount','Reason','Created By','Created At','Status'],
+  TreatmentMaster:   ['Treatment ID','Name','Category','Price','Duration (min)','Notes','Status','Updated At','Updated By'],
+  PatientTreatments: ['Record ID','Date','Patient ID','Patient Name','Phone','Doctor','Treatment ID','Treatment','Tooth','Price','Status','Notes','Receipt No','Created By','Created At','Updated At','Completed On'],
+  FollowUps:         ['Follow-up ID','Patient ID','Patient Name','Phone','Due Date','Reason','Doctor','Source','Status','Notes','Created By','Created At','Done At','Done By']
 };
+var V31_SHEETS = ['Payments','CashClosings','Suppliers','SupplierLedger','PurchaseInvoices','PurchaseReturns','TreatmentMaster','PatientTreatments','FollowUps'];
 // Columns appended to the RIGHT of existing sheets (old columns never move)
 var EXTRA_COLS = {
   Medicines:         ['Min Stock','Status'],
@@ -72,6 +100,20 @@ var EXTRA_COLS = {
   ExamForms:         ['Record ID','Created By','Status'],
   Expenses:          ['Created By','Status']
 };
+// Columns added by v3.1 (also appended to the right; nothing moves)
+var EXTRA_COLS_V31 = {
+  Medicines:         ['Barcode','Generic Name','Category','Manufacturer'],
+  Bills:             ['Paid Amount','Balance Due','Payment Status','Patient ID','Returned Value','Refunded Amount'],
+  TreatmentReceipts: ['Paid Amount','Balance Due','Payment Status','Patient ID','Returned Value','Refunded Amount','Cash Amount','UPI Amount','Card Amount','Discount','Payment Ref','Items'],
+  Purchases:         ['Supplier ID','Invoice ID','Free Qty'],
+  Prescriptions:     ['Patient ID','Doctor','Follow-up Date'],
+  Patients:          ['Medical History','Dental History','Allergies','Medications','Blood Group','Address','Emergency Contact','Date of Birth'],
+  Appointments:      ['Patient ID'],
+  ExamForms:         ['Patient ID']
+};
+(function () {   // colOf_() finds v3.1 columns by their heading, like the v3.0 ones
+  Object.keys(EXTRA_COLS_V31).forEach(function (n) { EXTRA_COLS[n] = (EXTRA_COLS[n] || []).concat(EXTRA_COLS_V31[n]); });
+})();
 
 // ── Permissions (enforced here, on the server) ─────────────────────────────
 var STAFF_SETTING_KEYS = { wa_templates: 1 };
@@ -90,10 +132,30 @@ var PERMS = {
   saveSettings: function (s, req) { return s.r === OWNER || !!STAFF_SETTING_KEYS[String(req.settingKey || '')]; },
   saveExpense: OWNER, deleteExpense: OWNER, getExpenses: OWNER,
   listUsers: OWNER, createUser: OWNER, resetUserPassword: OWNER, setUserActive: OWNER,
-  getAuditLog: OWNER, backupNow: OWNER, listBackups: OWNER, validateData: OWNER
+  getAuditLog: OWNER, backupNow: OWNER, listBackups: OWNER, validateData: OWNER,
+  // v3.1
+  recordPayment: ANY, cancelPayment: OWNER, returnRefund: OWNER, getPayments: ANY,
+  getCashSummary: ANY, saveCashClosing: ANY, getCashClosings: OWNER,
+  saveSupplier: OWNER, deleteSupplier: OWNER, recordSupplierPayment: OWNER, cancelSupplierEntry: OWNER, getSupplierLedger: OWNER,
+  addPurchaseInvoice: OWNER, cancelPurchaseInvoice: OWNER, uploadInvoiceAttachment: OWNER, purchaseReturn: OWNER,
+  saveTreatment: OWNER, savePatientTreatment: ANY, setPatientTreatmentStatus: ANY, deletePatientTreatment: OWNER,
+  saveFollowUp: ANY, setFollowUpStatus: ANY, deleteFollowUp: OWNER,
+  getPatientHistory: ANY, getRecentRecords: ANY, getBills: ANY,
+  getBatchHistory: OWNER, getInventoryReport: OWNER, getReportData: OWNER,
+  healthCheck: OWNER, restoreDrill: OWNER
 };
 var READ_ONLY = { whoami: 1, getAllData: 1, getSettings: 1, getExpenses: 1, getStockMovements: 1,
-  listUsers: 1, getAuditLog: 1, listBackups: 1, validateData: 1, logout: 1 };
+  listUsers: 1, getAuditLog: 1, listBackups: 1, validateData: 1, logout: 1,
+  getPayments: 1, getCashSummary: 1, getCashClosings: 1, getSupplierLedger: 1, getPatientHistory: 1, getRecentRecords: 1, getBills: 1,
+  getBatchHistory: 1, getInventoryReport: 1, getReportData: 1, healthCheck: 1 };
+// Actions that need the v3.1 tables (migrateToV31)
+var V31_ACTIONS = { recordPayment: 1, cancelPayment: 1, returnRefund: 1, getPayments: 1, getCashSummary: 1, saveCashClosing: 1, getCashClosings: 1,
+  saveSupplier: 1, deleteSupplier: 1, recordSupplierPayment: 1, cancelSupplierEntry: 1, getSupplierLedger: 1,
+  addPurchaseInvoice: 1, cancelPurchaseInvoice: 1, uploadInvoiceAttachment: 1, purchaseReturn: 1,
+  saveTreatment: 1, savePatientTreatment: 1, setPatientTreatmentStatus: 1, deletePatientTreatment: 1,
+  saveFollowUp: 1, setFollowUpStatus: 1, deleteFollowUp: 1, getPatientHistory: 1, getRecentRecords: 1, getBills: 1,
+  getBatchHistory: 1, getInventoryReport: 1, getReportData: 1, restoreDrill: 1 };
+function v31_() { return schemaVersion_() >= 4; }
 
 // ════════════════════════════════════════════════════════════════════════════
 // SMALL HELPERS
@@ -334,7 +396,7 @@ function login_(req) {
     cache_().put('S_' + token, JSON.stringify(s), 21600);
     audit_(s, 'login', u.username, '', 'OK');
     return ok_({ token: token, user: { username: u.username, role: u.role, displayName: u.displayName, mustChangePassword: u.mustChange },
-      idleMinutes: IDLE_MINUTES, version: VERSION });
+      idleMinutes: IDLE_MINUTES, version: VERSION, features: features_(), dataKey: v31_() ? dataKeyFor_(u.username) : '' });
   } finally { lock.releaseLock(); }
 }
 
@@ -364,7 +426,20 @@ function logout_(req, s) {
   audit_(s, 'logout', s.u, '', 'OK');
   return ok_();
 }
-function whoami_(req, s) { return ok_({ user: { username: s.u, role: s.r, displayName: s.n, mustChangePassword: !!s.mc }, version: VERSION }); }
+function whoami_(req, s) { return ok_({ user: { username: s.u, role: s.r, displayName: s.n, mustChangePassword: !!s.mc }, version: VERSION,
+  features: features_(), dataKey: v31_() ? dataKeyFor_(s.u) : '' }); }
+function features_() { return { v31: v31_(), schema: schemaVersion_(), windowDays: windowDays_() }; }
+function windowDays_() { var v = parseInt(getSetting_('load_window_days', ''), 10); return isFinite(v) && v >= 30 ? Math.min(v, 3650) : DEFAULT_WINDOW_DAYS; }
+// Key for encrypting patient data cached on a device. Derived per user from a
+// secret that never leaves the server; the app keeps it only for the session.
+function localKeySecret_() {
+  var p = props_(), k = p.getProperty('LOCAL_KEY_SECRET');
+  if (!k) { k = Utilities.getUuid() + Utilities.getUuid(); p.setProperty('LOCAL_KEY_SECRET', k); }
+  return k;
+}
+function dataKeyFor_(username) {
+  return Utilities.base64Encode(Utilities.computeHmacSha256Signature('ssdc-local-v1|' + String(username).toLowerCase(), localKeySecret_()));
+}
 
 function changePassword_(req, s) {
   var f = findUser_(s.u); if (!f) return fail_('AUTH_REQUIRED', 'Please log in again');
@@ -478,7 +553,7 @@ var ACTIONS = {};   // filled at the bottom of the file
 function handle_(req) {
   var action = str_(req.action, 40);
   if (action === 'ping') return ok_({ app: 'SSDC', version: VERSION, schema: schemaVersion_() });
-  if (schemaVersion_() < SCHEMA_VERSION) return fail_('MIGRATION_REQUIRED', 'Server update not finished: the owner must run migrateToV3 in Apps Script.');
+  if (schemaVersion_() < MIN_SCHEMA) return fail_('MIGRATION_REQUIRED', 'Server update not finished: the owner must run migrateToV3 in Apps Script.');
   if (action === 'login') return login_(req);
 
   var s = getSession_(req.token);
@@ -489,6 +564,7 @@ function handle_(req) {
 
   var rule = PERMS[action], fn = ACTIONS[action];
   if (!rule || !fn) return fail_('UNKNOWN_ACTION', 'Unknown action: ' + action);
+  if (V31_ACTIONS[action] && !v31_()) return fail_('MIGRATION_REQUIRED', 'This needs the v3.1 server update: the owner must run migrateToV31 in Apps Script.');
   var allowed = typeof rule === 'function' ? rule(s, req) : (rule === ANY || s.r === rule);
   if (!allowed) { audit_(s, action, req.id || req.billId || '', 'Permission denied', 'DENIED'); return fail_('FORBIDDEN', 'Only the owner can do this.'); }
 
@@ -558,7 +634,9 @@ function loadMedicines_() {
   for (var i = 1; i < data.length; i++) {
     var r = data[i]; if (!r[0]) continue;
     var m = { row: i + 1, id: String(r[0]), name: String(r[1] || ''), stock: num_(r[2]), price: num_(r[3]), costPrice: num_(r[4]),
-      expiry: formatDate(r[5]), minStock: num_(cell_('Medicines', r, 'Min Stock')), status: String(cell_('Medicines', r, 'Status') || 'Active') };
+      expiry: formatDate(r[5]), minStock: num_(cell_('Medicines', r, 'Min Stock')), status: String(cell_('Medicines', r, 'Status') || 'Active'),
+      barcode: String(cell_('Medicines', r, 'Barcode') || ''), genericName: String(cell_('Medicines', r, 'Generic Name') || ''),
+      category: String(cell_('Medicines', r, 'Category') || ''), manufacturer: String(cell_('Medicines', r, 'Manufacturer') || '') };
     map[m.id] = m; list.push(m);
   }
   return { map: map, list: list };
@@ -590,6 +668,8 @@ function newBatchRow_(o) {
 // ════════════════════════════════════════════════════════════════════════════
 function getAllData_(req, s) {
   var c = cache_(), ver = getDataVersion_(), prefix = 'AD' + s.r.charAt(0) + '_' + ver + '_';
+  // The app already has this exact data → tiny answer instead of everything again.
+  if (req.ifVersion && String(req.ifVersion) === s.r.charAt(0) + ver) return ok_({ unchanged: true, dataVersion: s.r.charAt(0) + ver });
   try {
     var n = parseInt(c.get(prefix + 'n'), 10);
     if (n > 0) {
@@ -599,7 +679,8 @@ function getAllData_(req, s) {
       if (parts) return { __raw: parts.join('') };
     }
   } catch (e) {}
-  var result = buildAllData_(s.r), json = JSON.stringify(result);
+  var result = buildAllData_(s.r); result.dataVersion = s.r.charAt(0) + ver;
+  var json = JSON.stringify(result);
   if (getDataVersion_() === ver) {
     try {
       var entries = {}, count = 0;
@@ -613,6 +694,8 @@ function getAllData_(req, s) {
 
 function buildAllData_(role) {
   var isOwner = role === OWNER, today = todayStr_(), staffFrom = daysAgoStr_(STAFF_BILL_DAYS);
+  var v31 = v31_(), win = windowDays_(), ownerFrom = daysAgoStr_(win), from = isOwner ? ownerFrom : staffFrom;
+  var receivables = [];
   var meds = loadMedicines_(), batches = loadBatches_();
 
   // ── medicines (+ batches for owner) ──
@@ -624,7 +707,9 @@ function buildAllData_(role) {
     mine.forEach(function (b) { if (!b.expiry || b.expiry >= today) { sellable += b.avail; if (b.expiry && !nextExp) nextExp = b.expiry; } else expired += b.avail; });
     var o = { id: isFinite(Number(m.id)) && m.id !== '' ? Number(m.id) : m.id, name: m.name,
       stock: mine.length ? r2_(sellable) : m.stock, expiredStock: r2_(expired),
-      price: m.price, expiry: nextExp || m.expiry, minStock: m.minStock };
+      price: m.price, expiry: nextExp || m.expiry, minStock: m.minStock,
+      barcode: m.barcode, genericName: m.genericName, category: m.category, manufacturer: m.manufacturer,
+      batchNos: mine.map(function (b) { return b.batchNo; }).filter(String).join(' ') };
     if (isOwner) {
       o.costPrice = m.costPrice;
       o.batches = mine.map(function (b) { return { batchId: b.batchId, batchNo: b.batchNo, expiry: b.expiry, qty: b.avail, cost: b.cost, mrp: b.mrp, supplier: b.supplier }; });
@@ -644,19 +729,23 @@ function buildAllData_(role) {
 
   // ── bills ──
   var bills = [], cancelledBills = [], bData = values_('Bills');
-  var validModes = { cash: 'Cash', upi: 'UPI', card: 'Card', split: 'Split', cheque: 'Cheque', online: 'Online', neft: 'NEFT', rtgs: 'RTGS' };
+  var validModes = { cash: 'Cash', upi: 'UPI', card: 'Card', split: 'Split', credit: 'Credit', cheque: 'Cheque', online: 'Online', neft: 'NEFT', rtgs: 'RTGS' };
   for (var i = 1; i < bData.length; i++) {
     var br = bData[i]; if (!br[0]) continue;
     var id = String(br[0]), date = formatDate(br[4]);
-    if (!isOwner && date < staffFrom) continue;
+    var bStatus = String(cell_('Bills', br, 'Status') || 'Active');
+    if (v31 && bStatus !== 'Cancelled') { var mo = invMoney_('BILL', br); if (mo.balance > 0.009) receivables.push(receivableOf_('BILL', br, mo)); }
+    if (date < from) continue;
     var pm = validModes[String(br[9] || '').trim().toLowerCase()] || 'Cash';
     var b = { billId: id, billNo: String(cell_('Bills', br, 'Bill No') || ''), patientName: br[1], doctor: br[2], phone: String(br[3] || ''), date: date,
       subtotal: num_(br[5]), discount: num_(br[6]), total: num_(br[7]), paymentMode: pm,
       cashAmount: num_(cell_('Bills', br, 'Cash Amount')), upiAmount: num_(cell_('Bills', br, 'UPI Amount')), cardAmount: num_(cell_('Bills', br, 'Card Amount')),
       paymentRef: String(cell_('Bills', br, 'Payment Ref') || ''), createdBy: String(cell_('Bills', br, 'Created By') || ''),
       items: allItems[id] || [] };
+    if (v31) { var bm = invMoney_('BILL', br); b.paidAmount = bm.paid; b.balanceDue = bm.balance; b.paymentStatus = bm.status;
+      b.returnedValue = bm.returned; b.refundedAmount = bm.refunded; b.patientId = String(cell_('Bills', br, 'Patient ID') || ''); }
     if (isOwner) b.costTotal = num_(br[8]);
-    var status = String(cell_('Bills', br, 'Status') || 'Active');
+    var status = bStatus;
     if (status === 'Cancelled') {
       if (isOwner) { b.status = 'Cancelled'; b.cancelledAt = String(cell_('Bills', br, 'Cancelled At') || ''); b.cancelledBy = String(cell_('Bills', br, 'Cancelled By') || ''); b.cancelReason = String(cell_('Bills', br, 'Cancel Reason') || ''); cancelledBills.push(b); }
     } else bills.push(b);
@@ -669,7 +758,10 @@ function buildAllData_(role) {
     for (var pi = 1; pi < pData.length; pi++) {
       var pr = pData[pi]; if (!pr[0]) continue;
       if (String(cell_('Purchases', pr, 'Status') || 'Active') === 'Cancelled') continue;
-      purchases.push({ id: String(pr[0]), date: formatDate(pr[1]), supplier: pr[2], medicineId: pr[3], medicineName: pr[4],
+      if (formatDate(pr[1]) < ownerFrom) continue;
+      purchases.push({ supplierId: String(cell_('Purchases', pr, 'Supplier ID') || ''), invoiceId: String(cell_('Purchases', pr, 'Invoice ID') || ''),
+        freeQty: num_(cell_('Purchases', pr, 'Free Qty')), mrp: num_(cell_('Purchases', pr, 'MRP')),
+        id: String(pr[0]), date: formatDate(pr[1]), supplier: pr[2], medicineId: pr[3], medicineName: pr[4],
         qty: num_(pr[5]), costPrice: num_(pr[6]), totalCost: num_(pr[7]),
         batchNo: String(cell_('Purchases', pr, 'Batch No') || ''), expiry: formatDate(cell_('Purchases', pr, 'Expiry')),
         invoiceNo: String(cell_('Purchases', pr, 'Invoice No') || ''), batchId: String(cell_('Purchases', pr, 'Batch ID') || '') });
@@ -680,8 +772,14 @@ function buildAllData_(role) {
   var patients = [], ptData = values_('Patients');
   for (var q = 1; q < ptData.length; q++) {
     var p = ptData[q]; if (!p[0] || String(p[9]) === 'Deleted') continue;
-    patients.push({ id: p[0], name: p[1], phone: String(p[2] || ''), age: p[3], sex: p[4], doctor: p[5], treatment: p[6],
-      balance: num_(p[7]), alerts: p[8], status: p[9], lastVisit: formatDate(p[10]), addedOn: formatDate(p[11]) });
+    var po = { id: p[0], name: p[1], phone: String(p[2] || ''), age: p[3], sex: p[4], doctor: p[5], treatment: p[6],
+      balance: num_(p[7]), alerts: p[8], status: p[9], lastVisit: formatDate(p[10]), addedOn: formatDate(p[11]) };
+    if (v31) {
+      PATIENT_FIELDS.forEach(function (f) { po[f[0]] = String(cell_('Patients', p, f[1]) || ''); });
+      if (po.balance > 0.009) receivables.push({ type: 'OPENING', id: String(p[0]), no: 'Old balance', date: po.addedOn, patientId: String(p[0]),
+        patientName: String(p[1] || ''), phone: po.phone, total: po.balance, paid: 0, returned: 0, refunded: 0, balance: r2_(po.balance) });
+    }
+    patients.push(po);
   }
 
   // ── appointments ──
@@ -689,7 +787,7 @@ function buildAllData_(role) {
   for (var a = 1; a < aData.length; a++) {
     var ar = aData[a]; if (!ar[0] || String(ar[7]) === 'Deleted') continue;
     appointments.push({ id: ar[0], patient: ar[1], phone: String(ar[2] || ''), date: formatDate(ar[3]), time: formatTime(ar[4]),
-      reason: ar[5], doctor: ar[6], status: ar[7], bookedAt: String(ar[8] || '') });
+      reason: ar[5], doctor: ar[6], status: ar[7], bookedAt: String(ar[8] || ''), patientId: String(cell_('Appointments', ar, 'Patient ID') || '') });
   }
 
   // ── treatment receipts (dental revenue) ──
@@ -698,19 +796,27 @@ function buildAllData_(role) {
     var tr = tData[t]; if (!tr[0] && !tr[2]) continue;
     if (String(cell_('TreatmentReceipts', tr, 'Status') || '') === 'Deleted') continue;
     var tDate = formatDate(tr[1]);
-    if (!isOwner && tDate < staffFrom) continue;
+    if (v31) { var tmo = invMoney_('RECEIPT', tr); if (tmo.balance > 0.009) receivables.push(receivableOf_('RECEIPT', tr, tmo)); }
+    if (tDate < from) continue;
     treatmentReceipts.push({ no: String(tr[0]), date: tDate, patient: String(tr[2] || ''), doctor: String(tr[3] || ''), amount: num_(tr[4]),
       amountWords: String(tr[5] || ''), treatments: String(tr[6] || ''), savedAt: String(tr[7] || ''),
       paymentMode: String(cell_('TreatmentReceipts', tr, 'Payment Mode') || ''), recordId: String(cell_('TreatmentReceipts', tr, 'Record ID') || '') });
+    if (v31) { var rr = treatmentReceipts[treatmentReceipts.length - 1], rm = invMoney_('RECEIPT', tr);
+      rr.paidAmount = rm.paid; rr.balanceDue = rm.balance; rr.paymentStatus = rm.status; rr.returnedValue = rm.returned; rr.refundedAmount = rm.refunded;
+      rr.patientId = String(cell_('TreatmentReceipts', tr, 'Patient ID') || ''); rr.discount = num_(cell_('TreatmentReceipts', tr, 'Discount'));
+      rr.cashAmount = num_(cell_('TreatmentReceipts', tr, 'Cash Amount')); rr.upiAmount = num_(cell_('TreatmentReceipts', tr, 'UPI Amount'));
+      rr.cardAmount = num_(cell_('TreatmentReceipts', tr, 'Card Amount')); rr.paymentRef = String(cell_('TreatmentReceipts', tr, 'Payment Ref') || ''); }
   }
 
   // ── expenses (owner) ──
-  var expenses = isOwner ? readExpenses_() : [];
+  var expenses = isOwner ? readExpenses_().filter(function (e) { return e.date >= ownerFrom; }) : [];
 
-  return { success: true, version: VERSION, role: role, today: today, serverTime: nowStr_(),
-    staffMaxDiscountPct: staffMaxDiscountPct_(),
+  var out = { success: true, version: VERSION, role: role, today: today, serverTime: nowStr_(),
+    staffMaxDiscountPct: staffMaxDiscountPct_(), features: features_(), loadedFrom: from,
     medicines: medicines, bills: bills, cancelledBills: cancelledBills, purchases: purchases, patients: patients,
     appointments: appointments, treatmentReceipts: treatmentReceipts, expenses: expenses };
+  if (v31) extendAllData_(out, role, from, receivables);
+  return out;
 }
 
 function readExpenses_() {
@@ -772,18 +878,10 @@ function saveBill_(req, s) {
   var total = r2_(subtotal - discount);
   if (req.total !== undefined && req.total !== '' && Math.abs(num_(req.total) - total) > 0.011) return fail_('VALIDATION', 'Total does not match subtotal − discount');
 
-  // ── payment ──
-  var modeMap = { cash: 'Cash', upi: 'UPI', card: 'Card', split: 'Split' };
-  var mode = modeMap[String(req.paymentMode || 'Cash').toLowerCase()];
-  if (!mode) return fail_('VALIDATION', 'Unknown payment mode');
-  var cash = 0, upi = 0, card = 0;
-  if (mode === 'Cash') cash = total; else if (mode === 'UPI') upi = total; else if (mode === 'Card') card = total;
-  else {
-    cash = r2_(req.cashAmount); upi = r2_(req.upiAmount); card = r2_(req.cardAmount);
-    if (cash < 0 || upi < 0 || card < 0) return fail_('VALIDATION', 'Invalid split amounts');
-    if (cash + upi + card === 0) warnings.push('Split payment without amounts (old app version)');
-    else if (Math.abs(cash + upi + card - total) > 0.5) return fail_('VALIDATION', 'Split amounts must add up to the total');
-  }
+  // ── payment (v3.1: the patient may pay part now, or later) ──
+  var pay = paymentSplit_(req, total, s, warnings);
+  if (pay.error) return fail_('VALIDATION', pay.error);
+  var mode = pay.mode, cash = pay.cash, upi = pay.upi, card = pay.card;
 
   // ── FEFO stock allocation ──
   var batches = loadBatches_(), today = todayStr_(), costTotal = 0, movements = [], touched = {}, itemRows = [], dt = nowStr_();
@@ -814,13 +912,16 @@ function saveBill_(req, s) {
     'Bill ID': billId, 'Patient Name': patient, 'Doctor': str_(req.doctor, 80), 'Phone': str_(req.phone, 20), 'Date': today,
     'Subtotal': subtotal, 'Discount': discount, 'Total': total, 'Cost Total': costTotal, 'Payment Mode': mode, 'Date & Time': dt,
     'Status': 'Active', 'Bill No': billNo, 'Created By': s.u, 'Payment Ref': str_(req.paymentRef, 80),
-    'Cash Amount': cash, 'UPI Amount': upi, 'Card Amount': card })]);
+    'Cash Amount': cash, 'UPI Amount': upi, 'Card Amount': card,
+    'Paid Amount': pay.paid, 'Balance Due': r2_(total - pay.paid), 'Payment Status': payStatus_(total, 0, pay.paid, 0),
+    'Patient ID': str_(req.patientId, 60) || linkPatient_(patient, req.phone), 'Returned Value': 0, 'Refunded Amount': 0 })]);
   appendRows_('BillItems', itemRows.map(function (r) { var o = {}; ['Bill ID','Medicine ID','Medicine Name','Quantity','Unit Price','Cost Price','Amount','Date & Time','Batch Allocation'].forEach(function (h, k) { o[h] = r[k]; }); return rowFrom_('BillItems', o); }));
   saveBatches_(batches);
   syncMedicineStock_(meds, batches, Object.keys(touched));
   appendRows_('StockMovements', movements.map(function (m) { return movementRow_(m.med.id, m.med.name, m.batch, m.qty, m.type, billId, s.u, m.reason, meds.map[m.med.id].stock); }));
-  audit_(s, 'saveBill', billId, billNo + ' · ₹' + total + ' · ' + mode + (warnings.length ? ' · ' + warnings.join('; ') : ''), warnings.length ? 'WARN' : 'OK');
-  return ok_({ billId: billId, billNo: billNo, subtotal: subtotal, discount: discount, total: total, costTotal: costTotal, warnings: warnings });
+  audit_(s, 'saveBill', billId, billNo + ' · ₹' + total + ' · ' + mode + (pay.paid < total ? ' · paid ₹' + pay.paid + ', due ₹' + r2_(total - pay.paid) : '') + (warnings.length ? ' · ' + warnings.join('; ') : ''), warnings.length ? 'WARN' : 'OK');
+  return ok_({ billId: billId, billNo: billNo, subtotal: subtotal, discount: discount, total: total, costTotal: costTotal, warnings: warnings,
+    paidAmount: pay.paid, balanceDue: r2_(total - pay.paid) });
 }
 
 function cancelBill_(req, s) {
@@ -831,6 +932,7 @@ function cancelBill_(req, s) {
   if (row < 0) return fail_('VALIDATION', 'Bill not found');
   var bRow = sh_('Bills').getRange(row, 1, 1, sh_('Bills').getLastColumn()).getValues()[0];
   if (String(cell_('Bills', bRow, 'Status')) === 'Cancelled') return ok_({ billId: billId, alreadyCancelled: true });
+  if (v31_() && linkedPayments_('BILL', billId).length) return fail_('VALIDATION', 'This bill has later payments or returns. Use Return / Refund instead of cancelling.');
   var restore = !(req.restoreStock === false || String(req.restoreStock) === 'false');
 
   var movements = [], meds = loadMedicines_(), batches = loadBatches_(), touched = {};
@@ -874,9 +976,11 @@ function addMedicine_(req, s) {
   var meds = loadMedicines_();
   var dup = meds.list.filter(function (m) { return m.status !== 'Inactive' && m.name.trim().toLowerCase() === name.toLowerCase(); })[0];
   if (dup) return ok_({ medicineId: Number(dup.id) || dup.id, duplicate: true });
-  var id = Date.now(), expiry = formatDate(req.expiry);
+  var id = Date.now(), expiry = formatDate(req.expiry), barcode = str_(req.barcode, 60);
+  if (barcode && meds.list.some(function (m) { return m.status !== 'Inactive' && m.barcode === barcode; })) return fail_('VALIDATION', 'Another medicine already has barcode ' + barcode);
   appendRows_('Medicines', [rowFrom_('Medicines', { 'ID': id, 'Name': name, 'Stock': stock, 'Unit Price': price, 'Cost Price': cost, 'Expiry': expiry,
-    'Date & Time': nowStr_(), 'Min Stock': num_(req.minStock) || 10, 'Status': 'Active' })]);
+    'Date & Time': nowStr_(), 'Min Stock': num_(req.minStock) || 10, 'Status': 'Active',
+    'Barcode': barcode, 'Generic Name': str_(req.genericName, 120), 'Category': str_(req.category, 60), 'Manufacturer': str_(req.manufacturer, 120) })]);
   if (stock > 0) {
     var bid = uid_('B-');
     appendRows_('Batches', [newBatchRow_({ batchId: bid, medicineId: String(id), batchNo: str_(req.batchNo, 40) || 'OPENING', expiry: expiry, qty: stock, cost: cost })]);
@@ -893,6 +997,14 @@ function updateMedicine_(req, s) {
   if (req.price !== undefined && req.price !== '') { var p = num_(req.price); if (p < 0) return fail_('VALIDATION', 'Invalid price'); upd['Unit Price'] = p; changes.push('price ₹' + p); }
   if (req.costPrice !== undefined && req.costPrice !== '') { var cp = num_(req.costPrice); if (cp < 0) return fail_('VALIDATION', 'Invalid cost'); upd['Cost Price'] = cp; changes.push('cost ₹' + cp); }
   if (req.minStock !== undefined && req.minStock !== '') { upd['Min Stock'] = Math.max(0, num_(req.minStock)); changes.push('min stock'); }
+  if (req.barcode !== undefined) {
+    var bc = str_(req.barcode, 60);
+    if (bc && loadMedicines_().list.some(function (m) { return m.status !== 'Inactive' && m.barcode === bc && m.id !== String(req.id); })) return fail_('VALIDATION', 'Another medicine already has barcode ' + bc);
+    upd['Barcode'] = bc; changes.push('barcode');
+  }
+  if (req.genericName !== undefined) upd['Generic Name'] = str_(req.genericName, 120);
+  if (req.category !== undefined) upd['Category'] = str_(req.category, 60);
+  if (req.manufacturer !== undefined) upd['Manufacturer'] = str_(req.manufacturer, 120);
   if (req.stock !== undefined && req.stock !== '') return fail_('VALIDATION', 'Stock can only be changed with a stock adjustment (so it is recorded)');
   upd['Date & Time'] = nowStr_();
   setCells_('Medicines', row, upd);
@@ -1033,13 +1145,24 @@ function saveTreatmentReceipt_(req, s) {
   getOrCreateSheet('TreatmentReceipts'); ensureCols_('TreatmentReceipts', EXTRA_COLS.TreatmentReceipts);
   var recordId = str_(req.recordId, 60);
   if (recordId && findRow_('TreatmentReceipts', 'Record ID', recordId) > 0) return ok_({ duplicate: true });
-  var amount = num_(req.amount); if (amount < 0) return fail_('VALIDATION', 'Invalid amount');
+  var amount = num_(req.amount); if (amount < 0 || amount > 10000000) return fail_('VALIDATION', 'Invalid amount');
   if (!str_(req.patient)) return fail_('VALIDATION', 'Patient name is required');
-  appendRows_('TreatmentReceipts', [rowFrom_('TreatmentReceipts', { 'Receipt No': str_(req.receiptNo, 30), 'Date': formatDate(req.date) || todayStr_(),
-    'Patient': str_(req.patient, 120), 'Doctor': str_(req.doctor, 80), 'Amount': r2_(amount), 'Amount in Words': str_(req.amountWords, 300),
-    'Treatments': str_(req.treatments, 1000), 'Saved At': nowStr_(), 'Payment Mode': str_(req.paymentMode, 20), 'Record ID': recordId, 'Created By': s.u, 'Status': 'Active' })]);
-  audit_(s, 'saveTreatmentReceipt', str_(req.receiptNo) || recordId, str_(req.patient, 60) + ' · ₹' + r2_(amount), 'OK');
-  return ok_();
+  amount = r2_(amount);
+  var warnings = [], pay = paymentSplit_(req, amount, s, warnings, true);
+  if (pay.error) return fail_('VALIDATION', pay.error);
+  var obj = { 'Receipt No': str_(req.receiptNo, 30), 'Date': formatDate(req.date) || todayStr_(),
+    'Patient': str_(req.patient, 120), 'Doctor': str_(req.doctor, 80), 'Amount': amount, 'Amount in Words': str_(req.amountWords, 300),
+    'Treatments': str_(req.treatments, 1000), 'Saved At': nowStr_(), 'Payment Mode': pay.legacyMode, 'Record ID': recordId, 'Created By': s.u, 'Status': 'Active' };
+  if (v31_()) {
+    obj['Paid Amount'] = pay.paid; obj['Balance Due'] = r2_(amount - pay.paid); obj['Payment Status'] = payStatus_(amount, 0, pay.paid, 0);
+    obj['Patient ID'] = str_(req.patientId, 60) || linkPatient_(req.patient, req.phone); obj['Returned Value'] = 0; obj['Refunded Amount'] = 0;
+    obj['Cash Amount'] = pay.cash; obj['UPI Amount'] = pay.upi; obj['Card Amount'] = pay.card; obj['Discount'] = r2_(req.discount);
+    obj['Payment Ref'] = str_(req.paymentRef, 80); obj['Items'] = str_(typeof req.items === 'string' ? req.items : JSON.stringify(req.items || ''), 4000);
+  }
+  appendRows_('TreatmentReceipts', [rowFrom_('TreatmentReceipts', obj)]);
+  if (v31_() && req.treatmentRecordIds) linkTreatmentsToReceipt_(req.treatmentRecordIds, str_(req.receiptNo, 30) || recordId);
+  audit_(s, 'saveTreatmentReceipt', str_(req.receiptNo) || recordId, str_(req.patient, 60) + ' · ₹' + amount + (pay.paid < amount ? ' · paid ₹' + pay.paid : ''), 'OK');
+  return ok_({ paidAmount: pay.paid, balanceDue: r2_(amount - pay.paid), warnings: warnings });
 }
 function softDeleteBy_(sheetName, s, action, keyCol, keyVal, label) {
   if (!keyVal) return fail_('VALIDATION', 'This older record has no ID — remove it directly in Google Sheets if needed.');
@@ -1061,7 +1184,8 @@ function savePrescription_(req, s) {
   var recordId = str_(req.recordId, 60);
   if (recordId && findRow_('Prescriptions', 'Record ID', recordId) > 0) return ok_({ duplicate: true });
   appendRows_('Prescriptions', [rowFrom_('Prescriptions', { 'Date': str_(req.date, 20), 'Patient Name': str_(req.patientName, 120), 'Age': str_(req.age, 10),
-    'Sex': str_(req.sex, 10), 'Prescription': str_(req.prescription || req.rxText, 5000), 'Saved At': nowStr_(), 'Record ID': recordId, 'Created By': s.u, 'Status': 'Active' })]);
+    'Sex': str_(req.sex, 10), 'Prescription': str_(req.prescription || req.rxText, 5000), 'Saved At': nowStr_(), 'Record ID': recordId, 'Created By': s.u, 'Status': 'Active',
+    'Patient ID': str_(req.patientId, 60) || (v31_() ? linkPatient_(req.patientName, req.phone) : ''), 'Doctor': str_(req.doctor, 80), 'Follow-up Date': formatDate(req.followUpDate) })]);
   audit_(s, 'savePrescription', recordId, str_(req.patientName, 60), 'OK');
   return ok_();
 }
@@ -1076,7 +1200,7 @@ function saveExamForm_(req, s) {
     'Swelling': f('swelling'), 'TMJ': f('tmj'), 'Lymph Nodes': f('lymph'), 'Oral Hygiene': f('oral_hygiene'), 'Gingiva': f('gingiva'), 'Dental Caries': f('caries'),
     'Missing Teeth': f('missing_teeth'), 'Stains': f('stains'), 'Calculus': f('calculus'), 'Provisional Diagnosis': f('prov_diag'), 'Final Diagnosis': f('final_diag'),
     'Treatment Plan': f('treatments'), 'Treatment Notes': f('tp_notes'), 'Upper Arch': f('upper_teeth'), 'Lower Arch': f('lower_teeth'), 'Saved At': nowStr_(),
-    'Record ID': recordId, 'Created By': s.u, 'Status': 'Active' })]);
+    'Record ID': recordId, 'Created By': s.u, 'Status': 'Active', 'Patient ID': str_(req.patientId, 60) || (v31_() ? linkPatient_(req.patient, req.phone) : '') })]);
   audit_(s, 'saveExamForm', recordId, f('patient').slice(0, 60), 'OK');
   return ok_();
 }
@@ -1091,6 +1215,7 @@ function savePatient_(req, s) {
   var obj = { 'ID': id, 'Name': name, 'Phone': str_(req.phone, 20), 'Age': str_(req.age, 10), 'Sex': str_(req.sex, 10), 'Doctor': str_(req.doctor, 80),
     'Treatment': str_(req.treatment, 300), 'Balance': r2_(req.balance), 'Medical Alerts': str_(req.alerts, 500), 'Status': status,
     'Last Visit': str_(req.lastVisit, 20), 'Added On': str_(req.addedOn, 20) || (existing ? existing[11] : todayStr_()), 'Updated At': nowStr_() };
+  PATIENT_FIELDS.forEach(function (f) { if (req[f[0]] !== undefined) obj[f[1]] = str_(req[f[0]], f[2]); });   // older app versions don't send these → kept
   if (rowIdx > 0) setCells_('Patients', rowIdx, obj);
   else { obj['Created By'] = s.u; appendRows_('Patients', [rowFrom_('Patients', obj)]); }
   audit_(s, 'savePatient', id, rowIdx > 0 ? 'Updated' : 'Created', 'OK');
@@ -1118,6 +1243,7 @@ function saveAppointment_(req, s) {
   }
   var obj = { 'ID': id, 'Patient': str_(req.patient, 120), 'Phone': str_(req.phone, 20), 'Date': date, 'Time': time, 'Reason': str_(req.reason, 300),
     'Doctor': doctor, 'Status': status, 'Booked At': str_(req.bookedAt, 40) || nowStr_(), 'Updated At': nowStr_() };
+  if (req.patientId !== undefined) obj['Patient ID'] = str_(req.patientId, 60);
   var rowIdx = findRow_('Appointments', 'ID', id);
   if (rowIdx > 0) setCells_('Appointments', rowIdx, obj);
   else { obj['Created By'] = s.u; appendRows_('Appointments', [rowFrom_('Appointments', obj)]); rowIdx = sh_('Appointments').getLastRow(); }
@@ -1180,7 +1306,7 @@ function getSettings_(req, s) {
 // BACKUPS
 // ════════════════════════════════════════════════════════════════════════════
 var BACKUP_FOLDER = 'SSDC Backups';
-var KEEP = { daily: 14, weekly: 8, monthly: 12, manual: 30, 'pre-migration': 10 };
+var KEEP = { daily: 14, weekly: 8, monthly: 12, manual: 30, 'pre-migration': 10, 'pre-restore': 10, drill: 3 };
 
 function backupFolder_() {
   var it = DriveApp.getFoldersByName(BACKUP_FOLDER);
@@ -1279,18 +1405,41 @@ function validateData_() {
   });
   values_('BillItems').slice(1).forEach(function (r) { if (r[1] && !meds.map[String(r[1])]) issues.push('Bill ' + r[0] + ' references unknown medicine ID ' + r[1]); });
   batches.forEach(function (b) { if (!meds.map[b.medicineId]) issues.push('Batch ' + b.batchId + ' has unknown medicine'); if (b.avail < 0) issues.push('Negative stock in batch ' + b.batchId); });
+  if (v31_()) {
+    // every bill's paid / returned / refunded totals must match its payment records
+    var pays = {}; paymentsData_().slice(1).forEach(function (r) {
+      if (!r[0] || String(r[22] || 'Active') !== 'Active') return;
+      var k = String(r[4]) + '|' + String(r[5]), o = pays[k] = pays[k] || { coll: 0, ref: 0, cred: 0 };
+      if (String(r[3]) === 'COLLECTION') o.coll += num_(r[10]); else { o.ref += num_(r[10]); o.cred += num_(r[17]); }
+    });
+    var chk = function (type, row) {
+      var sp = INV[type], id = invId_(type, row), mo = invMoney_(type, row), p = pays[type + '|' + id] || { coll: 0, ref: 0, cred: 0 };
+      if (String(cell_(sp.sheet, row, 'Status') || 'Active') === 'Cancelled') return;
+      var c = num_(cell_(sp.sheet, row, 'Cash Amount')), u = num_(cell_(sp.sheet, row, 'UPI Amount')), k = num_(cell_(sp.sheet, row, 'Card Amount'));
+      if ((c || u || k) && Math.abs(r2_(c + u + k + p.coll) - mo.paid) > 0.05) issues.push('Payments of ' + sp.label + ' ' + (cell_(sp.sheet, row, sp.no) || id) + ' do not add up (paid ₹' + mo.paid + ', records ₹' + r2_(c + u + k + p.coll) + ')');
+      if (Math.abs(mo.refunded - p.ref) > 0.05 || Math.abs(mo.returned - p.cred) > 0.05) issues.push('Returns/refunds of ' + sp.label + ' ' + (cell_(sp.sheet, row, sp.no) || id) + ' do not match the refund records');
+      if (mo.balance < -0.05) issues.push(sp.label + ' ' + (cell_(sp.sheet, row, sp.no) || id) + ' has a negative balance (₹' + mo.balance + ')');
+    };
+    values_('Bills').slice(1).forEach(function (r) { if (r[0]) chk('BILL', r); });
+    values_('TreatmentReceipts').slice(1).forEach(function (r) { if ((r[0] || r[2]) && String(cell_('TreatmentReceipts', r, 'Status') || '') !== 'Deleted') chk('RECEIPT', r); });
+    var sups = loadSuppliers_().map;
+    values_('SupplierLedger').slice(1).forEach(function (r) { if (r[0] && !sups[String(r[2])]) issues.push('Supplier ledger entry ' + r[0] + ' has an unknown supplier'); });
+    var invIds = {}; values_('PurchaseInvoices').slice(1).forEach(function (r) { if (r[0]) invIds[String(r[0])] = 1; });
+    values_('Purchases').slice(1).forEach(function (r) { var iv = String(cell_('Purchases', r, 'Invoice ID') || ''); if (iv && !invIds[iv]) issues.push('Purchase ' + r[0] + ' points to a missing invoice ' + iv); });
+  }
   return ok_({ issues: issues.slice(0, 500), count: issues.length });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // MIGRATION v2 → v3 (run from the editor; safe to re-run)
 // ════════════════════════════════════════════════════════════════════════════
+function v30Cols_(n) { var v31 = EXTRA_COLS_V31[n] || []; return EXTRA_COLS[n].filter(function (c) { return v31.indexOf(c) === -1; }); }
 function migrationPlan_() {
   var plan = [], meds = loadMedicines_();
-  Object.keys(BASE_HEADERS).forEach(function (n) { if (!sh_(n)) plan.push('Create tab ' + n); });
+  Object.keys(BASE_HEADERS).forEach(function (n) { if (!sh_(n) && V31_SHEETS.indexOf(n) === -1) plan.push('Create tab ' + n); });
   Object.keys(EXTRA_COLS).forEach(function (n) {
     if (!sh_(n)) return; var map = hdr_(n);
-    var missing = EXTRA_COLS[n].filter(function (c) { return !map[c]; });
+    var missing = v30Cols_(n).filter(function (c) { return !map[c]; });
     if (missing.length) plan.push('Add columns to ' + n + ': ' + missing.join(', '));
   });
   var batches = sh_('Batches') ? loadBatches_() : [], withBatch = {};
@@ -1312,8 +1461,8 @@ function migrateToV3() {
     var backup = backupNow_('pre-migration');      // throws (and stops) if the backup can't be verified
     Logger.log('Backup OK: ' + backup.url);
 
-    Object.keys(BASE_HEADERS).forEach(function (n) { getOrCreateSheet(n, BASE_HEADERS[n]); });
-    Object.keys(EXTRA_COLS).forEach(function (n) { ensureCols_(n, EXTRA_COLS[n]); });
+    Object.keys(BASE_HEADERS).forEach(function (n) { if (V31_SHEETS.indexOf(n) === -1) getOrCreateSheet(n, BASE_HEADERS[n]); });
+    Object.keys(EXTRA_COLS).forEach(function (n) { ensureCols_(n, v30Cols_(n)); });
 
     // Users: random temporary passwords (the old ones were public). Shown in the
     // log and e-mailed to the script owner; both must be changed at first login.
@@ -1348,7 +1497,7 @@ function migrateToV3() {
     });
     appendRows_('Batches', newBatches);
     appendRows_('StockMovements', mv);
-    props_().setProperty('SCHEMA_VERSION', String(SCHEMA_VERSION));
+    if (schemaVersion_() < 3) props_().setProperty('SCHEMA_VERSION', '3');
     bumpDataVersion_();
     audit_({ u: 'system', r: 'SYSTEM' }, 'migrateToV3', '', plan.join(' | ') + ' | backup ' + backup.fileId, 'OK');
     Logger.log('✅ Migration complete. Backup: ' + backup.url);
@@ -1359,7 +1508,7 @@ function migrateToV3() {
 function setupSheets() {
   Object.keys(BASE_HEADERS).forEach(function (n) { getOrCreateSheet(n, BASE_HEADERS[n]); });
   Object.keys(EXTRA_COLS).forEach(function (n) { ensureCols_(n, EXTRA_COLS[n]); });
-  Logger.log('All sheets created/verified. Now run migrateToV3.');
+  Logger.log('All sheets created/verified. Now run migrateToV3, then migrateToV31.');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1410,6 +1559,1122 @@ function _tbl(title, heads, rows) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// v3.1 — MONEY: PART PAYMENTS, COLLECTIONS, RETURNS / REFUNDS, CASH CLOSING
+// ════════════════════════════════════════════════════════════════════════════
+// Every invoice (pharmacy bill or dental receipt) carries:
+//   Total (T) · Returned Value (R) · Paid Amount (P) · Refunded Amount (F)
+//   Balance Due = (T − R) − (P − F)
+// Rows written before v3.1 have no Paid Amount and count as paid in full.
+var PATIENT_FIELDS = [['medicalHistory', 'Medical History', 2000], ['dentalHistory', 'Dental History', 2000], ['allergies', 'Allergies', 500],
+  ['medications', 'Medications', 1000], ['bloodGroup', 'Blood Group', 10], ['address', 'Address', 300], ['emergencyContact', 'Emergency Contact', 120],
+  ['dob', 'Date of Birth', 20]];
+var PAY_MODES = { cash: 'Cash', upi: 'UPI', card: 'Card', split: 'Split', credit: 'Credit' };
+var INV = {
+  BILL:    { sheet: 'Bills', key: 'Bill ID', alt: '', total: 'Total', name: 'Patient Name', phone: 'Phone', date: 'Date', no: 'Bill No', label: 'bill' },
+  RECEIPT: { sheet: 'TreatmentReceipts', key: 'Record ID', alt: 'Receipt No', total: 'Amount', name: 'Patient', phone: '', date: 'Date', no: 'Receipt No', label: 'dental receipt' }
+};
+function pad5_(n) { return ('00000' + n).slice(-5); }
+function normPhone_(p) { var d = String(p || '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : d; }
+function bool_(v) { return v === true || String(v).toLowerCase() === 'true' || String(v) === '1' || String(v).toLowerCase() === 'yes'; }
+function ts_(v) { return v instanceof Date ? Utilities.formatDate(v, tz_(), 'yyyy-MM-dd HH:mm:ss') : String(v || ''); }
+function jsonArr_(raw) {
+  if (Array.isArray(raw)) return raw;
+  try { var v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v : null; } catch (e) { return null; }
+}
+// {header: value} for a data row of a sheet (all columns, by heading)
+function rowObj_(name, row) {
+  var map = hdr_(name), o = {};
+  for (var k in map) o[k] = row[map[k] - 1];
+  return o;
+}
+
+// Payment for a bill/receipt: how much now, and how. Returns {error} or the split.
+function paymentSplit_(req, total, s, warnings, lenient) {
+  var raw = str_(req.paymentMode, 20) || 'Cash', mode = PAY_MODES[raw.toLowerCase()];
+  if (!mode) { if (!lenient) return { error: 'Unknown payment mode' }; mode = 'Cash'; }
+  var paidReq = (req.paidAmount === undefined || req.paidAmount === null || req.paidAmount === '') ? null : Number(req.paidAmount);
+  if (paidReq !== null && !isFinite(paidReq)) return { error: 'Invalid amount paid' };
+  var paid = mode === 'Credit' ? 0 : (paidReq === null ? total : r2_(paidReq));
+  if (paid < 0 || paid > total + 0.01) return { error: 'Amount paid now must be between ₹0 and the total' };
+  paid = r2_(Math.min(paid, total));
+  if (paid < total - 0.009) {
+    if (!v31_()) return { error: 'Part payments need the v3.1 server update (owner: run migrateToV31)' };
+    if (s && s.r !== OWNER && String(getSetting_('staff_credit_allowed', 'yes')).toLowerCase() === 'no') return { error: 'Only the owner can let a patient pay later' };
+  }
+  var cash = 0, upi = 0, card = 0;
+  if (mode === 'Cash') cash = paid; else if (mode === 'UPI') upi = paid; else if (mode === 'Card') card = paid;
+  else if (mode === 'Split') {
+    cash = r2_(req.cashAmount); upi = r2_(req.upiAmount); card = r2_(req.cardAmount);
+    if (cash < 0 || upi < 0 || card < 0) return { error: 'Invalid split amounts' };
+    if (cash + upi + card === 0) warnings.push('Split payment without amounts (old app version)');
+    else if (Math.abs(cash + upi + card - paid) > 0.5) {
+      if (lenient && !v31_()) warnings.push('Split amounts do not add up');
+      else return { error: paid < total ? 'Split amounts must add up to the amount paid now' : 'Split amounts must add up to the total' };
+    }
+  }
+  if (mode === 'Credit' && paid === 0 && total === 0) mode = 'Cash';
+  return { mode: mode, legacyMode: mode === 'Cash' && raw && !PAY_MODES[raw.toLowerCase()] ? raw : mode, paid: paid, cash: cash, upi: upi, card: card };
+}
+function payStatus_(total, returned, paid, refunded) {
+  var net = r2_(total - returned), got = r2_(paid - refunded), bal = r2_(net - got);
+  if (net <= 0.009 && returned > 0) return 'Returned';
+  if (bal <= 0.009) return 'Paid';
+  return got > 0.009 ? 'Partial' : 'Unpaid';
+}
+function invMoney_(type, row) {
+  var sp = INV[type], total = r2_(num_(cell_(sp.sheet, row, sp.total)));
+  var pc = cell_(sp.sheet, row, 'Paid Amount');
+  var paid = (pc === '' || pc === null || pc === undefined) ? total : num_(pc);
+  var returned = num_(cell_(sp.sheet, row, 'Returned Value')), refunded = num_(cell_(sp.sheet, row, 'Refunded Amount'));
+  return { total: total, paid: r2_(paid), returned: r2_(returned), refunded: r2_(refunded),
+    balance: r2_(total - returned - (paid - refunded)), status: payStatus_(total, returned, paid, refunded) };
+}
+function invId_(type, row) {
+  var sp = INV[type];
+  return String(cell_(sp.sheet, row, sp.key) || (sp.alt ? cell_(sp.sheet, row, sp.alt) : '') || '');
+}
+function receivableOf_(type, row, mo) {
+  var sp = INV[type];
+  return { type: type, id: invId_(type, row), no: String(cell_(sp.sheet, row, sp.no) || ''), date: formatDate(cell_(sp.sheet, row, sp.date)),
+    patientId: String(cell_(sp.sheet, row, 'Patient ID') || ''), patientName: String(cell_(sp.sheet, row, sp.name) || ''),
+    phone: sp.phone ? String(cell_(sp.sheet, row, sp.phone) || '') : '', doctor: String(row[type === 'BILL' ? 2 : 3] || ''),
+    total: mo.total, paid: mo.paid, returned: mo.returned, refunded: mo.refunded, balance: mo.balance };
+}
+function findInvoice_(type, id) {
+  var sp = INV[type]; if (!sp || !id) return null;
+  var data = values_(sp.sheet), k = colOf_(sp.sheet, sp.key), a = sp.alt ? colOf_(sp.sheet, sp.alt) : 0, hit = -1;
+  for (var i = 1; i < data.length; i++) if (k && String(data[i][k - 1]) === String(id)) { hit = i; break; }
+  if (hit < 0 && a) for (var j = 1; j < data.length; j++) if (String(data[j][a - 1]) === String(id) && !String(data[j][k - 1] || '')) { hit = j; break; }
+  if (hit < 0) return null;
+  var row = data[hit];
+  return { type: type, sp: sp, rowIndex: hit + 1, row: row, money: invMoney_(type, row), status: String(cell_(sp.sheet, row, 'Status') || 'Active') };
+}
+function setInvMoney_(inv, paid, returned, refunded) {
+  var t = inv.money.total;
+  setCells_(inv.sp.sheet, inv.rowIndex, { 'Paid Amount': r2_(paid), 'Returned Value': r2_(returned), 'Refunded Amount': r2_(refunded),
+    'Balance Due': r2_(t - returned - (paid - refunded)), 'Payment Status': payStatus_(t, returned, paid, refunded) });
+  return r2_(t - returned - (paid - refunded));
+}
+function paymentsData_() { return sh_('Payments') ? values_('Payments') : []; }
+function payObj_(r) {
+  return { id: String(r[0]), no: String(r[1] || ''), date: formatDate(r[2]), type: String(r[3]), againstType: String(r[4]), againstId: String(r[5]),
+    againstNo: String(r[6] || ''), patientId: String(r[7] || ''), patientName: String(r[8] || ''), phone: String(r[9] || ''), amount: num_(r[10]),
+    mode: String(r[11] || ''), cashAmount: num_(r[12]), upiAmount: num_(r[13]), cardAmount: num_(r[14]), ref: String(r[15] || ''), notes: String(r[16] || ''),
+    creditValue: num_(r[17]), items: jsonArr_(r[18]) || [], costReversed: num_(r[19]), createdBy: String(r[20] || ''), createdAt: ts_(r[21]),
+    status: String(r[22] || 'Active'), cancelReason: String(r[25] || '') };
+}
+function linkedPayments_(type, id) {
+  return paymentsData_().slice(1).filter(function (r) { return r[0] && String(r[4]) === type && String(r[5]) === String(id) && String(r[22] || 'Active') === 'Active'; }).map(payObj_);
+}
+// Link a record to a patient when name AND phone match exactly one saved patient.
+function linkPatient_(name, phone) {
+  if (!v31_()) return '';
+  var n = str_(name).toLowerCase(), ph = normPhone_(phone);
+  if (!n || ph.length < 10) return '';
+  var data = values_('Patients'), hit = '';
+  for (var i = 1; i < data.length; i++) {
+    if (!data[i][0] || String(data[i][9]) === 'Deleted') continue;
+    if (String(data[i][1]).trim().toLowerCase() === n && normPhone_(data[i][2]) === ph) { if (hit) return ''; hit = String(data[i][0]); }
+  }
+  return hit;
+}
+function seqNo_(prefix) { var yy = todayStr_().slice(2, 4); return prefix + '-' + yy + '-' + pad5_(nextSeq_('SEQ_' + prefix + '_' + yy)); }
+
+// ── extra data for the app (getAllData) ──
+function extendAllData_(out, role, from, receivables) {
+  var isOwner = role === OWNER, today = todayStr_();
+  var byId = {}; (out.patients || []).forEach(function (p) { byId[String(p.id)] = p; });
+  receivables.forEach(function (r) { var p = byId[r.patientId]; if (p && !r.phone) r.phone = p.phone; });
+  receivables.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  out.receivables = receivables;
+
+  out.payments = paymentsData_().slice(1).filter(function (r) { return r[0] && formatDate(r[2]) >= from; }).map(payObj_);
+  out.treatmentMaster = treatmentMaster_();
+  out.patientTreatments = values_('PatientTreatments').slice(1).filter(function (r) {
+    if (!r[0] || String(r[10]) === 'Deleted') return false;
+    return String(r[10]) === 'Planned' || String(r[10]) === 'In progress' || formatDate(r[1]) >= from;
+  }).map(ptObj_);
+  var fuFrom = daysAgoStr_(30);
+  out.followUps = values_('FollowUps').slice(1).filter(function (r) {
+    if (!r[0] || String(r[8]) === 'Deleted') return false;
+    return String(r[8]) === 'Pending' || formatDate(r[4]) >= fuFrom;
+  }).map(fuObj_);
+  var ccFrom = isOwner ? daysAgoStr_(90) : daysAgoStr_(STAFF_BILL_DAYS);
+  out.cashClosings = values_('CashClosings').slice(1).filter(function (r) { return r[0] && String(r[16]) === 'Active' && formatDate(r[1]) >= ccFrom; }).map(ccObj_);
+  out.settings = { staffCreditAllowed: String(getSetting_('staff_credit_allowed', 'yes')).toLowerCase() !== 'no' };
+  if (isOwner) {
+    var bal = supplierBalances_();
+    out.suppliers = loadSuppliers_().list.map(function (su) { var b = bal[su.id] || {}; return supplierOut_(su, b); });
+    out.purchaseInvoices = values_('PurchaseInvoices').slice(1).filter(function (r) { return r[0] && formatDate(r[1]) >= from; }).map(pinvObj_);
+    out.purchaseReturns = values_('PurchaseReturns').slice(1).filter(function (r) { return r[0] && formatDate(r[1]) >= from; }).map(prObj_);
+  }
+}
+
+// ── collect a balance later ──
+function recordPayment_(req, s) {
+  var type = String(req.againstType || '').toUpperCase(), id = str_(req.againstId, 60);
+  var paymentId = str_(req.paymentId, 60) || uid_('PAY-');
+  if (findRow_('Payments', 'Payment ID', paymentId) > 0) return ok_({ paymentId: paymentId, duplicate: true });
+  var amount = r2_(req.amount);
+  if (!(amount > 0) || amount > 10000000) return fail_('VALIDATION', 'Enter the amount received');
+  var date = formatDate(req.date) || todayStr_();
+  if (date > todayStr_()) return fail_('VALIDATION', 'Payment date cannot be in the future');
+  if (String(req.mode || req.paymentMode || '').toLowerCase() === 'credit') return fail_('VALIDATION', 'Choose how the money was received');
+  var warnings = [], pay = paymentSplit_({ paymentMode: req.mode || req.paymentMode, cashAmount: req.cashAmount, upiAmount: req.upiAmount, cardAmount: req.cardAmount, paidAmount: amount }, amount, s, warnings);
+  if (pay.error) return fail_('VALIDATION', pay.error);
+  if (pay.mode === 'Credit') return fail_('VALIDATION', 'Choose how the money was received');
+  var name, phone, patientId, no, after;
+  if (type === 'OPENING') {
+    var pr = findRow_('Patients', 'ID', id); if (pr < 0) return fail_('VALIDATION', 'Patient not found');
+    var prow = sh_('Patients').getRange(pr, 1, 1, Math.max(12, sh_('Patients').getLastColumn())).getValues()[0], old = num_(prow[7]);
+    if (amount > old + 0.01) return fail_('VALIDATION', 'Old balance is only ₹' + r2_(old));
+    after = r2_(old - amount);
+    setCells_('Patients', pr, { 'Balance': after, 'Updated At': nowStr_() });
+    name = String(prow[1]); phone = String(prow[2] || ''); patientId = id; no = 'Old balance';
+  } else if (INV[type]) {
+    var inv = findInvoice_(type, id); if (!inv) return fail_('VALIDATION', 'That ' + INV[type].label + ' was not found');
+    if (inv.status === 'Cancelled' || inv.status === 'Deleted') return fail_('VALIDATION', 'That ' + INV[type].label + ' is cancelled');
+    if (amount > inv.money.balance + 0.01) return fail_('VALIDATION', inv.money.balance > 0 ? 'Only ₹' + inv.money.balance + ' is due on this ' + INV[type].label : 'Nothing is due on this ' + INV[type].label);
+    after = setInvMoney_(inv, inv.money.paid + amount, inv.money.returned, inv.money.refunded);
+    name = String(cell_(inv.sp.sheet, inv.row, inv.sp.name) || ''); phone = inv.sp.phone ? String(cell_(inv.sp.sheet, inv.row, inv.sp.phone) || '') : str_(req.phone, 20);
+    patientId = String(cell_(inv.sp.sheet, inv.row, 'Patient ID') || ''); no = String(cell_(inv.sp.sheet, inv.row, inv.sp.no) || '');
+  } else return fail_('VALIDATION', 'Unknown bill type');
+  var payNo = seqNo_('PAY');
+  appendRows_('Payments', [rowFrom_('Payments', { 'Payment ID': paymentId, 'Payment No': payNo, 'Date': date, 'Type': 'COLLECTION', 'Against Type': type,
+    'Against ID': id, 'Against No': no, 'Patient ID': patientId, 'Patient Name': name, 'Phone': phone, 'Amount': amount, 'Mode': pay.mode,
+    'Cash Amount': pay.cash, 'UPI Amount': pay.upi, 'Card Amount': pay.card, 'Reference': str_(req.ref, 80), 'Notes': str_(req.notes, 300),
+    'Created By': s.u, 'Created At': nowStr_(), 'Status': 'Active' })]);
+  audit_(s, 'recordPayment', payNo, type + ' ' + (no || id) + ' · ₹' + amount + ' ' + pay.mode + ' · due now ₹' + after, 'OK');
+  return ok_({ paymentId: paymentId, paymentNo: payNo, amount: amount, balance: after, patientName: name, warnings: warnings });
+}
+
+function cancelPayment_(req, s) {
+  var id = str_(req.paymentId, 60), reason = str_(req.reason, 300);
+  if (reason.length < 3) return fail_('VALIDATION', 'Please give a reason');
+  var row = findRow_('Payments', 'Payment ID', id); if (row < 0) return fail_('VALIDATION', 'Payment not found');
+  var p = payObj_(sh_('Payments').getRange(row, 1, 1, sh_('Payments').getLastColumn()).getValues()[0]);
+  if (p.status === 'Cancelled') return ok_({ alreadyCancelled: true });
+  if (p.type !== 'COLLECTION') return fail_('VALIDATION', 'Refunds cannot be cancelled (stock has moved). Make a new bill instead.');
+  if (p.againstType === 'OPENING') {
+    var pr = findRow_('Patients', 'ID', p.againstId);
+    if (pr > 0) { var old = num_(sh_('Patients').getRange(pr, 8, 1, 1).getValues()[0][0]); setCells_('Patients', pr, { 'Balance': r2_(old + p.amount), 'Updated At': nowStr_() }); }
+  } else {
+    var inv = findInvoice_(p.againstType, p.againstId); if (!inv) return fail_('VALIDATION', 'The bill of this payment was not found');
+    if (inv.money.paid - p.amount < inv.money.refunded - 0.01) return fail_('VALIDATION', 'Money was refunded on this bill after this payment — cannot cancel it');
+    setInvMoney_(inv, inv.money.paid - p.amount, inv.money.returned, inv.money.refunded);
+  }
+  setCells_('Payments', row, { 'Status': 'Cancelled', 'Cancelled At': nowStr_(), 'Cancelled By': s.u, 'Cancel Reason': reason });
+  audit_(s, 'cancelPayment', p.no || id, '₹' + p.amount + ' · ' + reason, 'OK');
+  return ok_();
+}
+
+// Return goods and/or reduce what the patient owes; pays back any overpayment.
+function returnRefund_(req, s) {
+  var type = String(req.againstType || 'BILL').toUpperCase(), id = str_(req.againstId, 60);
+  var refundId = str_(req.refundId, 60) || uid_('RF-');
+  if (findRow_('Payments', 'Payment ID', refundId) > 0) return ok_({ refundId: refundId, duplicate: true });
+  var reason = str_(req.reason, 300); if (reason.length < 3) return fail_('VALIDATION', 'Please give a reason for the return / refund');
+  var inv = findInvoice_(type, id); if (!inv) return fail_('VALIDATION', 'Bill not found');
+  if (inv.status === 'Cancelled' || inv.status === 'Deleted') return fail_('VALIDATION', 'That bill is cancelled');
+  var items = jsonArr_(req.items); if (items === null) return fail_('VALIDATION', 'Return items are unreadable');
+  if (type !== 'BILL' && items.length) return fail_('VALIDATION', 'Only pharmacy bills have items to return');
+  var allowance = r2_(req.allowance); if (allowance < 0) return fail_('VALIDATION', 'Invalid amount');
+  var restock = !(req.restock === false || String(req.restock) === 'false');
+  var meds = loadMedicines_(), batches = loadBatches_(), byBatch = {}; batches.forEach(function (b) { byBatch[b.batchId] = b; });
+  var lines = [], itemsValue = 0, costReversed = 0, movements = [], touched = {};
+  if (items.length) {
+    var sold = {}, iData = values_('BillItems');
+    for (var i = 1; i < iData.length; i++) {
+      var r = iData[i]; if (String(r[0]) !== id) continue;
+      var k = String(r[1]), al = []; try { al = JSON.parse(cell_('BillItems', r, 'Batch Allocation') || '[]') || []; } catch (e) {}
+      var o = sold[k] = sold[k] || { qty: 0, price: num_(r[4]), name: String(r[2]), allocs: [], returned: 0, back: {} };
+      o.qty += num_(r[3]); o.allocs = o.allocs.concat(al);
+    }
+    linkedPayments_('BILL', id).forEach(function (p) {
+      if (p.type !== 'REFUND') return;
+      p.items.forEach(function (it) { var o = sold[String(it.medicineId)]; if (!o) return; o.returned += num_(it.qty); (it.batches || []).forEach(function (x) { o.back[x.b] = (o.back[x.b] || 0) + num_(x.q); }); });
+    });
+    var sub = num_(inv.row[5]), disc = num_(inv.row[6]), ratio = sub > 0 ? Math.max(0, 1 - disc / sub) : 1;
+    var seen = {};
+    for (var j = 0; j < items.length; j++) {
+      var mid = str_(items[j].medicineId, 60), q = Number(items[j].qty), o2 = sold[mid];
+      if (!o2) return fail_('VALIDATION', 'That medicine is not on this bill');
+      if (seen[mid]) return fail_('VALIDATION', 'Each medicine once, please'); seen[mid] = 1;
+      if (!isFinite(q) || q <= 0 || Math.floor(q) !== q) return fail_('VALIDATION', 'Invalid return quantity for ' + o2.name);
+      if (q > o2.qty - o2.returned) return fail_('VALIDATION', 'Only ' + (o2.qty - o2.returned) + ' of ' + o2.name + ' can still be returned');
+      var value = r2_(q * o2.price * ratio), back = [];
+      var med = meds.map[mid];
+      if (restock && med) {
+        var left = q;
+        for (var a = o2.allocs.length - 1; a >= 0 && left > 0; a--) {      // newest allocation first
+          var al2 = o2.allocs[a], room = num_(al2.q) - (o2.back[al2.b] || 0), b = byBatch[al2.b];
+          if (!b || room <= 0) continue;
+          var t = Math.min(room, left);
+          b.avail = r2_(b.avail + t); if (b.status !== 'Active') b.status = 'Active'; b.dirty = true;
+          o2.back[al2.b] = (o2.back[al2.b] || 0) + t; back.push({ b: b.batchId, q: t }); costReversed += t * b.cost; left -= t;
+          movements.push({ med: med, batch: b.batchId, qty: t });
+        }
+        if (left > 0) {          // bill from before batches: back to the earliest-expiring active batch, or a RETURN batch
+          var target = batches.filter(function (x) { return x.medicineId === med.id && x.status === 'Active'; }).sort(fefoSort_)[0];
+          if (target) { target.avail = r2_(target.avail + left); target.dirty = true; back.push({ b: target.batchId, q: left }); costReversed += left * target.cost; movements.push({ med: med, batch: target.batchId, qty: left }); }
+          else {
+            var nb = uid_('B-');
+            appendRows_('Batches', [newBatchRow_({ batchId: nb, medicineId: med.id, batchNo: 'RETURN', expiry: med.expiry, qty: left, cost: med.costPrice })]);
+            back.push({ b: nb, q: left }); costReversed += left * med.costPrice; movements.push({ med: med, batch: nb, qty: left });
+          }
+        }
+        touched[med.id] = 1;
+      }
+      itemsValue += value;
+      lines.push({ medicineId: mid, name: o2.name, qty: q, value: value, batches: back });
+    }
+  }
+  var credit = r2_(itemsValue + allowance);
+  if (credit <= 0) return fail_('VALIDATION', 'Choose items to return or enter an amount to give back');
+  var m = inv.money;
+  if (m.returned + credit > m.total + 0.01) return fail_('VALIDATION', 'That is more than the bill total (₹' + r2_(m.total - m.returned) + ' left)');
+  var netNew = r2_(m.total - m.returned - credit), refundMoney = r2_(Math.max(0, (m.paid - m.refunded) - netNew));
+  var pay = { mode: 'None', cash: 0, upi: 0, card: 0 };
+  if (refundMoney > 0) {
+    pay = paymentSplit_({ paymentMode: req.mode || req.paymentMode || 'Cash', cashAmount: req.cashAmount, upiAmount: req.upiAmount, cardAmount: req.cardAmount, paidAmount: refundMoney }, refundMoney, s, []);
+    if (pay.error) return fail_('VALIDATION', pay.error.replace('paid now', 'given back'));
+    if (pay.mode === 'Credit') return fail_('VALIDATION', 'Choose how the money is given back');
+  }
+  // ── write ──
+  if (restock && lines.length) { saveBatches_(batches); syncMedicineStock_(meds, batches, Object.keys(touched)); }
+  var after = setInvMoney_(inv, m.paid, m.returned + credit, m.refunded + refundMoney);
+  var no = seqNo_('RF'), date = todayStr_();
+  appendRows_('Payments', [rowFrom_('Payments', { 'Payment ID': refundId, 'Payment No': no, 'Date': date, 'Type': 'REFUND', 'Against Type': type,
+    'Against ID': id, 'Against No': String(cell_(inv.sp.sheet, inv.row, inv.sp.no) || ''), 'Patient ID': String(cell_(inv.sp.sheet, inv.row, 'Patient ID') || ''),
+    'Patient Name': String(cell_(inv.sp.sheet, inv.row, inv.sp.name) || ''), 'Phone': inv.sp.phone ? String(cell_(inv.sp.sheet, inv.row, inv.sp.phone) || '') : '',
+    'Amount': refundMoney, 'Mode': pay.mode, 'Cash Amount': pay.cash, 'UPI Amount': pay.upi, 'Card Amount': pay.card, 'Reference': str_(req.ref, 80),
+    'Notes': reason + (restock ? '' : ' · not put back in stock'), 'Credit Value': credit, 'Items': lines.length ? JSON.stringify(lines) : '',
+    'Cost Reversed': r2_(costReversed), 'Created By': s.u, 'Created At': nowStr_(), 'Status': 'Active' })]);
+  appendRows_('StockMovements', movements.map(function (mv) { return movementRow_(mv.med.id, mv.med.name, mv.batch, mv.qty, 'CUSTOMER_RETURN', refundId, s.u, reason, meds.map[mv.med.id].stock); }));
+  audit_(s, 'returnRefund', no, type + ' ' + id + ' · credit ₹' + credit + ' · paid back ₹' + refundMoney + (lines.length ? ' · ' + lines.map(function (l) { return l.name + ' ×' + l.qty; }).join(', ') : '') + ' · ' + reason, 'OK');
+  return ok_({ refundId: refundId, refundNo: no, creditValue: credit, refundAmount: refundMoney, balance: after, costReversed: r2_(costReversed) });
+}
+
+function getPayments_(req, s) {
+  var id = str_(req.againstId, 60), pid = str_(req.patientId, 60), from = formatDate(req.from) || '', to = formatDate(req.to) || '9999';
+  if (s.r !== OWNER && !id && !pid) from = from > daysAgoStr_(STAFF_BILL_DAYS) ? from : daysAgoStr_(STAFF_BILL_DAYS);
+  var out = paymentsData_().slice(1).filter(function (r) {
+    if (!r[0]) return false;
+    if (id && String(r[5]) !== id) return false;
+    if (pid && String(r[7]) !== pid) return false;
+    var d = formatDate(r[2]); return d >= from && d <= to;
+  }).map(payObj_);
+  return ok_({ payments: out });
+}
+
+// ── daily cash closing ──
+function cashSummary_(date) {
+  var z = function () { return { cash: 0, upi: 0, card: 0, other: 0 }; };
+  var r = { date: date, bills: z(), receipts: z(), collections: z(), refunds: z(), expenses: z(), suppliers: z(), counts: { bills: 0, receipts: 0, collections: 0, refunds: 0, expenses: 0, suppliers: 0 } };
+  var add = function (bucket, mode, amt, c, u, k) {   // explicit split amounts win; else by mode
+    if (c || u || k) { bucket.cash += c; bucket.upi += u; bucket.card += k; return; }
+    var m = String(mode || '').toLowerCase();
+    if (m === 'cash') bucket.cash += amt; else if (m === 'upi') bucket.upi += amt; else if (m === 'card') bucket.card += amt; else if (amt) bucket.other += amt;
+  };
+  values_('Bills').slice(1).forEach(function (b) {
+    if (!b[0] || formatDate(b[4]) !== date || String(cell_('Bills', b, 'Status') || 'Active') === 'Cancelled') return;
+    var mo = invMoney_('BILL', b), initial = r2_(mo.paid - collectedOn_(b[0]));
+    add(r.bills, b[9], initial, num_(cell_('Bills', b, 'Cash Amount')), num_(cell_('Bills', b, 'UPI Amount')), num_(cell_('Bills', b, 'Card Amount'))); r.counts.bills++;
+  });
+  values_('TreatmentReceipts').slice(1).forEach(function (t) {
+    if ((!t[0] && !t[2]) || formatDate(t[1]) !== date || String(cell_('TreatmentReceipts', t, 'Status') || '') === 'Deleted') return;
+    var mo = invMoney_('RECEIPT', t), initial = r2_(mo.paid - collectedOn_(invId_('RECEIPT', t)));
+    add(r.receipts, cell_('TreatmentReceipts', t, 'Payment Mode'), initial, num_(cell_('TreatmentReceipts', t, 'Cash Amount')), num_(cell_('TreatmentReceipts', t, 'UPI Amount')), num_(cell_('TreatmentReceipts', t, 'Card Amount'))); r.counts.receipts++;
+  });
+  paymentsData_().slice(1).forEach(function (p) {
+    if (!p[0] || formatDate(p[2]) !== date || String(p[22] || 'Active') !== 'Active') return;
+    var o = payObj_(p), bucket = o.type === 'REFUND' ? r.refunds : r.collections;
+    add(bucket, o.mode, o.amount, o.cashAmount, o.upiAmount, o.cardAmount); r.counts[o.type === 'REFUND' ? 'refunds' : 'collections']++;
+  });
+  readExpenses_().forEach(function (e) { if (e.date === date) { add(r.expenses, e.mode, e.amount, 0, 0, 0); r.counts.expenses++; } });
+  if (sh_('SupplierLedger')) values_('SupplierLedger').slice(1).forEach(function (l) {
+    if (!l[0] || formatDate(l[1]) !== date || String(l[4]) !== 'PAYMENT' || String(l[12] || 'Active') !== 'Active') return;
+    add(r.suppliers, l[8], num_(l[6]), 0, 0, 0); r.counts.suppliers++;
+  });
+  ['bills', 'receipts', 'collections', 'refunds', 'expenses', 'suppliers'].forEach(function (k) { ['cash', 'upi', 'card', 'other'].forEach(function (m) { r[k][m] = r2_(r[k][m]); }); });
+  r.cashIn = r2_(r.bills.cash + r.receipts.cash + r.collections.cash);
+  r.cashOut = r2_(r.refunds.cash + r.expenses.cash + r.suppliers.cash);
+  r.upiIn = r2_(r.bills.upi + r.receipts.upi + r.collections.upi - r.refunds.upi);
+  r.cardIn = r2_(r.bills.card + r.receipts.card + r.collections.card - r.refunds.card);
+  return r;
+}
+// collections recorded later against an invoice (not part of the money taken when it was made)
+var _collCache = null;
+function collectedOn_(invoiceId) {
+  if (!_collCache) {
+    _collCache = {};
+    paymentsData_().slice(1).forEach(function (p) { if (p[0] && String(p[3]) === 'COLLECTION' && String(p[22] || 'Active') === 'Active') _collCache[String(p[5])] = (_collCache[String(p[5])] || 0) + num_(p[10]); });
+  }
+  return _collCache[String(invoiceId)] || 0;
+}
+function ccObj_(r) {
+  return { id: String(r[0]), date: formatDate(r[1]), openingCash: num_(r[2]), cashIn: num_(r[3]), cashOut: num_(r[4]), expectedCash: num_(r[5]),
+    countedCash: num_(r[6]), difference: num_(r[7]), deposited: num_(r[8]), upiTotal: num_(r[9]), cardTotal: num_(r[10]),
+    upiVerified: bool_(r[11]), cardVerified: bool_(r[12]), notes: String(r[13] || ''), closedBy: String(r[14] || ''), closedAt: ts_(r[15]), status: String(r[16] || '') };
+}
+function closingsData_() { return values_('CashClosings').slice(1).filter(function (r) { return r[0] && String(r[16]) === 'Active'; }).map(ccObj_); }
+function getCashSummary_(req, s) {
+  var date = formatDate(req.date) || todayStr_();
+  if (s.r !== OWNER && date < daysAgoStr_(STAFF_BILL_DAYS)) return fail_('FORBIDDEN', 'Staff can see the last ' + STAFF_BILL_DAYS + ' days only');
+  _collCache = null;
+  var sum = cashSummary_(date), all = closingsData_(), prev = null, cur = null;
+  all.forEach(function (c) { if (c.date < date && (!prev || c.date > prev.date)) prev = c; if (c.date === date) cur = c; });
+  return ok_({ summary: sum, suggestedOpening: prev ? r2_(prev.countedCash - prev.deposited) : 0, previous: prev, closing: cur });
+}
+function saveCashClosing_(req, s) {
+  var date = formatDate(req.date) || todayStr_();
+  if (date > todayStr_()) return fail_('VALIDATION', 'Cannot close a future day');
+  if (s.r !== OWNER && date < daysAgoStr_(STAFF_BILL_DAYS)) return fail_('FORBIDDEN', 'Ask the owner to close older days');
+  var opening = r2_(req.openingCash), counted = r2_(req.countedCash), deposited = r2_(req.deposited);
+  if (opening < 0 || counted < 0 || deposited < 0) return fail_('VALIDATION', 'Amounts cannot be negative');
+  if (deposited > counted + 0.01) return fail_('VALIDATION', 'Cannot deposit more than the cash counted');
+  if (req.countedCash === undefined || req.countedCash === '') return fail_('VALIDATION', 'Enter the cash counted in the drawer');
+  var data = values_('CashClosings'), old = -1;
+  for (var i = 1; i < data.length; i++) if (data[i][0] && formatDate(data[i][1]) === date && String(data[i][16]) === 'Active') old = i + 1;
+  if (old > 0 && s.r !== OWNER) return fail_('VALIDATION', 'This day is already closed. Ask the owner to change it.');
+  _collCache = null;
+  var sum = cashSummary_(date), expected = r2_(opening + sum.cashIn - sum.cashOut), diff = r2_(counted - expected);
+  if (old > 0) setCells_('CashClosings', old, { 'Status': 'Superseded' });
+  var id = uid_('CC-');
+  appendRows_('CashClosings', [rowFrom_('CashClosings', { 'Closing ID': id, 'Date': date, 'Opening Cash': opening, 'Cash In': sum.cashIn, 'Cash Out': sum.cashOut,
+    'Expected Cash': expected, 'Counted Cash': counted, 'Difference': diff, 'Deposited': deposited, 'UPI Total': sum.upiIn, 'Card Total': sum.cardIn,
+    'UPI Verified': bool_(req.upiVerified), 'Card Verified': bool_(req.cardVerified), 'Notes': str_(req.notes, 500), 'Closed By': s.u, 'Closed At': nowStr_(),
+    'Status': 'Active', 'Details': JSON.stringify(sum) })]);
+  audit_(s, 'saveCashClosing', date, 'Expected ₹' + expected + ' · counted ₹' + counted + ' · difference ₹' + diff + (old > 0 ? ' · replaced earlier closing' : ''), Math.abs(diff) > 0.009 ? 'WARN' : 'OK');
+  return ok_({ closingId: id, expectedCash: expected, difference: diff, summary: sum });
+}
+function getCashClosings_(req) {
+  var from = formatDate(req.from) || daysAgoStr_(90), to = formatDate(req.to) || '9999';
+  return ok_({ closings: closingsData_().filter(function (c) { return c.date >= from && c.date <= to; }) });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3.1 — SUPPLIERS, PURCHASE INVOICES, SUPPLIER PAYMENTS, PURCHASE RETURNS
+// ════════════════════════════════════════════════════════════════════════════
+// SupplierLedger: Credit = we owe more (opening, purchase); Debit = we owe less (payment, return).
+// Balance owed to a supplier = Opening Balance + Σ credit − Σ debit. Purchases from before v3.1 count as paid.
+function loadSuppliers_() {
+  var data = sh_('Suppliers') ? values_('Suppliers') : [], list = [], map = {};
+  for (var i = 1; i < data.length; i++) {
+    var r = data[i]; if (!r[0]) continue;
+    var o = { row: i + 1, id: String(r[0]), name: String(r[1] || ''), phone: String(r[2] || ''), contact: String(r[3] || ''), address: String(r[4] || ''),
+      notes: String(r[5] || ''), opening: num_(r[6]), status: String(r[7] || 'Active') };
+    list.push(o); map[o.id] = o;
+  }
+  return { list: list, map: map };
+}
+function supplierOut_(su, b) {
+  return { id: su.id, name: su.name, phone: su.phone, contact: su.contact, address: su.address, notes: su.notes, openingBalance: su.opening, status: su.status,
+    purchases: r2_(b.purchases || 0), payments: r2_(b.payments || 0), returns: r2_(b.returns || 0), balance: r2_(su.opening + (b.credit || 0) - (b.debit || 0)) };
+}
+function supplierBalances_() {
+  var map = {};
+  if (!sh_('SupplierLedger')) return map;
+  values_('SupplierLedger').slice(1).forEach(function (r) {
+    if (!r[0] || String(r[12] || 'Active') !== 'Active') return;
+    var o = map[String(r[2])] = map[String(r[2])] || { credit: 0, debit: 0, purchases: 0, payments: 0, returns: 0 };
+    var d = num_(r[6]), c = num_(r[7]), t = String(r[4]);
+    o.credit += c; o.debit += d;
+    if (t === 'PURCHASE') o.purchases += c; else if (t === 'PAYMENT') o.payments += d; else if (t === 'RETURN') o.returns += d;
+  });
+  return map;
+}
+function findSupplierByName_(list, name) {
+  var n = str_(name).toLowerCase(); if (!n) return null;
+  return list.filter(function (x) { return x.status !== 'Inactive' && x.name.trim().toLowerCase() === n; })[0] || null;
+}
+function findOrCreateSupplier_(s, supplierId, supplierName) {
+  var sups = loadSuppliers_();
+  if (supplierId) { var su = sups.map[str_(supplierId, 60)]; if (su) return su; }
+  var byName = findSupplierByName_(sups.list, supplierName); if (byName) return byName;
+  var name = str_(supplierName, 120); if (!name) return null;
+  var id = uid_('SUP-');
+  appendRows_('Suppliers', [rowFrom_('Suppliers', { 'Supplier ID': id, 'Name': name, 'Opening Balance': 0, 'Status': 'Active', 'Created At': nowStr_(), 'Created By': s.u, 'Updated At': nowStr_() })]);
+  return { id: id, name: name, opening: 0, status: 'Active' };
+}
+function ledgerRow_(o, s) {
+  return rowFrom_('SupplierLedger', { 'Entry ID': o.id || uid_('SL-'), 'Date': o.date, 'Supplier ID': o.supplierId, 'Supplier Name': o.supplierName, 'Type': o.type,
+    'Reference': o.ref || '', 'Debit': r2_(o.debit || 0), 'Credit': r2_(o.credit || 0), 'Mode': o.mode || '', 'Notes': o.notes || '',
+    'Created By': s.u, 'Created At': nowStr_(), 'Status': 'Active' });
+}
+function saveSupplier_(req, s) {
+  var name = str_(req.name, 120); if (!name) return fail_('VALIDATION', 'Supplier name is required');
+  var sups = loadSuppliers_(), id = str_(req.id, 60), opening = r2_(req.openingBalance);
+  var dup = sups.list.filter(function (x) { return x.status !== 'Inactive' && x.id !== id && x.name.trim().toLowerCase() === name.toLowerCase(); })[0];
+  if (dup) return fail_('DUPLICATE', 'A supplier called ' + dup.name + ' already exists');
+  var obj = { 'Name': name, 'Phone': str_(req.phone, 20), 'Contact Person': str_(req.contact, 80), 'Address': str_(req.address, 300), 'Notes': str_(req.notes, 500),
+    'Opening Balance': opening, 'Status': str_(req.status, 20) === 'Inactive' ? 'Inactive' : 'Active', 'Updated At': nowStr_() };
+  if (id && sups.map[id]) {
+    setCells_('Suppliers', sups.map[id].row, obj);
+    audit_(s, 'saveSupplier', id, name + ' · updated', 'OK');
+    return ok_({ id: id });
+  }
+  id = id || uid_('SUP-'); obj['Supplier ID'] = id; obj['Created At'] = nowStr_(); obj['Created By'] = s.u;
+  appendRows_('Suppliers', [rowFrom_('Suppliers', obj)]);
+  audit_(s, 'saveSupplier', id, name + ' · created', 'OK');
+  return ok_({ id: id });
+}
+function deleteSupplier_(req, s) {
+  var su = loadSuppliers_().map[str_(req.id, 60)]; if (!su) return ok_();
+  setCells_('Suppliers', su.row, { 'Status': 'Inactive', 'Updated At': nowStr_() });
+  audit_(s, 'deleteSupplier', su.id, su.name + ' · marked inactive', 'OK');
+  return ok_();
+}
+function recordSupplierPayment_(req, s) {
+  var su = loadSuppliers_().map[str_(req.supplierId, 60)]; if (!su) return fail_('VALIDATION', 'Supplier not found');
+  var amount = r2_(req.amount); if (!(amount > 0)) return fail_('VALIDATION', 'Enter the amount paid');
+  var entryId = str_(req.entryId, 60) || uid_('SL-');
+  if (findRow_('SupplierLedger', 'Entry ID', entryId) > 0) return ok_({ entryId: entryId, duplicate: true });
+  var mode = PAY_MODES[String(req.mode || 'Cash').toLowerCase()] || str_(req.mode, 20) || 'Cash';
+  if (mode === 'Credit' || mode === 'Split') return fail_('VALIDATION', 'Choose Cash, UPI, Card or Bank');
+  var date = formatDate(req.date) || todayStr_(); if (date > todayStr_()) return fail_('VALIDATION', 'Date cannot be in the future');
+  var b = supplierBalances_()[su.id] || {}, owed = r2_(su.opening + (b.credit || 0) - (b.debit || 0)), warnings = [];
+  if (amount > owed + 0.01) warnings.push('Paid ₹' + r2_(amount - owed) + ' more than owed — recorded as an advance');
+  appendRows_('SupplierLedger', [ledgerRow_({ id: entryId, date: date, supplierId: su.id, supplierName: su.name, type: 'PAYMENT', ref: str_(req.ref, 80) || str_(req.invoiceId, 60),
+    debit: amount, mode: mode, notes: str_(req.notes, 300) }, s)]);
+  audit_(s, 'recordSupplierPayment', su.id, su.name + ' · ₹' + amount + ' ' + mode, 'OK');
+  return ok_({ entryId: entryId, balance: r2_(owed - amount), warnings: warnings });
+}
+function cancelSupplierEntry_(req, s) {
+  var id = str_(req.entryId, 60), reason = str_(req.reason, 300);
+  if (reason.length < 3) return fail_('VALIDATION', 'Please give a reason');
+  var row = findRow_('SupplierLedger', 'Entry ID', id); if (row < 0) return fail_('VALIDATION', 'Entry not found');
+  var r = sh_('SupplierLedger').getRange(row, 1, 1, sh_('SupplierLedger').getLastColumn()).getValues()[0];
+  if (String(r[12]) === 'Cancelled') return ok_({ alreadyCancelled: true });
+  if (['PAYMENT', 'ADJUSTMENT'].indexOf(String(r[4])) === -1) return fail_('VALIDATION', 'Purchases and returns are cancelled from their own screen (they move stock)');
+  setCells_('SupplierLedger', row, { 'Status': 'Cancelled', 'Cancelled At': nowStr_(), 'Cancelled By': s.u, 'Cancel Reason': reason });
+  audit_(s, 'cancelSupplierEntry', id, String(r[3]) + ' · ' + String(r[4]) + ' ₹' + (num_(r[6]) || num_(r[7])) + ' · ' + reason, 'OK');
+  return ok_();
+}
+function slObj_(r) {
+  return { id: String(r[0]), date: formatDate(r[1]), supplierId: String(r[2]), supplierName: String(r[3] || ''), type: String(r[4]), ref: String(r[5] || ''),
+    debit: num_(r[6]), credit: num_(r[7]), mode: String(r[8] || ''), notes: String(r[9] || ''), createdBy: String(r[10] || ''), createdAt: ts_(r[11]),
+    status: String(r[12] || 'Active'), cancelReason: String(r[15] || '') };
+}
+function pinvObj_(r) {
+  return { id: String(r[0]), date: formatDate(r[1]), supplierId: String(r[2]), supplierName: String(r[3] || ''), invoiceNo: String(r[4] || ''), lines: num_(r[5]),
+    itemsTotal: num_(r[6]), adjustment: num_(r[7]), total: num_(r[8]), paidAmount: num_(r[9]), paymentMode: String(r[10] || ''), paymentRef: String(r[11] || ''),
+    notes: String(r[12] || ''), attachmentUrl: String(r[13] || ''), attachmentId: String(r[14] || ''), status: String(r[15] || 'Active'), createdBy: String(r[16] || ''),
+    createdAt: ts_(r[17]), cancelReason: String(r[20] || '') };
+}
+function prObj_(r) {
+  return { id: String(r[0]), date: formatDate(r[1]), supplierId: String(r[2]), supplierName: String(r[3] || ''), medicineId: String(r[4]), medicineName: String(r[5] || ''),
+    batchId: String(r[6] || ''), batchNo: String(r[7] || ''), qty: num_(r[8]), rate: num_(r[9]), amount: num_(r[10]), reason: String(r[11] || ''),
+    createdBy: String(r[12] || ''), createdAt: ts_(r[13]), status: String(r[14] || 'Active') };
+}
+function getSupplierLedger_(req) {
+  var sups = loadSuppliers_(), su = sups.map[str_(req.supplierId, 60)]; if (!su) return fail_('VALIDATION', 'Supplier not found');
+  var entries = values_('SupplierLedger').slice(1).filter(function (r) { return r[0] && String(r[2]) === su.id; }).map(slObj_);
+  entries.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.createdAt < b.createdAt ? -1 : 1); });
+  var bal = su.opening;
+  entries.forEach(function (e) { if (e.status === 'Active') bal = r2_(bal + e.credit - e.debit); e.balanceAfter = bal; });
+  var invoices = values_('PurchaseInvoices').slice(1).filter(function (r) { return r[0] && String(r[2]) === su.id; }).map(pinvObj_);
+  var returns = values_('PurchaseReturns').slice(1).filter(function (r) { return r[0] && String(r[2]) === su.id; }).map(prObj_);
+  var legacy = values_('Purchases').slice(1).filter(function (r) { return r[0] && !cell_('Purchases', r, 'Invoice ID') && (String(cell_('Purchases', r, 'Supplier ID')) === su.id || String(r[2] || '').trim().toLowerCase() === su.name.toLowerCase()) && String(cell_('Purchases', r, 'Status') || 'Active') !== 'Cancelled'; })
+    .map(function (r) { return { id: String(r[0]), date: formatDate(r[1]), medicineName: String(r[4] || ''), qty: num_(r[5]), totalCost: num_(r[7]), invoiceNo: String(cell_('Purchases', r, 'Invoice No') || '') }; });
+  var b = supplierBalances_()[su.id] || {};
+  return ok_({ supplier: supplierOut_(su, b), entries: entries, invoices: invoices, returns: returns, olderPurchases: legacy });
+}
+
+// One supplier invoice with many lines → batches, stock, ledger (+ payment made with it)
+function addPurchaseInvoice_(req, s) {
+  var id = str_(req.id, 60) || uid_('PINV-');
+  if (findRow_('PurchaseInvoices', 'Invoice ID', id) > 0) return ok_({ id: id, duplicate: true });
+  var lines = jsonArr_(req.lines);
+  if (lines === null) return fail_('VALIDATION', 'Invoice lines are unreadable');
+  if (!lines.length) return fail_('VALIDATION', 'Add at least one medicine');
+  if (lines.length > 150) return fail_('VALIDATION', 'Too many lines in one invoice (max 150)');
+  var invoiceNo = str_(req.invoiceNo, 60), date = formatDate(req.date) || todayStr_();
+  if (date > todayStr_()) return fail_('VALIDATION', 'Invoice date cannot be in the future');
+  var su = findOrCreateSupplier_(s, req.supplierId, req.supplierName); if (!su) return fail_('VALIDATION', 'Choose or type the supplier');
+  if (invoiceNo) {
+    var dupInv = values_('PurchaseInvoices').slice(1).filter(function (r) { return r[0] && String(r[2]) === su.id && String(r[4]).trim().toLowerCase() === invoiceNo.toLowerCase() && String(r[15] || 'Active') !== 'Cancelled'; })[0];
+    if (dupInv) return fail_('DUPLICATE', 'Invoice ' + invoiceNo + ' from ' + su.name + ' is already entered (' + formatDate(dupInv[1]) + ')');
+  }
+  var meds = loadMedicines_(), clean = [], itemsTotal = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i] || {}, med = meds.map[str_(l.medicineId, 60)], n = i + 1;
+    if (!med) return fail_('VALIDATION', 'Line ' + n + ': medicine not found — refresh the app');
+    var qty = Number(l.qty), free = Number(l.freeQty || 0), cost = Number(l.costPrice), mrp = num_(l.mrp);
+    if (!isFinite(qty) || qty <= 0 || Math.floor(qty) !== qty) return fail_('VALIDATION', 'Line ' + n + ' (' + med.name + '): invalid quantity');
+    if (!isFinite(free) || free < 0 || Math.floor(free) !== free) return fail_('VALIDATION', 'Line ' + n + ' (' + med.name + '): invalid free quantity');
+    if (!isFinite(cost) || cost < 0 || cost > 1000000) return fail_('VALIDATION', 'Line ' + n + ' (' + med.name + '): invalid cost price');
+    var exp = l.expiry ? formatDate(l.expiry) : '';
+    if (l.expiry && !exp) return fail_('VALIDATION', 'Line ' + n + ' (' + med.name + '): invalid expiry date');
+    if (exp && exp < date) return fail_('VALIDATION', 'Line ' + n + ' (' + med.name + '): already expired on ' + exp);
+    var lt = r2_(qty * cost); itemsTotal += lt;
+    clean.push({ med: med, qty: qty, free: free, cost: r2_(cost), mrp: mrp, batchNo: str_(l.batchNo, 40), expiry: exp, lineTotal: lt });
+  }
+  itemsTotal = r2_(itemsTotal);
+  var adjustment = r2_(req.adjustment), total = r2_(itemsTotal + adjustment);
+  if (total < 0) return fail_('VALIDATION', 'Invoice total cannot be negative');
+  if (req.total !== undefined && req.total !== '' && Math.abs(num_(req.total) - total) > 0.011) return fail_('VALIDATION', 'Invoice total does not match the lines');
+  var paid = r2_(req.paidAmount); if (paid < 0 || paid > total + 0.01) return fail_('VALIDATION', 'Paid amount must be between ₹0 and the invoice total');
+  var mode = paid > 0 ? (PAY_MODES[String(req.paymentMode || 'Cash').toLowerCase()] || str_(req.paymentMode, 20) || 'Cash') : '';
+  if (paid > 0 && (mode === 'Credit' || mode === 'Split')) return fail_('VALIDATION', 'Choose how the supplier was paid');
+  var factor = itemsTotal > 0 ? total / itemsTotal : 1, batchRows = [], purRows = [], mv = [], dt = nowStr_();
+  clean.forEach(function (c, k) {
+    var batchId = uid_('B-'), pid = id + '-' + (k + 1), totalQty = c.qty + c.free, eff = totalQty ? r2_(c.lineTotal * factor / totalQty) : 0;
+    purRows.push(rowFrom_('Purchases', { 'ID': pid, 'Date': date, 'Supplier': su.name, 'Medicine ID': c.med.id, 'Medicine Name': c.med.name, 'Quantity': totalQty,
+      'Cost Price': c.cost, 'Total Cost': c.lineTotal, 'Date & Time': dt, 'Batch No': c.batchNo, 'Expiry': c.expiry, 'Batch ID': batchId, 'Status': 'Active',
+      'Created By': s.u, 'Invoice No': invoiceNo, 'MRP': c.mrp || '', 'Supplier ID': su.id, 'Invoice ID': id, 'Free Qty': c.free }));
+    batchRows.push(newBatchRow_({ batchId: batchId, medicineId: c.med.id, batchNo: c.batchNo, expiry: c.expiry, qty: totalQty, cost: eff, mrp: c.mrp || '', supplier: su.name, purchaseId: pid }));
+    mv.push({ med: c.med, batch: batchId, qty: totalQty, ref: pid, note: (c.free ? c.free + ' free · ' : '') + (invoiceNo ? 'Invoice ' + invoiceNo : 'Invoice') });
+  });
+  appendRows_('PurchaseInvoices', [rowFrom_('PurchaseInvoices', { 'Invoice ID': id, 'Date': date, 'Supplier ID': su.id, 'Supplier Name': su.name, 'Invoice No': invoiceNo,
+    'Lines': clean.length, 'Items Total': itemsTotal, 'Adjustment': adjustment, 'Total': total, 'Paid Amount': paid, 'Payment Mode': mode, 'Payment Ref': str_(req.paymentRef, 80),
+    'Notes': str_(req.notes, 500), 'Status': 'Active', 'Created By': s.u, 'Created At': dt })]);
+  appendRows_('Purchases', purRows);
+  appendRows_('Batches', batchRows);
+  var batches = loadBatches_(), ids = {};
+  clean.forEach(function (c) { ids[c.med.id] = 1; });
+  syncMedicineStock_(meds, batches, Object.keys(ids));
+  clean.forEach(function (c) { setCells_('Medicines', c.med.row, { 'Cost Price': c.cost }); });
+  appendRows_('StockMovements', mv.map(function (m) { return movementRow_(m.med.id, m.med.name, m.batch, m.qty, 'PURCHASE', m.ref, s.u, m.note, meds.map[m.med.id].stock); }));
+  var led = [ledgerRow_({ date: date, supplierId: su.id, supplierName: su.name, type: 'PURCHASE', ref: id, credit: total, notes: invoiceNo ? 'Invoice ' + invoiceNo : 'Invoice' }, s)];
+  if (paid > 0) led.push(ledgerRow_({ date: date, supplierId: su.id, supplierName: su.name, type: 'PAYMENT', ref: id, debit: paid, mode: mode, notes: 'Paid with invoice' }, s));
+  appendRows_('SupplierLedger', led);
+  audit_(s, 'addPurchaseInvoice', id, su.name + (invoiceNo ? ' · ' + invoiceNo : '') + ' · ' + clean.length + ' line(s) · ₹' + total + ' · paid ₹' + paid, 'OK');
+  return ok_({ id: id, supplierId: su.id, total: total, paid: paid, due: r2_(total - paid) });
+}
+function cancelPurchaseInvoice_(req, s) {
+  var id = str_(req.id, 60), reason = str_(req.reason, 300);
+  if (reason.length < 3) return fail_('VALIDATION', 'Please give a reason');
+  var row = findRow_('PurchaseInvoices', 'Invoice ID', id); if (row < 0) return fail_('VALIDATION', 'Invoice not found');
+  var inv = pinvObj_(sh_('PurchaseInvoices').getRange(row, 1, 1, sh_('PurchaseInvoices').getLastColumn()).getValues()[0]);
+  if (inv.status === 'Cancelled') return ok_({ alreadyCancelled: true });
+  var pData = values_('Purchases'), lines = [], batches = loadBatches_(), byId = {}; batches.forEach(function (b) { byId[b.batchId] = b; });
+  for (var i = 1; i < pData.length; i++) if (String(cell_('Purchases', pData[i], 'Invoice ID')) === id && String(cell_('Purchases', pData[i], 'Status') || 'Active') !== 'Cancelled') lines.push({ rowIndex: i + 1, r: pData[i] });
+  var problems = [];
+  lines.forEach(function (l) { var b = byId[String(cell_('Purchases', l.r, 'Batch ID'))]; var q = num_(l.r[5]); if (b && b.avail < q - 0.001) problems.push(String(l.r[4]) + ': ' + r2_(q - b.avail) + ' already sold/used'); });
+  if (problems.length) return fail_('VALIDATION', 'Cannot cancel — ' + problems.join('; ') + '. Use a purchase return for what is left.');
+  var meds = loadMedicines_(), mv = [], touched = {};
+  lines.forEach(function (l) {
+    var b = byId[String(cell_('Purchases', l.r, 'Batch ID'))], q = num_(l.r[5]), med = meds.map[String(l.r[3])];
+    if (b) { b.avail = 0; b.status = 'Cancelled'; b.dirty = true; }
+    if (med) { touched[med.id] = 1; mv.push({ med: med, batch: b ? b.batchId : '', qty: -q, ref: String(l.r[0]) }); }
+    setCells_('Purchases', l.rowIndex, { 'Status': 'Cancelled', 'Cancelled At': nowStr_(), 'Cancelled By': s.u, 'Cancel Reason': reason });
+  });
+  saveBatches_(batches); syncMedicineStock_(meds, batches, Object.keys(touched));
+  appendRows_('StockMovements', mv.map(function (m) { return movementRow_(m.med.id, m.med.name, m.batch, m.qty, 'PURCHASE_CANCEL', m.ref, s.u, reason, meds.map[m.med.id].stock); }));
+  var lData = values_('SupplierLedger');
+  for (var j = 1; j < lData.length; j++) {
+    var lr = lData[j];
+    if (String(lr[5]) === id && String(lr[12] || 'Active') === 'Active' && (String(lr[4]) === 'PURCHASE' || (String(lr[4]) === 'PAYMENT' && String(lr[9]) === 'Paid with invoice')))
+      setCells_('SupplierLedger', j + 1, { 'Status': 'Cancelled', 'Cancelled At': nowStr_(), 'Cancelled By': s.u, 'Cancel Reason': reason });
+  }
+  setCells_('PurchaseInvoices', row, { 'Status': 'Cancelled', 'Cancelled At': nowStr_(), 'Cancelled By': s.u, 'Cancel Reason': reason });
+  audit_(s, 'cancelPurchaseInvoice', id, inv.supplierName + ' ' + inv.invoiceNo + ' · ' + reason, 'OK');
+  return ok_();
+}
+var ATTACH_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' };
+function uploadInvoiceAttachment_(req, s) {
+  var id = str_(req.invoiceId, 60), row = findRow_('PurchaseInvoices', 'Invoice ID', id); if (row < 0) return fail_('VALIDATION', 'Invoice not found');
+  var mime = String(req.mimeType || '').toLowerCase(); if (!ATTACH_TYPES[mime]) return fail_('VALIDATION', 'Only photos (JPG/PNG/WebP) or PDF files');
+  var data = String(req.data || '').replace(/^data:[^,]*,/, '');
+  if (!data) return fail_('VALIDATION', 'No file received');
+  if (data.length > 7000000) return fail_('VALIDATION', 'File is too large (max about 5 MB)');
+  var bytes; try { bytes = Utilities.base64Decode(data); } catch (e) { return fail_('VALIDATION', 'File is damaged'); }
+  var inv = pinvObj_(sh_('PurchaseInvoices').getRange(row, 1, 1, sh_('PurchaseInvoices').getLastColumn()).getValues()[0]);
+  var name = ('Invoice ' + inv.supplierName + ' ' + (inv.invoiceNo || inv.id) + ' ' + inv.date).replace(/[^\w .-]/g, '_').slice(0, 120) + '.' + ATTACH_TYPES[mime];
+  var it = DriveApp.getFoldersByName('SSDC Purchase Invoices'), folder = it.hasNext() ? it.next() : DriveApp.createFolder('SSDC Purchase Invoices');
+  var file = folder.createFile(Utilities.newBlob(bytes, mime, name));
+  setCells_('PurchaseInvoices', row, { 'Attachment URL': file.getUrl(), 'Attachment ID': file.getId() });
+  audit_(s, 'uploadInvoiceAttachment', id, name, 'OK');
+  return ok_({ url: file.getUrl(), fileId: file.getId() });
+}
+function purchaseReturn_(req, s) {
+  var id = str_(req.id, 60) || uid_('PRET-');
+  if (findRow_('PurchaseReturns', 'Return ID', id) > 0) return ok_({ id: id, duplicate: true });
+  var reason = str_(req.reason, 300); if (reason.length < 3) return fail_('VALIDATION', 'Please give a reason (e.g. expired, damaged, wrong item)');
+  var meds = loadMedicines_(), med = meds.map[str_(req.medicineId, 60)]; if (!med) return fail_('VALIDATION', 'Medicine not found');
+  var batches = loadBatches_(), b = batches.filter(function (x) { return x.batchId === str_(req.batchId, 40) && x.medicineId === med.id; })[0];
+  if (!b) return fail_('VALIDATION', 'Choose the batch being returned');
+  var qty = Number(req.qty); if (!isFinite(qty) || qty <= 0 || Math.floor(qty) !== qty) return fail_('VALIDATION', 'Quantity must be a whole number');
+  if (b.avail < qty) return fail_('VALIDATION', 'This batch has only ' + b.avail + ' units');
+  var rate = (req.rate === undefined || req.rate === '') ? b.cost : r2_(req.rate); if (rate < 0) return fail_('VALIDATION', 'Invalid rate');
+  var su = findOrCreateSupplier_(s, req.supplierId, req.supplierName || b.supplier); if (!su) return fail_('VALIDATION', 'Choose the supplier');
+  var amount = r2_(qty * rate), date = formatDate(req.date) || todayStr_();
+  b.avail = r2_(b.avail - qty); b.dirty = true;
+  saveBatches_(batches); syncMedicineStock_(meds, batches, [med.id]);
+  appendRows_('StockMovements', [movementRow_(med.id, med.name, b.batchId, -qty, 'PURCHASE_RETURN', id, s.u, su.name + ' · ' + reason, meds.map[med.id].stock)]);
+  appendRows_('PurchaseReturns', [rowFrom_('PurchaseReturns', { 'Return ID': id, 'Date': date, 'Supplier ID': su.id, 'Supplier Name': su.name, 'Medicine ID': med.id,
+    'Medicine Name': med.name, 'Batch ID': b.batchId, 'Batch No': b.batchNo, 'Qty': qty, 'Rate': rate, 'Amount': amount, 'Reason': reason,
+    'Created By': s.u, 'Created At': nowStr_(), 'Status': 'Active' })]);
+  appendRows_('SupplierLedger', [ledgerRow_({ date: date, supplierId: su.id, supplierName: su.name, type: 'RETURN', ref: id, debit: amount, notes: med.name + ' ×' + qty + ' · ' + reason }, s)]);
+  audit_(s, 'purchaseReturn', id, su.name + ' · ' + med.name + ' ×' + qty + ' · ₹' + amount + ' · ' + reason, 'OK');
+  return ok_({ id: id, amount: amount, stock: meds.map[med.id].stock });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3.1 — CLINIC: TREATMENT PRICE LIST, PATIENT TREATMENTS, FOLLOW-UPS, HISTORY
+// ════════════════════════════════════════════════════════════════════════════
+var DEFAULT_TREATMENTS = [['Consultation', 'Consultation'], ['Scaling & Polishing', 'Preventive'], ['Filling (Composite)', 'Restorative'],
+  ['Filling (GIC / Amalgam)', 'Restorative'], ['Root Canal Treatment', 'Endodontics'], ['Pulpectomy (child)', 'Pediatric'], ['Crown (Metal / PFM)', 'Prosthodontics'],
+  ['Crown (Zirconia)', 'Prosthodontics'], ['Bridge (per unit)', 'Prosthodontics'], ['Complete Denture', 'Prosthodontics'], ['Partial Denture', 'Prosthodontics'],
+  ['Extraction', 'Oral Surgery'], ['Surgical / Wisdom Tooth Extraction', 'Oral Surgery'], ['Flap Surgery', 'Periodontics'], ['Dental Implant', 'Implants'],
+  ['Orthodontic Treatment (Braces)', 'Orthodontics'], ['Teeth Whitening', 'Cosmetic'], ['X-Ray (IOPA)', 'Diagnostics']];
+var PT_STATUS = ['Planned', 'In progress', 'Completed', 'Cancelled'];
+var FU_STATUS = ['Pending', 'Done', 'Cancelled'];
+function treatmentMaster_() {
+  return values_('TreatmentMaster').slice(1).filter(function (r) { return r[0]; }).map(function (r) {
+    return { id: String(r[0]), name: String(r[1] || ''), category: String(r[2] || ''), price: num_(r[3]), duration: num_(r[4]), notes: String(r[5] || ''), status: String(r[6] || 'Active') };
+  });
+}
+function saveTreatment_(req, s) {
+  var name = str_(req.name, 120); if (!name) return fail_('VALIDATION', 'Treatment name is required');
+  var price = r2_(req.price); if (price < 0 || price > 10000000) return fail_('VALIDATION', 'Invalid price');
+  var id = str_(req.id, 60), list = treatmentMaster_();
+  if (list.some(function (t) { return t.id !== id && t.status !== 'Inactive' && t.name.toLowerCase() === name.toLowerCase(); })) return fail_('DUPLICATE', name + ' is already in the price list');
+  var obj = { 'Name': name, 'Category': str_(req.category, 60), 'Price': price, 'Duration (min)': num_(req.duration) || '', 'Notes': str_(req.notes, 300),
+    'Status': str_(req.status, 20) === 'Inactive' ? 'Inactive' : 'Active', 'Updated At': nowStr_(), 'Updated By': s.u };
+  var row = id ? findRow_('TreatmentMaster', 'Treatment ID', id) : -1;
+  if (row > 0) setCells_('TreatmentMaster', row, obj);
+  else { id = id || uid_('TRT-'); obj['Treatment ID'] = id; appendRows_('TreatmentMaster', [rowFrom_('TreatmentMaster', obj)]); }
+  audit_(s, 'saveTreatment', id, name + ' · ₹' + price + (obj.Status === 'Inactive' ? ' · inactive' : ''), 'OK');
+  return ok_({ id: id });
+}
+function ptObj_(r) {
+  return { id: String(r[0]), date: formatDate(r[1]), patientId: String(r[2] || ''), patientName: String(r[3] || ''), phone: String(r[4] || ''), doctor: String(r[5] || ''),
+    treatmentId: String(r[6] || ''), treatment: String(r[7] || ''), tooth: String(r[8] || ''), price: num_(r[9]), status: String(r[10] || 'Planned'),
+    notes: String(r[11] || ''), receiptNo: String(r[12] || ''), createdBy: String(r[13] || ''), completedOn: formatDate(r[16]) };
+}
+function savePatientTreatment_(req, s) {
+  var id = str_(req.id, 60); if (!id) return fail_('VALIDATION', 'Record ID required');
+  var name = str_(req.patientName, 120); if (!name) return fail_('VALIDATION', 'Patient name is required');
+  var status = str_(req.status, 20) || 'Planned'; if (PT_STATUS.indexOf(status) === -1) return fail_('VALIDATION', 'Invalid status');
+  var tm = null, tid = str_(req.treatmentId, 60);
+  if (tid) tm = treatmentMaster_().filter(function (t) { return t.id === tid; })[0] || null;
+  var treatment = str_(req.treatment, 200) || (tm ? tm.name : ''); if (!treatment) return fail_('VALIDATION', 'Choose a treatment');
+  var price = (req.price === undefined || req.price === '') ? (tm ? tm.price : 0) : r2_(req.price);
+  if (price < 0 || price > 10000000) return fail_('VALIDATION', 'Invalid price');
+  var obj = { 'Date': formatDate(req.date) || todayStr_(), 'Patient ID': str_(req.patientId, 60) || linkPatient_(name, req.phone), 'Patient Name': name,
+    'Phone': str_(req.phone, 20), 'Doctor': str_(req.doctor, 80), 'Treatment ID': tid, 'Treatment': treatment, 'Tooth': str_(req.tooth, 60), 'Price': price,
+    'Status': status, 'Notes': str_(req.notes, 1000), 'Updated At': nowStr_() };
+  if (req.receiptNo !== undefined) obj['Receipt No'] = str_(req.receiptNo, 40);
+  if (status === 'Completed') obj['Completed On'] = formatDate(req.completedOn) || todayStr_();
+  var row = findRow_('PatientTreatments', 'Record ID', id);
+  if (row > 0) setCells_('PatientTreatments', row, obj);
+  else { obj['Record ID'] = id; obj['Created By'] = s.u; obj['Created At'] = nowStr_(); appendRows_('PatientTreatments', [rowFrom_('PatientTreatments', obj)]); }
+  audit_(s, 'savePatientTreatment', id, name + ' · ' + treatment + ' · ' + status + ' · ₹' + price, 'OK');
+  return ok_({ id: id });
+}
+function setPatientTreatmentStatus_(req, s) {
+  var row = findRow_('PatientTreatments', 'Record ID', str_(req.id, 60)); if (row < 0) return fail_('VALIDATION', 'Treatment record not found');
+  var st = str_(req.status, 20); if (PT_STATUS.indexOf(st) === -1) return fail_('VALIDATION', 'Invalid status');
+  var upd = { 'Status': st, 'Updated At': nowStr_() };
+  if (st === 'Completed') upd['Completed On'] = todayStr_();
+  if (req.receiptNo !== undefined) upd['Receipt No'] = str_(req.receiptNo, 40);
+  setCells_('PatientTreatments', row, upd);
+  audit_(s, 'setPatientTreatmentStatus', str_(req.id), st, 'OK');
+  return ok_();
+}
+function deletePatientTreatment_(req, s) {
+  var row = findRow_('PatientTreatments', 'Record ID', str_(req.id, 60)); if (row < 0) return ok_();
+  setCells_('PatientTreatments', row, { 'Status': 'Deleted', 'Updated At': nowStr_() });
+  audit_(s, 'deletePatientTreatment', str_(req.id), 'Marked deleted', 'OK');
+  return ok_();
+}
+function linkTreatmentsToReceipt_(ids, receiptNo) {
+  var list = jsonArr_(ids) || String(ids).split(',');
+  list.forEach(function (id) { var row = findRow_('PatientTreatments', 'Record ID', str_(id, 60)); if (row > 0) setCells_('PatientTreatments', row, { 'Receipt No': receiptNo, 'Updated At': nowStr_() }); });
+}
+function fuObj_(r) {
+  return { id: String(r[0]), patientId: String(r[1] || ''), patientName: String(r[2] || ''), phone: String(r[3] || ''), dueDate: formatDate(r[4]),
+    reason: String(r[5] || ''), doctor: String(r[6] || ''), source: String(r[7] || ''), status: String(r[8] || 'Pending'), notes: String(r[9] || ''),
+    createdBy: String(r[10] || ''), doneAt: ts_(r[12]), doneBy: String(r[13] || '') };
+}
+function saveFollowUp_(req, s) {
+  var id = str_(req.id, 60); if (!id) return fail_('VALIDATION', 'Follow-up ID required');
+  var name = str_(req.patientName, 120); if (!name) return fail_('VALIDATION', 'Patient name is required');
+  var due = formatDate(req.dueDate); if (!due) return fail_('VALIDATION', 'Choose the follow-up date');
+  var status = str_(req.status, 20) || 'Pending'; if (FU_STATUS.indexOf(status) === -1) return fail_('VALIDATION', 'Invalid status');
+  var obj = { 'Patient ID': str_(req.patientId, 60) || linkPatient_(name, req.phone), 'Patient Name': name, 'Phone': str_(req.phone, 20), 'Due Date': due,
+    'Reason': str_(req.reason, 300), 'Doctor': str_(req.doctor, 80), 'Source': str_(req.source, 40), 'Status': status, 'Notes': str_(req.notes, 500) };
+  var row = findRow_('FollowUps', 'Follow-up ID', id);
+  if (row > 0) setCells_('FollowUps', row, obj);
+  else { obj['Follow-up ID'] = id; obj['Created By'] = s.u; obj['Created At'] = nowStr_(); appendRows_('FollowUps', [rowFrom_('FollowUps', obj)]); }
+  audit_(s, 'saveFollowUp', id, name + ' · ' + due, 'OK');
+  return ok_({ id: id });
+}
+function setFollowUpStatus_(req, s) {
+  var row = findRow_('FollowUps', 'Follow-up ID', str_(req.id, 60)); if (row < 0) return fail_('VALIDATION', 'Follow-up not found');
+  var st = str_(req.status, 20); if (FU_STATUS.indexOf(st) === -1) return fail_('VALIDATION', 'Invalid status');
+  var upd = { 'Status': st };
+  if (st === 'Done') { upd['Done At'] = nowStr_(); upd['Done By'] = s.u; }
+  if (req.notes !== undefined) upd['Notes'] = str_(req.notes, 500);
+  setCells_('FollowUps', row, upd);
+  audit_(s, 'setFollowUpStatus', str_(req.id), st, 'OK');
+  return ok_();
+}
+function deleteFollowUp_(req, s) {
+  var row = findRow_('FollowUps', 'Follow-up ID', str_(req.id, 60)); if (row < 0) return ok_();
+  setCells_('FollowUps', row, { 'Status': 'Deleted' });
+  audit_(s, 'deleteFollowUp', str_(req.id), '', 'OK');
+  return ok_();
+}
+var EXAM_FIELDS = [['date', 'Date'], ['patient', 'Patient'], ['age', 'Age'], ['sex', 'Sex'], ['doctor', 'Doctor'], ['phone', 'Phone'], ['swelling', 'Swelling'], ['tmj', 'TMJ'],
+  ['lymph', 'Lymph Nodes'], ['oral_hygiene', 'Oral Hygiene'], ['gingiva', 'Gingiva'], ['caries', 'Dental Caries'], ['missing_teeth', 'Missing Teeth'], ['stains', 'Stains'],
+  ['calculus', 'Calculus'], ['prov_diag', 'Provisional Diagnosis'], ['final_diag', 'Final Diagnosis'], ['treatments', 'Treatment Plan'], ['tp_notes', 'Treatment Notes'],
+  ['upper_teeth', 'Upper Arch'], ['lower_teeth', 'Lower Arch'], ['savedAt', 'Saved At'], ['recordId', 'Record ID'], ['createdBy', 'Created By'], ['patientId', 'Patient ID']];
+function examObj_(r) { var o = {}; EXAM_FIELDS.forEach(function (f) { var v = cell_('ExamForms', r, f[1]); o[f[0]] = f[0] === 'date' ? (formatDate(v) || String(v || '')) : (f[0] === 'savedAt' ? ts_(v) : String(v === undefined || v === null ? '' : v)); }); return o; }
+function rxObj_(r) {
+  return { date: formatDate(r[0]) || String(r[0] || ''), patientName: String(r[1] || ''), age: String(r[2] || ''), sex: String(r[3] || ''), prescription: String(r[4] || ''),
+    savedAt: ts_(r[5]), recordId: String(cell_('Prescriptions', r, 'Record ID') || ''), createdBy: String(cell_('Prescriptions', r, 'Created By') || ''),
+    patientId: String(cell_('Prescriptions', r, 'Patient ID') || ''), doctor: String(cell_('Prescriptions', r, 'Doctor') || ''), followUpDate: formatDate(cell_('Prescriptions', r, 'Follow-up Date')) };
+}
+function rcObj_(r, isOwner) {
+  var mo = invMoney_('RECEIPT', r);
+  return { no: String(r[0] || ''), date: formatDate(r[1]), patient: String(r[2] || ''), doctor: String(r[3] || ''), amount: num_(r[4]), amountWords: String(r[5] || ''),
+    treatments: String(r[6] || ''), savedAt: ts_(r[7]), paymentMode: String(cell_('TreatmentReceipts', r, 'Payment Mode') || ''), recordId: String(cell_('TreatmentReceipts', r, 'Record ID') || ''),
+    patientId: String(cell_('TreatmentReceipts', r, 'Patient ID') || ''), paidAmount: mo.paid, balanceDue: mo.balance, paymentStatus: mo.status, discount: num_(cell_('TreatmentReceipts', r, 'Discount')) };
+}
+// Is this record about this patient? Patient ID first; else same name (and same phone when both have one).
+function samePatient_(p, recId, recName, recPhone) {
+  if (p.id && recId) return String(recId) === String(p.id);
+  if (!p.name || String(recName || '').trim().toLowerCase() !== p.name) return false;
+  var a = normPhone_(recPhone); return !(a && p.phone && a !== p.phone);
+}
+function getPatientHistory_(req, s) {
+  var p = { id: str_(req.patientId, 60), name: str_(req.name, 120).toLowerCase(), phone: normPhone_(req.phone) };
+  if (p.id && (!p.name || !p.phone)) {
+    var pr = findRow_('Patients', 'ID', p.id);
+    if (pr > 0) { var row = sh_('Patients').getRange(pr, 1, 1, sh_('Patients').getLastColumn()).getValues()[0]; p.name = p.name || String(row[1]).trim().toLowerCase(); p.phone = p.phone || normPhone_(row[2]); }
+  }
+  if (!p.id && !p.name) return fail_('VALIDATION', 'Choose a patient');
+  var isOwner = s.r === OWNER, out = { bills: [], receipts: [], payments: [], prescriptions: [], exams: [], treatments: [], followUps: [], appointments: [] };
+  var items = {}, iData = values_('BillItems');
+  for (var j = 1; j < iData.length; j++) { var ir = iData[j]; if (ir[0]) (items[String(ir[0])] = items[String(ir[0])] || []).push({ medicineId: String(ir[1]), medicineName: String(ir[2]), qty: num_(ir[3]), price: num_(ir[4]), amount: num_(ir[6]) }); }
+  values_('Bills').slice(1).forEach(function (b) {
+    if (!b[0] || !samePatient_(p, cell_('Bills', b, 'Patient ID'), b[1], b[3])) return;
+    var mo = invMoney_('BILL', b);
+    out.bills.push({ billId: String(b[0]), billNo: String(cell_('Bills', b, 'Bill No') || ''), date: formatDate(b[4]), doctor: String(b[2] || ''), total: num_(b[7]),
+      discount: num_(b[6]), paymentMode: String(b[9] || ''), status: String(cell_('Bills', b, 'Status') || 'Active'), paidAmount: mo.paid, balanceDue: mo.balance,
+      paymentStatus: mo.status, returnedValue: mo.returned, refundedAmount: mo.refunded, items: items[String(b[0])] || [] });
+  });
+  values_('TreatmentReceipts').slice(1).forEach(function (t) {
+    if ((!t[0] && !t[2]) || String(cell_('TreatmentReceipts', t, 'Status') || '') === 'Deleted') return;
+    if (samePatient_(p, cell_('TreatmentReceipts', t, 'Patient ID'), t[2], '')) out.receipts.push(rcObj_(t, isOwner));
+  });
+  paymentsData_().slice(1).forEach(function (r) { if (r[0] && samePatient_(p, r[7], r[8], r[9])) out.payments.push(payObj_(r)); });
+  values_('Prescriptions').slice(1).forEach(function (r) {
+    if ((!r[1] && !r[4]) || String(cell_('Prescriptions', r, 'Status') || '') === 'Deleted') return;
+    if (samePatient_(p, cell_('Prescriptions', r, 'Patient ID'), r[1], '')) out.prescriptions.push(rxObj_(r));
+  });
+  values_('ExamForms').slice(1).forEach(function (r) {
+    if (!r[1] || String(cell_('ExamForms', r, 'Status') || '') === 'Deleted') return;
+    if (samePatient_(p, cell_('ExamForms', r, 'Patient ID'), r[1], r[5])) out.exams.push(examObj_(r));
+  });
+  values_('PatientTreatments').slice(1).forEach(function (r) { if (r[0] && String(r[10]) !== 'Deleted' && samePatient_(p, r[2], r[3], r[4])) out.treatments.push(ptObj_(r)); });
+  values_('FollowUps').slice(1).forEach(function (r) { if (r[0] && String(r[8]) !== 'Deleted' && samePatient_(p, r[1], r[2], r[3])) out.followUps.push(fuObj_(r)); });
+  values_('Appointments').slice(1).forEach(function (a) {
+    if (!a[0] || String(a[7]) === 'Deleted') return;
+    if (samePatient_(p, cell_('Appointments', a, 'Patient ID'), a[1], a[2])) out.appointments.push({ id: String(a[0]), date: formatDate(a[3]), time: formatTime(a[4]), reason: String(a[5] || ''), doctor: String(a[6] || ''), status: String(a[7] || '') });
+  });
+  ['bills', 'receipts', 'payments', 'prescriptions', 'exams', 'treatments', 'appointments'].forEach(function (k) { out[k].sort(function (a, b) { return String(b.date) < String(a.date) ? -1 : String(b.date) > String(a.date) ? 1 : 0; }); });
+  out.followUps.sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+  out.outstanding = r2_(out.bills.filter(function (b) { return b.status !== 'Cancelled'; }).reduce(function (a, b) { return a + b.balanceDue; }, 0)
+    + out.receipts.reduce(function (a, r) { return a + r.balanceDue; }, 0));
+  return ok_(out);
+}
+// Server-side pages of clinic records (newest first). cursor = sheet row to continue below.
+function getRecentRecords_(req, s) {
+  var kind = str_(req.kind, 20), limit = Math.min(Math.max(parseInt(req.limit, 10) || 50, 1), 200), q = str_(req.q, 60).toLowerCase();
+  var sheet = { prescriptions: 'Prescriptions', exams: 'ExamForms', receipts: 'TreatmentReceipts' }[kind]; if (!sheet) return fail_('VALIDATION', 'Unknown record type');
+  var data = values_(sheet), start = Math.min(parseInt(req.cursor, 10) || data.length, data.length) - 1, out = [], i;
+  var staffFrom = s.r === OWNER ? '' : daysAgoStr_(STAFF_BILL_DAYS);
+  for (i = start; i >= 1 && out.length < limit; i--) {
+    var r = data[i]; if (String(cell_(sheet, r, 'Status') || '') === 'Deleted') continue;
+    var o = kind === 'prescriptions' ? rxObj_(r) : kind === 'exams' ? examObj_(r) : rcObj_(r, s.r === OWNER);
+    if (kind === 'prescriptions' && !o.patientName && !o.prescription) continue;
+    if (kind === 'exams' && !o.patient) continue;
+    if (kind === 'receipts' && (!o.no && !o.patient)) continue;
+    if (staffFrom && kind === 'receipts' && o.date < staffFrom) break;
+    if (q && JSON.stringify(o).toLowerCase().indexOf(q) === -1) continue;
+    out.push(o);
+  }
+  return ok_({ records: out, cursor: i >= 1 ? i + 1 : 0 });
+}
+// Older bills, a page at a time (the app keeps only recent ones in memory)
+function getBills_(req, s) {
+  var before = formatDate(req.before) || '9999-12-31', limit = Math.min(Math.max(parseInt(req.limit, 10) || 100, 1), 300), q = str_(req.q, 60).toLowerCase();
+  var isOwner = s.r === OWNER, staffFrom = daysAgoStr_(STAFF_BILL_DAYS), list = [];
+  values_('Bills').slice(1).forEach(function (b) {
+    if (!b[0]) return; var d = formatDate(b[4]);
+    if (d >= before || (!isOwner && d < staffFrom)) return;
+    if (q && (String(b[0]) + ' ' + String(cell_('Bills', b, 'Bill No')) + ' ' + b[1] + ' ' + b[3]).toLowerCase().indexOf(q) === -1) return;
+    list.push(b);
+  });
+  list.sort(function (a, b) { var x = formatDate(a[4]), y = formatDate(b[4]); return x < y ? 1 : x > y ? -1 : 0; });
+  var page = list.slice(0, limit), ids = {}; page.forEach(function (b) { ids[String(b[0])] = []; });
+  values_('BillItems').slice(1).forEach(function (ir) { var k = String(ir[0]); if (ids[k]) ids[k].push(isOwner ? { medicineId: ir[1], medicineName: ir[2], qty: num_(ir[3]), price: num_(ir[4]), costPrice: num_(ir[5]), amount: num_(ir[6]) } : { medicineId: ir[1], medicineName: ir[2], qty: num_(ir[3]), price: num_(ir[4]), amount: num_(ir[6]) }); });
+  var bills = page.map(function (b) {
+    var mo = invMoney_('BILL', b), o = { billId: String(b[0]), billNo: String(cell_('Bills', b, 'Bill No') || ''), patientName: String(b[1] || ''), doctor: String(b[2] || ''),
+      phone: String(b[3] || ''), date: formatDate(b[4]), subtotal: num_(b[5]), discount: num_(b[6]), total: num_(b[7]), paymentMode: String(b[9] || 'Cash'),
+      status: String(cell_('Bills', b, 'Status') || 'Active'), paidAmount: mo.paid, balanceDue: mo.balance, paymentStatus: mo.status, returnedValue: mo.returned,
+      refundedAmount: mo.refunded, patientId: String(cell_('Bills', b, 'Patient ID') || ''), items: ids[String(b[0])] || [] };
+    if (isOwner) o.costTotal = num_(b[8]);
+    return o;
+  });
+  return ok_({ bills: bills, more: list.length > limit, nextBefore: page.length ? bills[bills.length - 1].date : '' });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3.1 — INVENTORY REPORTS, REPORT DATA FOR ANY PERIOD
+// ════════════════════════════════════════════════════════════════════════════
+function mvObj_(r) {
+  return { id: String(r[0]), at: ts_(r[1]), medicineId: String(r[2]), medicineName: String(r[3] || ''), batchId: String(r[4] || ''), qty: num_(r[5]),
+    type: String(r[6] || ''), ref: String(r[7] || ''), user: String(r[8] || ''), reason: String(r[9] || ''), stockAfter: num_(r[10]) };
+}
+function getBatchHistory_(req) {
+  var mid = str_(req.medicineId, 60), med = loadMedicines_().map[mid]; if (!med) return fail_('VALIDATION', 'Medicine not found');
+  var today = todayStr_();
+  var batches = loadBatches_().filter(function (b) { return b.medicineId === mid; }).sort(fefoSort_).map(function (b) {
+    return { batchId: b.batchId, batchNo: b.batchNo, expiry: b.expiry, received: b.received, available: b.avail, cost: b.cost, mrp: b.mrp, supplier: b.supplier,
+      purchaseId: b.purchaseId, receivedAt: b.receivedAt, status: b.status, expired: !!(b.expiry && b.expiry < today) };
+  });
+  var movements = values_('StockMovements').slice(1).filter(function (r) { return r[0] && String(r[2]) === mid; }).map(mvObj_).reverse();
+  var sums = {}; movements.forEach(function (m) { sums[m.type] = r2_((sums[m.type] || 0) + m.qty); });
+  return ok_({ medicine: { id: med.id, name: med.name, price: med.price, costPrice: med.costPrice, barcode: med.barcode }, batches: batches, movements: movements, totals: sums });
+}
+function getInventoryReport_(req) {
+  var today = todayStr_(), deadDays = Math.max(parseInt(req.deadDays, 10) || 90, 7), deadFrom = daysAgoStr_(deadDays), d30 = daysAgoStr_(30), d90 = daysAgoStr_(90), soon = Utilities.formatDate(new Date(Date.now() + 90 * 86400000), tz_(), 'yyyy-MM-dd');
+  var meds = loadMedicines_(), batches = loadBatches_(), bById = {}; batches.forEach(function (b) { bById[b.batchId] = b; });
+  var stat = {};
+  meds.list.forEach(function (m) { if (m.status !== 'Inactive') stat[m.id] = { id: m.id, name: m.name, price: m.price, minStock: m.minStock, category: m.category, sellable: 0, expired: 0, costValue: 0, saleValue: 0, expiredValue: 0, lastSale: '', sold30: 0, sold90: 0, firstIn: '', expiringSoon: 0, expiringValue: 0 }; });
+  batches.forEach(function (b) {
+    var o = stat[b.medicineId]; if (!o || b.status !== 'Active') return;
+    var known = b.purchaseId || ['OPENING', 'ADJUSTMENT', 'RETURN'].indexOf(b.batchNo) === -1;   // age of opening/found stock is unknown
+    var rd = known ? String(b.receivedAt || '').slice(0, 10) : ''; if (rd && (!o.firstIn || rd < o.firstIn)) o.firstIn = rd;
+    if (b.avail <= 0) return;
+    if (b.expiry && b.expiry < today) { o.expired += b.avail; o.expiredValue += b.avail * b.cost; }
+    else { o.sellable += b.avail; o.costValue += b.avail * b.cost; o.saleValue += b.avail * o.price; if (b.expiry && b.expiry <= soon) { o.expiringSoon += b.avail; o.expiringValue += b.avail * b.cost; } }
+  });
+  // sales from the bills themselves (covers bills from before the stock register)
+  var billDate = {};
+  values_('Bills').slice(1).forEach(function (b) { if (b[0] && String(cell_('Bills', b, 'Status') || 'Active') !== 'Cancelled') billDate[String(b[0])] = formatDate(b[4]); });
+  values_('BillItems').slice(1).forEach(function (ir) {
+    var d = billDate[String(ir[0])], o = stat[String(ir[1])]; if (!d || !o) return;
+    var q = num_(ir[3]); if (d > o.lastSale) o.lastSale = d; if (d >= d30) o.sold30 += q; if (d >= d90) o.sold90 += q;
+  });
+  var lossByMonth = {}, lossByMed = {}, lossTotal = 0, lossRows = [];
+  values_('StockMovements').slice(1).forEach(function (r) {
+    if (!r[0]) return;
+    var t = String(r[6]), d = ts_(r[1]).slice(0, 10), mid = String(r[2]), q = num_(r[5]), o = stat[mid];
+    if (t === 'CUSTOMER_RETURN' && o) { if (d >= d30) o.sold30 -= q; if (d >= d90) o.sold90 -= q; }
+    if ((t === 'EXPIRED' || t === 'DAMAGED') && q < 0) {
+      var b = bById[String(r[4])], m = meds.map[mid], cost = b ? b.cost : (m ? m.costPrice : 0), v = r2_(-q * cost), mon = d.slice(0, 7);
+      lossByMonth[mon] = r2_((lossByMonth[mon] || 0) + v); lossByMed[String(r[3])] = r2_((lossByMed[String(r[3])] || 0) + v); lossTotal += v;
+      lossRows.push({ date: d, medicineName: String(r[3]), type: t, qty: -q, value: v, reason: String(r[9] || ''), batchId: String(r[4] || '') });
+    }
+  });
+  var list = Object.keys(stat).map(function (k) {
+    var o = stat[k]; ['sellable', 'expired', 'costValue', 'saleValue', 'expiredValue', 'expiringValue'].forEach(function (f) { o[f] = r2_(o[f]); });
+    o.sold30 = r2_(o.sold30); o.sold90 = r2_(o.sold90);
+    var perDay = o.sold90 / 90; o.daysCover = perDay > 0 ? Math.round(o.sellable / perDay) : (o.sellable > 0 ? null : 0);
+    o.dead = o.sellable > 0 && (!o.lastSale || o.lastSale < deadFrom) && (!o.firstIn || o.firstIn < deadFrom);
+    o.slow = !o.dead && o.sellable > 0 && o.sold90 > 0 && o.daysCover > 180;
+    return o;
+  });
+  var tot = { costValue: 0, saleValue: 0, expiredValue: 0, expiringValue: 0, deadValue: 0 };
+  list.forEach(function (o) { tot.costValue += o.costValue; tot.saleValue += o.saleValue; tot.expiredValue += o.expiredValue; tot.expiringValue += o.expiringValue; if (o.dead) tot.deadValue += o.costValue; });
+  Object.keys(tot).forEach(function (k) { tot[k] = r2_(tot[k]); });
+  return ok_({ today: today, deadDays: deadDays, medicines: list, totals: tot,
+    expiryLoss: { total: r2_(lossTotal), byMonth: lossByMonth, byMedicine: lossByMed, rows: lossRows.reverse().slice(0, 500) } });
+}
+// Everything a report needs for one period (owner). Cached until the data changes.
+function getReportData_(req, s) {
+  var from = formatDate(req.from), to = formatDate(req.to);
+  if (!from || !to || to < from) return fail_('VALIDATION', 'Choose a valid period');
+  var span = (new Date(to) - new Date(from)) / 86400000; if (span > 1100) return fail_('VALIDATION', 'Choose a period of at most 3 years');
+  return cachedJson_('RD_' + from + '_' + to, function () { return buildReportData_(from, to); });
+}
+function cachedJson_(key, build) {
+  var c = cache_(), prefix = key + '_' + getDataVersion_() + '_', ver = getDataVersion_();
+  try {
+    var n = parseInt(c.get(prefix + 'n'), 10);
+    if (n > 0) { var keys = []; for (var k = 0; k < n; k++) keys.push(prefix + k); var got = c.getAll(keys), parts = [];
+      for (var k2 = 0; k2 < n; k2++) { if (got[keys[k2]] == null) { parts = null; break; } parts.push(got[keys[k2]]); } if (parts) return { __raw: parts.join('') }; }
+  } catch (e) {}
+  var json = JSON.stringify(build());
+  if (getDataVersion_() === ver) {
+    try { var entries = {}, count = 0; for (var p = 0; p < json.length; p += CACHE_CHUNK) entries[prefix + (count++)] = json.substring(p, p + CACHE_CHUNK);
+      entries[prefix + 'n'] = String(count); c.putAll(entries, CACHE_TTL_SECONDS); } catch (e2) {}
+  }
+  return { __raw: json };
+}
+function buildReportData_(from, to) {
+  var inR = function (d) { return d >= from && d <= to; };
+  var items = {}, iData = values_('BillItems');
+  for (var j = 1; j < iData.length; j++) { var ir = iData[j]; if (ir[0]) (items[String(ir[0])] = items[String(ir[0])] || []).push({ medicineId: String(ir[1]), medicineName: String(ir[2]), qty: num_(ir[3]), price: num_(ir[4]), costPrice: num_(ir[5]), amount: num_(ir[6]) }); }
+  var bills = [];
+  values_('Bills').slice(1).forEach(function (b) {
+    if (!b[0] || !inR(formatDate(b[4]))) return;
+    var mo = invMoney_('BILL', b);
+    bills.push({ billId: String(b[0]), billNo: String(cell_('Bills', b, 'Bill No') || ''), patientName: String(b[1] || ''), doctor: String(b[2] || ''), phone: String(b[3] || ''),
+      date: formatDate(b[4]), subtotal: num_(b[5]), discount: num_(b[6]), total: num_(b[7]), costTotal: num_(b[8]), paymentMode: String(b[9] || 'Cash'),
+      cashAmount: num_(cell_('Bills', b, 'Cash Amount')), upiAmount: num_(cell_('Bills', b, 'UPI Amount')), cardAmount: num_(cell_('Bills', b, 'Card Amount')),
+      status: String(cell_('Bills', b, 'Status') || 'Active'), createdBy: String(cell_('Bills', b, 'Created By') || ''), paidAmount: mo.paid, balanceDue: mo.balance,
+      paymentStatus: mo.status, returnedValue: mo.returned, refundedAmount: mo.refunded, patientId: String(cell_('Bills', b, 'Patient ID') || ''), items: items[String(b[0])] || [] });
+  });
+  var receipts = values_('TreatmentReceipts').slice(1).filter(function (t) { return (t[0] || t[2]) && String(cell_('TreatmentReceipts', t, 'Status') || '') !== 'Deleted' && inR(formatDate(t[1])); }).map(function (t) { return rcObj_(t, true); });
+  var payments = paymentsData_().slice(1).filter(function (r) { return r[0] && inR(formatDate(r[2])); }).map(payObj_);
+  var expenses = readExpenses_().filter(function (e) { return inR(e.date); });
+  var purchases = values_('Purchases').slice(1).filter(function (r) { return r[0] && inR(formatDate(r[1])) && String(cell_('Purchases', r, 'Status') || 'Active') !== 'Cancelled'; }).map(function (r) {
+    return { id: String(r[0]), date: formatDate(r[1]), supplier: String(r[2] || ''), supplierId: String(cell_('Purchases', r, 'Supplier ID') || ''), medicineId: String(r[3]), medicineName: String(r[4] || ''),
+      qty: num_(r[5]), freeQty: num_(cell_('Purchases', r, 'Free Qty')), costPrice: num_(r[6]), totalCost: num_(r[7]), invoiceNo: String(cell_('Purchases', r, 'Invoice No') || ''), invoiceId: String(cell_('Purchases', r, 'Invoice ID') || '') };
+  });
+  var invoices = values_('PurchaseInvoices').slice(1).filter(function (r) { return r[0] && inR(formatDate(r[1])); }).map(pinvObj_);
+  var returns = values_('PurchaseReturns').slice(1).filter(function (r) { return r[0] && inR(formatDate(r[1])); }).map(prObj_);
+  var ledger = values_('SupplierLedger').slice(1).filter(function (r) { return r[0] && inR(formatDate(r[1])); }).map(slObj_);
+  var closings = closingsData_().filter(function (c) { return inR(c.date); });
+  var batches = loadBatches_(), bCost = {}; batches.forEach(function (b) { bCost[b.batchId] = b.cost; });
+  var medCost = {}; loadMedicines_().list.forEach(function (m) { medCost[m.id] = m.costPrice; });
+  var stockLoss = values_('StockMovements').slice(1).filter(function (r) { var t = String(r[6]); return r[0] && (t === 'EXPIRED' || t === 'DAMAGED' || t === 'ADJUSTMENT' || t === 'OPENING') && inR(ts_(r[1]).slice(0, 10)); })
+    .map(function (r) { var o = mvObj_(r); o.date = o.at.slice(0, 10); o.value = r2_(o.qty * (bCost[o.batchId] !== undefined ? bCost[o.batchId] : (medCost[o.medicineId] || 0))); return o; });
+  return { success: true, from: from, to: to, bills: bills, receipts: receipts, payments: payments, expenses: expenses, purchases: purchases, purchaseInvoices: invoices,
+    purchaseReturns: returns, supplierLedger: ledger, cashClosings: closings, stockChanges: stockLoss, treatments: values_('PatientTreatments').slice(1).filter(function (r) { return r[0] && String(r[10]) !== 'Deleted' && inR(formatDate(r[1])); }).map(ptObj_) };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3.1 — HEALTH CHECK + RESTORE DRILL
+// ════════════════════════════════════════════════════════════════════════════
+function healthCheck_(req, s) {
+  var checks = [], add = function (name, ok, detail) { checks.push({ name: name, ok: !!ok, detail: detail || '' }); };
+  var schema = schemaVersion_();
+  add('Server version', true, VERSION);
+  add('Database tables up to date', schema >= SCHEMA_VERSION, schema >= SCHEMA_VERSION ? 'schema ' + schema : 'schema ' + schema + ' — run migrateToV31');
+  var missing = [];
+  Object.keys(BASE_HEADERS).forEach(function (n) { if (!sh_(n)) missing.push(n); });
+  add('All tabs present', !missing.length, missing.length ? 'missing: ' + missing.join(', ') : Object.keys(BASE_HEADERS).length + ' tabs');
+  var missCols = [];
+  Object.keys(EXTRA_COLS).forEach(function (n) { if (!sh_(n)) return; var map = hdr_(n); EXTRA_COLS[n].forEach(function (c) { if (!map[c]) missCols.push(n + '.' + c); }); });
+  add('All columns present', !missCols.length, missCols.length ? missCols.slice(0, 12).join(', ') : 'OK');
+  var trig = []; try { trig = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); }); } catch (e) {}
+  add('Daily backup scheduled', trig.indexOf('scheduledBackup') !== -1, trig.indexOf('scheduledBackup') !== -1 ? '~2 AM daily' : 'run installTriggers');
+  add('Daily stock e-mail scheduled', trig.indexOf('sendDailyStockReport') !== -1, trig.indexOf('sendDailyStockReport') !== -1 ? '~8 AM daily' : 'run installTriggers');
+  var last = null; try { last = JSON.parse(props_().getProperty('LAST_BACKUP') || 'null'); } catch (e2) {}
+  var age = last && last.at ? (Date.now() - new Date(String(last.at).replace(' ', 'T') + '+05:30').getTime()) / 3600000 : null;
+  add('Recent verified backup', last && last.verified && age !== null && age < 36, last ? (last.at + (last.verified ? ' · verified' : ' · NOT verified') + (age !== null ? ' · ' + Math.round(age) + ' h ago' : '')) : 'no backup yet');
+  var drill = null; try { drill = JSON.parse(props_().getProperty('LAST_RESTORE_DRILL') || 'null'); } catch (e3) {}
+  add('Restore drill passed', drill && drill.ok, drill ? drill.at + (drill.ok ? ' · backup opened and gave identical data' : ' · FAILED: ' + (drill.problems || []).join('; ')) : 'never run — Settings → Run restore drill');
+  var owners = usersData_().slice(1).filter(function (r) { return String(r[1]).toUpperCase() === OWNER && bool_(r[4]); }).length;
+  add('Owner login active', owners > 0, owners + ' owner account(s)');
+  var weak = usersData_().slice(1).filter(function (r) { return bool_(r[4]) && bool_(r[5]); }).map(function (r) { return String(r[0]); });
+  add('No one still on a temporary password', !weak.length, weak.length ? weak.join(', ') + ' must set a password' : 'OK');
+  var issues = validateData_().count;
+  add('Data check', issues === 0, issues ? issues + ' issue(s) — Settings → Data check' : 'no problems');
+  var rows = {}; ss_().getSheets().forEach(function (sh) { rows[sh.getName()] = Math.max(0, sh.getLastRow() - 1); });
+  return ok_({ ok: checks.every(function (c) { return c.ok; }), checks: checks, rows: rows, version: VERSION, schema: schema, checkedAt: nowStr_() });
+}
+// Proves a backup can really be used: copy the spreadsheet, check every cell, then
+// run the app's own loader on the copy and compare with the live data.
+function restoreDrillCore_() {
+  var problems = [], cells = 0;
+  var liveData = buildAllData_(OWNER), b = backupNow_('drill');
+  var copy = SpreadsheetApp.openById(b.fileId);
+  ss_().getSheets().forEach(function (sh) {
+    var c = copy.getSheetByName(sh.getName()); if (!c) { problems.push('missing tab ' + sh.getName()); return; }
+    var a1 = JSON.stringify(sh.getLastRow() ? sh.getDataRange().getValues() : []), a2 = JSON.stringify(c.getLastRow() ? c.getDataRange().getValues() : []);
+    if (a1 !== a2) problems.push(sh.getName() + ' cells differ'); else cells += sh.getLastRow() * Math.max(sh.getLastColumn(), 1);
+  });
+  var savedSs = _ss, savedHdr = _hdr, copyData;
+  try { _ss = copy; _hdr = {}; copyData = buildAllData_(OWNER); } finally { _ss = savedSs; _hdr = savedHdr; }
+  ['serverTime'].forEach(function (k) { delete liveData[k]; delete copyData[k]; });
+  if (JSON.stringify(liveData) !== JSON.stringify(copyData)) problems.push('app data from the backup is not identical');
+  var result = { at: nowStr_(), ok: problems.length === 0, backup: b.name, backupUrl: b.url, cells: cells, problems: problems,
+    bills: (liveData.bills || []).length, medicines: (liveData.medicines || []).length, patients: (liveData.patients || []).length };
+  props_().setProperty('LAST_RESTORE_DRILL', JSON.stringify(result));
+  return result;
+}
+function restoreDrill_(req, s) {
+  try { var r = restoreDrillCore_(); audit_(s, 'restoreDrill', r.backup, r.ok ? 'OK · ' + r.cells + ' cells' : r.problems.join('; '), r.ok ? 'OK' : 'ERROR'); return ok_({ drill: r }); }
+  catch (err) { audit_(s, 'restoreDrill', '', String(err), 'ERROR'); return fail_('DRILL_FAILED', String(err.message || err)); }
+}
+function restoreDrill() { Logger.log(JSON.stringify(restoreDrillCore_(), null, 2)); }   // run from the editor
+
+// ════════════════════════════════════════════════════════════════════════════
+// MIGRATION v3.0 → v3.1 (run from the editor; additive; safe to re-run)
+// ════════════════════════════════════════════════════════════════════════════
+function blankCount_(name, col, keyCol) {
+  if (!sh_(name)) return 0;
+  var data = values_(name), c = colOf_(name, col), k = keyCol ? colOf_(name, keyCol) : 1, n = 0;
+  for (var i = 1; i < data.length; i++) if ((data[i][k - 1] || data[i][0] || data[i][2]) && (!c || data[i][c - 1] === '' || data[i][c - 1] === null)) n++;
+  return n;
+}
+function newSupplierNames_() {
+  var have = {}; loadSuppliers_().list.forEach(function (x) { have[x.name.trim().toLowerCase()] = 1; });
+  var names = {}, out = [];
+  values_('Purchases').slice(1).forEach(function (r) { var n = String(r[2] || '').trim(); if (n && !have[n.toLowerCase()] && !names[n.toLowerCase()]) { names[n.toLowerCase()] = 1; out.push(n); } });
+  return out;
+}
+function migrationPlanV31_() {
+  var plan = [];
+  if (schemaVersion_() < 3) plan.push('⚠️ This spreadsheet is not on v3 yet — run migrateToV3 first.');
+  V31_SHEETS.forEach(function (n) { if (!sh_(n)) plan.push('Create tab ' + n); });
+  Object.keys(EXTRA_COLS_V31).forEach(function (n) {
+    if (!sh_(n)) return; var map = hdr_(n), missing = EXTRA_COLS_V31[n].filter(function (c) { return !map[c]; });
+    if (missing.length) plan.push('Add columns to ' + n + ': ' + missing.join(', '));
+  });
+  var nb = blankCount_('Bills', 'Paid Amount'); if (nb) plan.push('Mark ' + nb + ' existing bill(s) as paid in full (Paid Amount = Total, Balance Due = 0)');
+  var nr = blankCount_('TreatmentReceipts', 'Paid Amount'); if (nr) plan.push('Mark ' + nr + ' existing dental receipt(s) as paid in full');
+  var sn = newSupplierNames_(); if (sn.length) plan.push('Create ' + sn.length + ' supplier(s) from purchase history: ' + sn.slice(0, 10).join(', ') + (sn.length > 10 ? '…' : '') + ' (opening balance ₹0 — old purchases count as paid)');
+  if (!sh_('TreatmentMaster') || sh_('TreatmentMaster').getLastRow() < 2) plan.push('Create a treatment price list with ' + DEFAULT_TREATMENTS.length + ' common treatments (price ₹0 — enter your prices in Settings)');
+  plan.push('Create a secret key for encrypting patient data cached on phones/PCs (stays on the server)');
+  plan.push('Existing rows and columns are never deleted, moved or changed. A verified backup copy is made first.');
+  return plan;
+}
+function migrateToV31DryRun() { Logger.log('MIGRATION v3.1 PLAN (nothing changed):\n• ' + migrationPlanV31_().join('\n• ')); }
+function fillMoneyCols_(name, totalCol) {
+  var sh = sh_(name); if (!sh || sh.getLastRow() < 2) return 0;
+  _hdr = {};
+  var n = sh.getLastRow() - 1, cols = ['Paid Amount', 'Balance Due', 'Payment Status', 'Returned Value', 'Refunded Amount'].map(function (c) { return colOf_(name, c); });
+  var tot = sh.getRange(2, colOf_(name, totalCol), n, 1).getValues(), key = sh.getRange(2, 1, n, 3).getValues();
+  var ranges = cols.map(function (c) { return sh.getRange(2, c, n, 1); }), vals = ranges.map(function (r) { return r.getValues(); }), filled = 0;
+  for (var i = 0; i < n; i++) {
+    if (!(key[i][0] || key[i][2]) || vals[0][i][0] !== '') continue;
+    var t = r2_(tot[i][0]); vals[0][i][0] = t; vals[1][i][0] = 0; vals[2][i][0] = 'Paid'; vals[3][i][0] = 0; vals[4][i][0] = 0; filled++;
+  }
+  if (filled) ranges.forEach(function (r, k) { r.setValues(vals[k]); });
+  return filled;
+}
+function migrateToV31() {
+  var lock = LockService.getScriptLock(); lock.waitLock(30000);
+  try {
+    if (schemaVersion_() < 3) throw new Error('Run migrateToV3 first (this spreadsheet is not on v3 yet).');
+    var plan = migrationPlanV31_();
+    Logger.log('Plan:\n• ' + plan.join('\n• '));
+    var backup = backupNow_('pre-migration');     // throws (and stops) if the backup can't be verified
+    Logger.log('Backup OK: ' + backup.url);
+    V31_SHEETS.forEach(function (n) { getOrCreateSheet(n, BASE_HEADERS[n]); });
+    Object.keys(EXTRA_COLS_V31).forEach(function (n) { if (sh_(n)) ensureCols_(n, EXTRA_COLS[n]); });
+    _hdr = {};
+    var fb = fillMoneyCols_('Bills', 'Total'), fr = fillMoneyCols_('TreatmentReceipts', 'Amount');
+    // suppliers from purchase history; link old purchases to them
+    var created = newSupplierNames_();
+    if (created.length) appendRows_('Suppliers', created.map(function (n) { return rowFrom_('Suppliers', { 'Supplier ID': uid_('SUP-'), 'Name': n, 'Opening Balance': 0, 'Status': 'Active', 'Created At': nowStr_(), 'Created By': 'system', 'Updated At': nowStr_() }); }));
+    var sups = loadSuppliers_(), ps = sh_('Purchases');
+    if (ps.getLastRow() > 1) {
+      var n = ps.getLastRow() - 1, names = ps.getRange(2, 3, n, 1).getValues(), idR = ps.getRange(2, colOf_('Purchases', 'Supplier ID'), n, 1), ids = idR.getValues(), ch = false;
+      for (var i = 0; i < n; i++) if (!ids[i][0] && names[i][0]) { var su = findSupplierByName_(sups.list, names[i][0]); if (su) { ids[i][0] = su.id; ch = true; } }
+      if (ch) idR.setValues(ids);
+    }
+    if (sh_('TreatmentMaster').getLastRow() < 2)
+      appendRows_('TreatmentMaster', DEFAULT_TREATMENTS.map(function (t) { return rowFrom_('TreatmentMaster', { 'Treatment ID': uid_('TRT-'), 'Name': t[0], 'Category': t[1], 'Price': 0, 'Status': 'Active', 'Updated At': nowStr_(), 'Updated By': 'system' }); }));
+    localKeySecret_();
+    props_().setProperty('SCHEMA_VERSION', String(SCHEMA_VERSION));
+    bumpDataVersion_();
+    audit_({ u: 'system', r: 'SYSTEM' }, 'migrateToV31', '', 'bills marked paid: ' + fb + ' · receipts: ' + fr + ' · suppliers created: ' + created.length + ' | backup ' + backup.fileId, 'OK');
+    Logger.log('✅ v3.1 update complete. Backup: ' + backup.url + '\nNow: Deploy → Manage deployments → Edit → New version → Deploy.');
+  } finally { lock.releaseLock(); }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // ACTION TABLE
 // ════════════════════════════════════════════════════════════════════════════
 ACTIONS = {
@@ -1427,5 +2692,16 @@ ACTIONS = {
   saveExamForm: saveExamForm_, deleteExamForm: deleteExamForm_,
   saveSettings: saveSettings_, saveExpense: saveExpense_, deleteExpense: deleteExpense_,
   listUsers: listUsers_, createUser: createUser_, resetUserPassword: resetUserPassword_, setUserActive: setUserActive_,
-  getAuditLog: getAuditLog_, backupNow: backupNowApi_, listBackups: listBackups_, validateData: validateData_
+  getAuditLog: getAuditLog_, backupNow: backupNowApi_, listBackups: listBackups_, validateData: validateData_,
+  // v3.1
+  recordPayment: recordPayment_, cancelPayment: cancelPayment_, returnRefund: returnRefund_, getPayments: getPayments_,
+  getCashSummary: getCashSummary_, saveCashClosing: saveCashClosing_, getCashClosings: getCashClosings_,
+  saveSupplier: saveSupplier_, deleteSupplier: deleteSupplier_, recordSupplierPayment: recordSupplierPayment_, cancelSupplierEntry: cancelSupplierEntry_,
+  getSupplierLedger: getSupplierLedger_, addPurchaseInvoice: addPurchaseInvoice_, cancelPurchaseInvoice: cancelPurchaseInvoice_,
+  uploadInvoiceAttachment: uploadInvoiceAttachment_, purchaseReturn: purchaseReturn_,
+  saveTreatment: saveTreatment_, savePatientTreatment: savePatientTreatment_, setPatientTreatmentStatus: setPatientTreatmentStatus_, deletePatientTreatment: deletePatientTreatment_,
+  saveFollowUp: saveFollowUp_, setFollowUpStatus: setFollowUpStatus_, deleteFollowUp: deleteFollowUp_,
+  getPatientHistory: getPatientHistory_, getRecentRecords: getRecentRecords_, getBills: getBills_,
+  getBatchHistory: getBatchHistory_, getInventoryReport: getInventoryReport_, getReportData: getReportData_,
+  healthCheck: healthCheck_, restoreDrill: restoreDrill_
 };
