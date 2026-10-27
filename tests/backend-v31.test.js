@@ -445,3 +445,38 @@ test('text that looks like a spreadsheet formula is stored as plain text, never 
   const { sheetText_ } = t.g.sandbox;
   assert.equal(sheetText_('-5'), '-5'); assert.equal(sheetText_(-5), -5); assert.equal(sheetText_('=A1'), "'=A1");
 });
+
+test('faster loading: packed answers carry exactly the same data (smaller); login can bring the data along', () => {
+  const t = setup();
+  const U = '\u0000U';
+  const unpack = (v) => {
+    if (Array.isArray(v)) return v.map(unpack);
+    if (v && typeof v === 'object') {
+      if (v._c && v._r) return v._r.map(r => { const o = {}; v._c.forEach((k, i) => { if (r[i] !== U) o[k] = unpack(r[i]); }); return o; });
+      const o = {}; for (const k in v) o[k] = unpack(v[k]); return o;
+    }
+    return v;
+  };
+  t.owner(bill('BILL-8000000000091', [item(1001, 2, 10), item(1002, 1, 25)], { paidAmount: 20 }));
+  for (let i = 0; i < 12; i++) t.owner({ action: 'savePatient', id: 'PT-P' + i, name: 'Packed ' + i, phone: '90000001' + String(i).padStart(2, '0'), status: 'Active' });
+  const plain = t.owner({ action: 'getAllData' }), packed = t.owner({ action: 'getAllData', packed: 1 });
+  assert.equal(packed.packed, true);
+  assert.ok(packed.patients._c && packed.patients._r, 'lists travel as tables');
+  const un = unpack(packed); delete un.packed; delete un.serverTime; delete plain.serverTime;
+  assert.deepEqual(un, plain);
+  assert.ok(JSON.stringify(packed).length < JSON.stringify(plain).length);
+  // reports and other reads too
+  const rp = t.owner({ action: 'getReportData', from: daysAgo(30), to: today() }), rk = t.owner({ action: 'getReportData', from: daysAgo(30), to: today(), packed: 1 });
+  const ru = unpack(rk); delete ru.packed; assert.deepEqual(ru, rp);
+  const hp = t.owner({ action: 'getPatientHistory', patientId: 'PT-P1' }), hk = t.owner({ action: 'getPatientHistory', patientId: 'PT-P1', packed: 1 });
+  const hu = unpack(hk); delete hu.packed; assert.deepEqual(hu, hp);
+  // writes and refusals are never packed
+  assert.equal(t.staff({ action: 'getReportData', from: daysAgo(3), to: today(), packed: 1 }).code, 'FORBIDDEN');
+  // login with data: one answer instead of two; not while a new password is still needed
+  const l = t.g.post({ action: 'login', username: 'owner', password: 'Clinic#Owner2026', withData: true, packed: 1 });
+  assert.equal(l.success, true); assert.ok(l.token);
+  const ld = unpack(l.data); delete ld.packed; delete ld.serverTime;
+  const fresh = t.g.post({ action: 'getAllData', token: l.token }); delete fresh.serverTime;
+  assert.deepEqual(ld, fresh);
+  assert.equal(typeof ld.waTemplates === 'string' || ld.waTemplates === null, true, 'WhatsApp templates come with the data');
+});

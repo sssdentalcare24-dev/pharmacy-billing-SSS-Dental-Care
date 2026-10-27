@@ -29,6 +29,10 @@
 //  • Device data key (patient data cached on phones is encrypted), health
 //    check, restore drill, faster refresh (unchanged data is not re-sent).
 //
+// New in 3.1.1 (speed): login brings the app's data in the same answer; lists travel packed as tables
+// (about half the size); WhatsApp templates come with the data. Update from 3.1.0: paste this file →
+// Save → Deploy → Manage deployments → Edit → New version → Deploy. No migration needed.
+//
 // UPDATE FROM v3.0 (owner, from the Apps Script editor):
 //   1. Paste this file, Save.
 //   2. Select function  migrateToV31DryRun → Run → read the log (changes nothing).
@@ -39,7 +43,7 @@
 //   migrateToV3DryRun → migrateToV3 → migrateToV31 → installTriggers → Deploy.
 // ════════════════════════════════════════════════════════════════════════════
 
-var VERSION = '3.1.0';
+var VERSION = '3.1.1';
 var SCHEMA_VERSION = 4;          // 3 = v3.0 tables, 4 = v3.1 tables (migrateToV31)
 var MIN_SCHEMA = 3;              // the app works (without v3.1 features) from schema 3
 var DEFAULT_SS_ID = "1rOwubjghrsuWiGXR8X1A1841_8yd-cmMQIj44QBqNaA";  // override with Script Property SS_ID (staging copy)
@@ -174,6 +178,23 @@ function props_() { return PropertiesService.getScriptProperties(); }
 function cache_() { return CacheService.getScriptCache(); }
 function ok_(o) { o = o || {}; o.success = true; return o; }
 function fail_(code, msg, extra) { var o = extra || {}; o.success = false; o.code = code; o.error = msg; return o; }
+// Lists of records travel as tables — { _c: [field names], _r: [[values], …] } — instead of repeating every
+// field name on every row. Same data, about half the size; the app unpacks it on arrival. Only when the
+// app asks for it (packed: 1), so older copies of the app keep working.
+var PACK_MISSING = '\u0000U';
+function pack_(v) {
+  if (Array.isArray(v)) {
+    if (v.length >= 8 && v.every(function (o) { return o && typeof o === 'object' && !Array.isArray(o) && !(o instanceof Date); })) {
+      var keys = [], seen = {};
+      v.forEach(function (o) { for (var k in o) if (!seen[k]) { seen[k] = 1; keys.push(k); } });
+      return { _c: keys, _r: v.map(function (o) { return keys.map(function (k) { return Object.prototype.hasOwnProperty.call(o, k) ? pack_(o[k]) : PACK_MISSING; }); }) };
+    }
+    return v.map(pack_);
+  }
+  if (v && typeof v === 'object' && !(v instanceof Date)) { var out = {}; for (var k2 in v) out[k2] = pack_(v[k2]); return out; }
+  return v;
+}
+function packed_(o) { var p = pack_(o); p.packed = true; return p; }
 function json_(o) {
   var text = (o && o.__raw) ? o.__raw : JSON.stringify(o);
   return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
@@ -408,8 +429,16 @@ function login_(req) {
     var s = { u: u.username, r: u.role, n: u.displayName, mc: u.mustChange, iat: Date.now(), last: Date.now(), g: sessGen_(u.username) };
     cache_().put('S_' + token, JSON.stringify(s), 21600);
     audit_(s, 'login', u.username, '', 'OK');
-    return ok_({ token: token, user: { username: u.username, role: u.role, displayName: u.displayName, mustChangePassword: u.mustChange },
+    var res = ok_({ token: token, user: { username: u.username, role: u.role, displayName: u.displayName, mustChangePassword: u.mustChange },
       idleMinutes: IDLE_MINUTES, version: VERSION, features: features_(), dataKey: v31_() ? dataKeyFor_(u.username) : '' });
+    // Faster login: the app's data comes in the same answer (one trip to Google instead of two).
+    if (req.withData && !u.mustChange) {
+      try {
+        var ad = getAllData_({ packed: req.packed }, { u: u.username, r: u.role }), raw = ad.__raw || JSON.stringify(ad), head = JSON.stringify(res);
+        return { __raw: head.slice(0, -1) + ',"data":' + raw + '}' };
+      } catch (eData) {}   // the app simply asks for the data separately
+    }
+    return res;
   } finally { lock.releaseLock(); }
 }
 
@@ -583,7 +612,10 @@ function handle_(req) {
   var allowed = typeof rule === 'function' ? rule(s, req) : (rule === ANY || s.r === rule);
   if (!allowed) { audit_(s, action, req.id || req.billId || '', 'Permission denied', 'DENIED'); return fail_('FORBIDDEN', 'Only the owner can do this.'); }
 
-  if (own.call(READ_ONLY, action)) return fn(req, s);
+  if (own.call(READ_ONLY, action)) {
+    var answer = fn(req, s);
+    return (req.packed && answer && !answer.__raw && answer.success !== false) ? packed_(answer) : answer;
+  }
 
   // ── writes: idempotent by request ID, serialized by lock ──
   var reqId = str_(req.reqId, 64), c = cache_();
@@ -682,7 +714,7 @@ function newBatchRow_(o) {
 // GET ALL DATA (cached per role)
 // ════════════════════════════════════════════════════════════════════════════
 function getAllData_(req, s) {
-  var c = cache_(), ver = getDataVersion_(), prefix = 'AD' + s.r.charAt(0) + '_' + ver + '_';
+  var c = cache_(), ver = getDataVersion_(), prefix = 'AD' + (req.packed ? 'P' : '') + s.r.charAt(0) + '_' + ver + '_';
   // The app already has this exact data → tiny answer instead of everything again.
   if (req.ifVersion && String(req.ifVersion) === s.r.charAt(0) + ver) return ok_({ unchanged: true, dataVersion: s.r.charAt(0) + ver });
   try {
@@ -695,7 +727,7 @@ function getAllData_(req, s) {
     }
   } catch (e) {}
   var result = buildAllData_(s.r); result.dataVersion = s.r.charAt(0) + ver;
-  var json = JSON.stringify(result);
+  var json = JSON.stringify(req.packed ? packed_(result) : result);
   if (getDataVersion_() === ver) {
     try {
       var entries = {}, count = 0;
@@ -827,7 +859,7 @@ function buildAllData_(role) {
   var expenses = isOwner ? readExpenses_().filter(function (e) { return e.date >= ownerFrom; }) : [];
 
   var out = { success: true, version: VERSION, role: role, today: today, serverTime: nowStr_(),
-    staffMaxDiscountPct: staffMaxDiscountPct_(), features: features_(), loadedFrom: from,
+    staffMaxDiscountPct: staffMaxDiscountPct_(), features: features_(), loadedFrom: from, waTemplates: settingValue_('wa_templates'),
     medicines: medicines, bills: bills, cancelledBills: cancelledBills, purchases: purchases, patients: patients,
     appointments: appointments, treatmentReceipts: treatmentReceipts, expenses: expenses };
   if (v31) extendAllData_(out, role, from, receivables);
@@ -1310,6 +1342,11 @@ function saveSettings_(req, s) {
   sheet.appendRow([key, sheetText_(value), nowStr_()]);
   audit_(s, 'saveSettings', key, '', 'OK');
   return ok_();
+}
+function settingValue_(key) {
+  var data = values_('Settings');
+  for (var i = 1; i < data.length; i++) if (String(data[i][0]) === key) return String(data[i][1] || '') || null;
+  return null;
 }
 function getSettings_(req, s) {
   var key = str_(req.settingKey, 60), data = values_('Settings');
@@ -2507,7 +2544,7 @@ function getReportData_(req, s) {
   var from = formatDate(req.from), to = formatDate(req.to);
   if (!from || !to || to < from) return fail_('VALIDATION', 'Choose a valid period');
   var span = (new Date(to) - new Date(from)) / 86400000; if (span > 1100) return fail_('VALIDATION', 'Choose a period of at most 3 years');
-  return cachedJson_('RD_' + from + '_' + to, function () { return buildReportData_(from, to); });
+  return cachedJson_('RD' + (req.packed ? 'P' : '') + '_' + from + '_' + to, function () { var d = buildReportData_(from, to); return req.packed ? packed_(d) : d; });
 }
 function cachedJson_(key, build) {
   var c = cache_(), prefix = key + '_' + getDataVersion_() + '_', ver = getDataVersion_();

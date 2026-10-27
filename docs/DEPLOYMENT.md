@@ -11,6 +11,10 @@ No Netlify, no second Apps Script, no second spreadsheet. Safety comes from the 
 
 ---
 
+## A0. Server 3.1.0 → 3.1.1 (speed update, 2 minutes, no migration)
+
+Paste the new `apps-script/Code.gs` → **Save** → **Deploy → Manage deployments → ✏️ → New version → Deploy**. Nothing else. Settings → System health then shows *Server version 3.1.1*. The website and app work with 3.1.0 too — they just get faster once the server is 3.1.1 (login in one trip, data half the size).
+
 ## A. Update the Apps Script to v3.1 (≈10 minutes, when the clinic is quiet)
 
 **Already on v3.0** (you ran `migrateToV3` before — the app has owner/staff logins):

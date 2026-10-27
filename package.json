@@ -1,6 +1,6 @@
 {
   "name": "ssdc-billing",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "private": true,
   "description": "Sri Sai Speciality Dental Care — billing, pharmacy inventory and clinic management (static PWA + Google Apps Script)",
   "scripts": {

@@ -58,14 +58,23 @@
 
   // ── session ───────────────────────────────────────────────────────
   var SKEY = 'ssdc_session';
+  // Android app: Android may close the app while you use WhatsApp or the camera. Keep the login on the phone
+  // so it reopens straight into the app — still logged out after 30 minutes without use, like the website.
+  var KEEP = !!window.SSDC_APP_BUILD, LKEY = 'ssdc_last_active';
+  function sstore() { try { return KEEP ? window.localStorage : window.sessionStorage; } catch (e) { return window.sessionStorage; } }
   var API = window.API = { session: null, lastSync: 0, lastResult: {} };
   API.loadSession = function () {
-    try { API.session = JSON.parse(sessionStorage.getItem(SKEY) || 'null'); } catch (e) { API.session = null; }
+    try { API.session = JSON.parse(sstore().getItem(SKEY) || 'null'); } catch (e) { API.session = null; }
+    if (KEEP && API.session) {
+      var last = parseInt(localStorage.getItem(LKEY) || '0', 10);
+      if (!last || Date.now() - last > IDLE_LOGOUT_MIN * 60000) { API.session = null; try { localStorage.removeItem(SKEY); } catch (e) {} }
+    }
     return API.session;
   };
   API.saveSession = function (s) {
     API.session = s;
-    try { if (s) sessionStorage.setItem(SKEY, JSON.stringify(s)); else sessionStorage.removeItem(SKEY); } catch (e) {}
+    try { if (s) sstore().setItem(SKEY, JSON.stringify(s)); else sstore().removeItem(SKEY); } catch (e) {}
+    if (KEEP) try { if (s) localStorage.setItem(LKEY, String(Date.now())); else localStorage.removeItem(LKEY); } catch (e) {}
   };
   API.token = function () { return API.session && API.session.token; };
   API.user = function () { return API.session && API.session.user; };
@@ -93,11 +102,33 @@
     return true;
   };
 
+  // Lists arrive packed as tables ({ _c: field names, _r: rows }) — about half the size. Unpacked here,
+  // so the rest of the app sees exactly the same records as before.
+  var PACK_MISSING = '\u0000U';
+  function unpack(v) {
+    if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) v[i] = unpack(v[i]); return v; }
+    if (v && typeof v === 'object') {
+      if (v._c && v._r && Array.isArray(v._c) && Array.isArray(v._r)) {
+        var c = v._c, n = c.length;
+        return v._r.map(function (r) { var o = {}; for (var j = 0; j < n; j++) if (r[j] !== PACK_MISSING) o[c[j]] = unpack(r[j]); return o; });
+      }
+      for (var k in v) v[k] = unpack(v[k]);
+    }
+    return v;
+  }
+  function unpackAnswer(res) {
+    if (res && res.packed) res = unpack(res);
+    if (res && res.data && res.data.packed) res.data = unpack(res.data);
+    return res;
+  }
+  API._unpack = unpack;
   function post(body) {
     var url = apiUrl();
     if (!url) return Promise.reject(new Error('No server link set'));
+    body = Object.assign({ packed: 1 }, body);
     return nativeFetch(url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(unpackAnswer);
   }
 
   function banner(msg) {
@@ -127,13 +158,16 @@
   }
 
   API.login = function (username, password) {
-    return post({ action: 'login', username: username, password: password }).then(function (res) {
+    return post({ action: 'login', username: username, password: password, withData: true }).then(function (res) {
       if (res && res.success && !res.token) {   // the Apps Script is still the old version
         res = { success: false, code: 'SERVER_OLD', error: 'The Apps Script server has not been updated yet. Paste the new Code.gs, run migrateToV3 and deploy a new version (see docs/DEPLOYMENT.md).' };
         banner(res.error);
         return res;
       }
       if (res.success) API.saveSession({ token: res.token, user: res.user, at: Date.now(), features: res.features || {}, dataKey: res.dataKey || '' });
+      // data that came with the login answer is used by the first loadData (no second trip to Google)
+      API._preload = res.success && res.data && res.data.success !== false ? { data: res.data, at: Date.now() } : null;
+      if (res.data) delete res.data;
       else if (res.code === 'MIGRATION_REQUIRED' || res.code === 'USE_POST') banner(res.error);
       return res;
     });
@@ -151,7 +185,15 @@
     var reqId = READS[action] ? '' : (p.reqId || newId('R'));
     var body = Object.assign({}, p, { action: action, token: API.token() });
     if (reqId) body.reqId = reqId;
-    return post(body).then(function (res) {
+    var pre = null;
+    if (action === 'getAllData' && API._preload) {
+      if (Date.now() - API._preload.at < 120000) {
+        pre = API._preload.data;
+        if (p.ifVersion && pre.dataVersion && String(p.ifVersion) === String(pre.dataVersion)) pre = { success: true, unchanged: true, dataVersion: pre.dataVersion };
+      }
+      API._preload = null;
+    }
+    return (pre ? Promise.resolve(pre) : post(body)).then(function (res) {
       handleCodes(res);
       if (action === 'getAllData' && res && res.success !== false) {
         API.lastSync = Date.now();
@@ -317,9 +359,12 @@
   document.addEventListener('DOMContentLoaded', function () { updateStatusLine(); setTimeout(function () { API.queue.flush(); }, 5000); });
 
   // ── auto-logout after inactivity ──────────────────────────────────
-  var lastActivity = Date.now();
+  var lastActivity = Date.now(), savedAt = 0;
   ['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(function (ev) {
-    window.addEventListener(ev, function () { lastActivity = Date.now(); }, { passive: true, capture: true });
+    window.addEventListener(ev, function () {
+      lastActivity = Date.now();
+      if (KEEP && API.token() && lastActivity - savedAt > 20000) { savedAt = lastActivity; try { localStorage.setItem(LKEY, String(lastActivity)); } catch (e) {} }
+    }, { passive: true, capture: true });
   });
   setInterval(function () {
     if (API.token() && Date.now() - lastActivity > IDLE_LOGOUT_MIN * 60000 && typeof window.doLogout === 'function') {
@@ -377,7 +422,12 @@
   var hasCrypto = !!(window.crypto && crypto.subtle && window.TextEncoder);
   function isLocal(st) { try { return st === window.localStorage; } catch (e) { return false; } }
   function isEnc(raw) { return typeof raw === 'string' && raw.slice(0, 5) === 'enc1:'; }
-  function b64(buf) { var s = '', a = new Uint8Array(buf); for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]); return btoa(s); }
+  function b64(buf) { var s = '', a = new Uint8Array(buf); for (var i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); }
+  // Data is gzip-compressed before it is encrypted (about 10× smaller: a year of bills fits easily in
+  // the browser's storage, and saving is faster). Slots written this way start with "z.".
+  var hasGzip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
+  function gzip(text) { return new Response(new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer(); }
+  function gunzip(buf) { return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text(); }
   function unb64(s) { var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
 
   P.getItem = function (k) {
@@ -422,10 +472,11 @@
           return;
         }
         var iv = crypto.getRandomValues(new Uint8Array(12));
-        return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, new TextEncoder().encode(snap[k])).then(function (ct) {
+        var plain = hasGzip ? gzip(snap[k]) : Promise.resolve(new TextEncoder().encode(snap[k]));
+        return plain.then(function (bytes) { return crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, bytes); }).then(function (ct) {
           var cur = rawGet.call(localStorage, k);                      // re-read: keep other users' slots
           if (isEnc(cur)) { try { box = JSON.parse(cur.slice(5)); } catch (e) {} } else box = { users: {} };
-          box.users[who] = b64(iv) + '.' + b64(ct);
+          box.users[who] = (hasGzip ? 'z.' : '') + b64(iv) + '.' + b64(ct);
           try { rawSet.call(localStorage, k, 'enc1:' + JSON.stringify(box)); }
           catch (e) { console.warn('Device storage full — could not save ' + k); }
         });
@@ -453,9 +504,11 @@
           var box; try { box = JSON.parse(raw.slice(5)); } catch (e) { next[name] = null; return; }
           var slot = box.users && box.users[who];
           if (!slot) { next[name] = null; return; }
-          var parts = slot.split('.');
+          var parts = slot.split('.'), zipped = parts[0] === 'z';
+          if (zipped) { parts.shift(); if (!hasGzip) { next[name] = null; return; } }
           return crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(parts[0]) }, k, unb64(parts[1]))
-            .then(function (pt) { next[name] = new TextDecoder().decode(pt); }, function () { next[name] = null; });
+            .then(function (pt) { return zipped ? gunzip(pt) : new TextDecoder().decode(pt); })
+            .then(function (text) { next[name] = text; }, function () { next[name] = null; });
         })).then(function () {
           cryptoKey = k; user = who; mem = next;
           migrate.forEach(mark);
@@ -807,8 +860,20 @@
             if (!res.success) { errEl.textContent = '❌ ' + (res.error || 'Login failed'); errEl.style.display = 'block'; return; }
             errEl.style.display = 'none';
             document.getElementById('loginPassword').value = '';
+            try { localStorage.setItem('ssdc_last_user', JSON.stringify({ username: username, role: res.user.role === 'OWNER' ? 'owner' : 'staff' })); } catch (e) {}
             startSession(res.user);
         }
+
+        // The last person who logged in on this device: name filled in, only the password to type
+        function prefillLogin() {
+            var last = null; try { last = JSON.parse(localStorage.getItem('ssdc_last_user') || 'null'); } catch (e) {}
+            if (!last || !last.username) return;
+            selectRole(last.role === 'staff' ? 'staff' : 'owner', true);
+            document.getElementById('loginUsername').value = String(last.username).slice(0, 60);
+            var pw = document.getElementById('loginPassword');
+            if (pw && !('ontouchstart' in window)) pw.focus();
+        }
+        document.addEventListener('DOMContentLoaded', function () { if (!API.token()) prefillLogin(); });
 
         // Called after login and when the app is reopened with a live session.
         function startSession(user) {
@@ -837,6 +902,7 @@
             document.getElementById('loginPassword').value = '';
             if (!silent) document.getElementById('loginError').style.display = 'none';
             selectRole('owner', true);
+            prefillLogin();
         }
         window.doLogout = doLogout;
 
@@ -964,7 +1030,10 @@
             if (!window.__appTimers) {
                 window.__appTimers = true;
                 setInterval(updateDate, 60000);
-                setInterval(function(){ if (API.token()) loadData(); }, 300000);   // refresh from Sheets every 5 min
+                setInterval(function(){ if (API.token() && document.visibilityState !== 'hidden') loadData(); }, 300000);   // refresh from Sheets every 5 min (only while on screen)
+                document.addEventListener('visibilitychange', function () {
+                    if (document.visibilityState === 'visible' && API.token() && Date.now() - (API.lastSync || 0) > 120000) loadData();
+                });
             }
         }
         // ============ END LOGIN / AUTH ============
@@ -1069,7 +1138,7 @@
             if (!CONFIG.apiUrl || !API.token()) { updateConnectionStatus(false); return; }
             // Data already on screen? Ask the server only whether it changed (tiny answer when nothing did).
             const data = await API.call('getAllData', (_firstLoadDone && API.dataVersion && bills.length + medicines.length) ? { ifVersion: API.dataVersion } : {});
-            if (data && data.unchanged) { updateConnectionStatus(true); if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets(); return; }
+            if (data && data.unchanged) { updateConnectionStatus(true); if (!(API.lastAllData && 'waTemplates' in API.lastAllData) && typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets(); return; }
             if (!data || data.success === false) {
                 updateConnectionStatus(false);
                 // Keep showing the data already on screen / saved on this device. Never swap in demo data.
@@ -1124,7 +1193,8 @@
                 if(typeof renderCancelledBills==='function') renderCancelledBills();
             }, 100);
             if (!_firstLoadDone) { _firstLoadDone = true; showToast('✅ Data loaded from Google Sheets', 'success'); }
-            if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets();
+            if ('waTemplates' in data) { if (typeof _applyTmplsJson === 'function') _applyTmplsJson(data.waTemplates); }
+            else if (typeof _loadTmplsFromSheets === 'function') _loadTmplsFromSheets();
             if (window.V31) V31.ingest(data);
         }
 
@@ -7976,10 +8046,14 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         p.append('settingKey', 'wa_templates');
         fetch(CONFIG.apiUrl + '?' + p.toString(), { method: 'GET', redirect: 'follow' })
             .then(function(r){ return r.json(); })
-            .then(function(res){
-                if (!res.success || !res.value) return;
+            .then(function(res){ if (res.success) _applyTmplsJson(res.value); })
+            .catch(function(){});
+    }
+    // Apply the message templates saved on the server (they arrive with the app's data)
+    function _applyTmplsJson(value) {
+                if (!value) return;
                 try {
-                    var tmpls = JSON.parse(res.value);
+                    var tmpls = JSON.parse(value);
                     var changed = false;
                     Object.keys(tmpls).forEach(function(key) {
                         if (tmpls[key] && tmpls[key] !== (_getCustomTmpl(key)||'')) {
@@ -7994,8 +8068,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                         if (typeof refreshWaMsg === 'function') setTimeout(refreshWaMsg, 50);
                     }
                 } catch(e) {}
-            })
-            .catch(function(){});
     }
 
     function openWaTmplEdit(key) {
@@ -8585,7 +8657,8 @@ async function loadMovements(id) {
     if (V31_TITLES[page]) document.getElementById('pageTitle').textContent = V31_TITLES[page];
     if (V31.pages[page] && V31.enabled()) {
       try { V31.pages[page](); } catch (e) { console.error(e); }
-      if (API.token() && typeof loadData === 'function') loadData();     // fresh numbers (tiny request when nothing changed)
+      // fresh numbers (tiny request when nothing changed) — but not again if the server answered moments ago
+      if (API.token() && typeof loadData === 'function' && Date.now() - (API.lastSync || 0) > 15000) loadData();
     }
     (V31.onShow[page] || []).forEach(function (f) { try { f(); } catch (e) { console.error(e); } });
     return r;

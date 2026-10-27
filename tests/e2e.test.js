@@ -272,3 +272,33 @@ test('Android build: a server link built into the app is used — phones are not
   } finally { await t.close(); }
 });
 
+
+test('Android app: reopening within 30 minutes goes straight in (no login); after 30 idle minutes it asks again', async () => {
+  const t = await setup();
+  try {
+    await t.page.addInitScript(() => { window.SSDC_APP_BUILD = true; });
+    await t.page.reload();
+    await t.login('owner', t.temp.owner, OWNER_PW);
+    await waitUntil(t.page, () => API.lastSync > 0);
+    // Android closed the app (WhatsApp, camera…) and it is opened again
+    await t.page.reload();
+    await waitUntil(t.page, () => document.getElementById('loginScreen').classList.contains('hidden') && API.lastSync > 0);
+    assert.equal(await t.page.evaluate(() => API.user().username), 'owner');
+    // 31 minutes without use → login screen
+    await t.page.evaluate(() => localStorage.setItem('ssdc_last_active', String(Date.now() - 31 * 60000)));
+    await t.page.reload();
+    await waitUntil(t.page, () => !document.getElementById('loginScreen').classList.contains('hidden'));
+    assert.equal(await t.page.evaluate(() => localStorage.getItem('ssdc_session')), null);
+    assert.deepEqual(t.errors, []);
+  } finally { await t.close(); }
+});
+
+test('website (not the app): the login stays only in this browser tab', async () => {
+  const t = await setup();
+  try {
+    await t.login('owner', t.temp.owner, OWNER_PW);
+    await waitUntil(t.page, () => API.lastSync > 0);
+    assert.equal(await t.page.evaluate(() => localStorage.getItem('ssdc_session')), null);
+    assert.ok(await t.page.evaluate(() => sessionStorage.getItem('ssdc_session')));
+  } finally { await t.close(); }
+});

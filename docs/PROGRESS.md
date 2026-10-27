@@ -46,6 +46,21 @@ Hosting: GitHub Pages only (no Netlify). Server: the **same** Apps Script projec
 
 Report Part 3 (immediate issues): **Netlify v1.0** → delete the Netlify site (`DEPLOYMENT.md` §E); **backend migration** → health check; **patient data** → encrypted on devices, owner-only screens checked on the server; **financial accuracy** → randomised books-balance tests (below); **backups** → restore drill.
 
+## Speed (3.1.1)
+
+Measured with a year of a busy clinic (5,000 bills, 2,000 patients, 2,500 appointments, 1,200 dental receipts, 350 medicines) on a 4× slowed-down CPU (budget-phone speed):
+
+| | Before | After |
+|---|---|---|
+| Trips to Google at login | 3 (login, data, WhatsApp templates) | **1** (data comes with the login answer) |
+| Trips when opening Dues / Follow-ups / Suppliers | 2 each | **0** if the server answered in the last 15 s |
+| Data downloaded per full load | 5.1 MB | **2.8 MB** (lists packed as tables; ≈350 KB if Google compresses) |
+| Longest screen freeze after login | 1.2 s | **0.35 s** |
+| Encrypted offline copy on the phone | over the 5 MB browser limit → offline copy **failed** | **0.5 MB** (compressed before encryption) |
+| Background refresh | every 5 min, even with the screen off | only while the app is on screen; catches up when you come back |
+| Android app closed by the phone (WhatsApp, camera) | log in again | **opens straight in** if used in the last 30 min |
+| Login screen | type user name each time | last user name filled in |
+
 ## Financial accuracy — how it is checked
 
 - Money model (server and app use the same rule): for every bill or dental receipt, **Balance due = (Total − Returned value) − (Paid − Refunded)**. A return first reduces what is still owed; only money paid beyond the new total is refunded. Over-collection is refused.
