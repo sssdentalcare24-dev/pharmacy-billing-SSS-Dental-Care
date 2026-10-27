@@ -6,15 +6,11 @@ Fast, installable billing & clinic app. Data lives in Google Sheets (via Google 
 
 | Path | What it is |
 |---|---|
-| `index.html` | Page layout only (≈160 KB, was 810 KB) |
-| `css/app.css` | All styles |
-| `js/00-boot.js` | Speed helpers: data prefetch, offline save queue, lazy lists, password hashing |
-| `js/01-core.js` … `js/11-wa-templates.js` | Your app code, split by feature (same code, same order) |
-| `js/99-speed.js` | Lazy page rendering, first-time setup, service worker registration |
-| `js/vendor/qrcode.min.js` | QR library (self-hosted, no CDN wait) |
+| `index.html` | Page layout + all styles (one request draws the first screen) |
+| `js/app.js` | All app code in one file, in load order. Search `══ FILE:` to jump between sections (core, combined bill, patients, exam form, printer, WA templates, speed helpers) |
 | `sw.js` | Service worker — app opens instantly and works offline |
-| `manifest.webmanifest`, `assets/` | Logo (7 KB WebP, was 2 × 92 KB inline) and app icons |
-| `apps-script/Code.gs` | Updated Google Apps Script — paste into script.google.com (not used by the website) |
+| `manifest.webmanifest`, `assets/` | App icons and logo |
+| `apps-script/Code.gs` | Google Apps Script — paste into script.google.com (not used by the website) |
 
 ## 1. Upload to GitHub
 
@@ -39,7 +35,7 @@ Tip: on Android Chrome use **⋮ → Add to Home screen** to install it like an 
 
 ## Change passwords
 
-Passwords are stored only as SHA-256 hashes in `js/01-core.js` (`CREDENTIALS`).
+Passwords are stored only as SHA-256 hashes in `js/app.js` (search for `CREDENTIALS`).
 Open the app → press **F12** → Console → run:
 
 ```js
@@ -47,19 +43,29 @@ __sha256('ssdc|owner|YOUR_NEW_PASSWORD')   // for owner
 __sha256('ssdc|staff|YOUR_NEW_PASSWORD')   // for staff
 ```
 
-Paste the result into the matching `hash: '...'` in `js/01-core.js` and upload that file again.
+Paste the result into the matching `hash: '...'` in `js/app.js` and upload that file again.
 
 ## Updating the app later
 
 Edit files and upload them to GitHub again. Phones pick up the new version on the next open
 (the service worker shows the saved copy instantly and downloads the update in the background).
-For a big update, change `VERSION` in `sw.js` (e.g. `ssdc-v2`) so every device clears the old copy.
+For a big update, change `VERSION` in `sw.js` (e.g. `ssdc-v4`) so every device clears the old copy.
 
 ## What makes it fast
 
-- **Before login:** the page is split into small cached files; scripts load in parallel with `defer`; logo is a 7 KB WebP; Sheets data starts downloading while you type the password.
+- **Before login:** 3 requests instead of one 810 KB file; first screen draws from the page itself (logo embedded at 4 KB); scripts load in the background with `defer`; Sheets data starts downloading while you type the password.
 - **Repeat visits:** service worker serves everything from the phone instantly, even offline.
 - **Big lists:** All Bills and Patients show 50 at a time and load more as you scroll; off-screen cards aren't painted. Search still searches everything.
 - **Only the visible page redraws** after data loads; the other pages update in the background.
 - **Server:** `getAllData` is cached in Apps Script, so reloads return in a fraction of a second; every save/delete clears the cache so all devices see fresh data.
 - **Saves never get lost:** if the internet drops while saving, it's kept on the device (orange "⏳ waiting to sync" badge) and sent automatically when you're back online. The server ignores duplicates.
+
+## Measured speed (slow 4G phone, 4× slower CPU)
+
+| | Old single file | New |
+|---|---|---|
+| First visit — screen visible | 0.61 s | 0.38 s |
+| First visit — fully loaded | 1.68 s | 0.98 s |
+| Next visits — fully loaded | 1.68 s | **0.21 s** |
+| Data downloaded | 237 KB | 142 KB |
+| Lighthouse performance (real throttling) | 80 | 97 |

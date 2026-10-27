@@ -3,29 +3,15 @@
    show the saved copy immediately, download the newest copy in the
    background for next time. Google Sheets calls are never cached here.
    After uploading big changes you can bump VERSION to clear old copies. */
-const VERSION = 'ssdc-v1';
+const VERSION = 'ssdc-v3';
 const CORE = [
-    "./",
-    "index.html",
-    "css/app.css",
-    "manifest.webmanifest",
-    "assets/logo-256.webp",
-    "assets/icon-192.png",
-    "js/00-boot.js",
-    "js/01-core.js",
-    "js/02-treatment-payment.js",
-    "js/03-receipt-numbers.js",
-    "js/04-combined-bill.js",
-    "js/05-patients-appointments.js",
-    "js/06-exam-form.js",
-    "js/07-whatsapp.js",
-    "js/08-mobile-sidebar.js",
-    "js/09-bt-printer.js",
-    "js/vendor/qrcode.min.js",
-    "js/10-bt-print-qr.js",
-    "js/11-wa-templates.js",
-    "js/99-speed.js"
-  ];
+  "./",
+  "index.html",
+  "js/app.js",
+  "manifest.webmanifest",
+  "assets/logo-256.webp",
+  "assets/icon-192.png"
+];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
