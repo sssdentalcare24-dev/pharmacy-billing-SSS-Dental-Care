@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// Release signing: reads android/keystore.properties (kept OUT of git) or environment variables.
+def keystoreProps = new Properties()
+def keystoreFile = rootProject.file('keystore.properties')
+if (keystoreFile.exists()) { keystoreFile.withInputStream { keystoreProps.load(it) } }
+def signValue = { String key, String env -> keystoreProps.getProperty(key) ?: System.getenv(env) }
+def hasSigningKey = signValue('storeFile', 'ANDROID_KEYSTORE_PATH') != null
+
 android {
     namespace = "in.srisaidentalcare.billing"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,7 +14,7 @@ android {
         applicationId "in.srisaidentalcare.billing"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
+        versionCode ((signValue('versionCode', 'VERSION_CODE') ?: '3') as Integer)
         versionName "3.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -16,8 +23,19 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (hasSigningKey) {
+            release {
+                storeFile file(signValue('storeFile', 'ANDROID_KEYSTORE_PATH'))
+                storePassword signValue('storePassword', 'ANDROID_KEYSTORE_PASSWORD')
+                keyAlias signValue('keyAlias', 'ANDROID_KEY_ALIAS') ?: 'ssdc'
+                keyPassword signValue('keyPassword', 'ANDROID_KEY_PASSWORD') ?: signValue('storePassword', 'ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (hasSigningKey) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
