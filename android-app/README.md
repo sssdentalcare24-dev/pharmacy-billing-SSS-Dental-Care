@@ -6,7 +6,7 @@ The clinic website, packaged as an Android app. Same features, same login, same 
 |---|---|
 | App name | Sri Sai Speciality Dental Care |
 | App ID | `in.srisaidentalcare.billing` |
-| Version | 3.1.2 (code 6) |
+| Version | 3.1.3 (code 7) |
 | Android | 7.0 and newer (minSdk 24, targetSdk 36) |
 
 ## What is different inside the app
