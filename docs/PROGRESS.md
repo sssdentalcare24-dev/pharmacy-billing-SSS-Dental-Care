@@ -1,18 +1,20 @@
 # Upgrade progress (read this first when continuing)
 
-Branch: **`develop`** · Production (`main`) untouched until approval · Last update: 27 Oct 2026
+**v3 merged to `main` (GitHub Pages) on 27 Oct 2026.** Hosting: GitHub Pages only (no Netlify). Server: the **same** Apps Script project and spreadsheet, upgraded in place with `migrateToV3` (automatic verified backup first). The pharmacy is **not GST-registered** → no GST on bills or purchases.
+
+Owner action still needed once: `docs/DEPLOYMENT.md` §A (paste Code.gs → migrateToV3 → installTriggers → deploy new version).
 
 | Stage | Status |
 |---|---|
 | 1 Audit | ✅ `docs/AUDIT.md` |
 | 2 Architecture & security | ✅ done (server-side auth, RBAC, POST, audit log, sessions, lockout, rate limit) |
 | 3 Database & business logic | ✅ core done (validation, idempotency, cancellations, stock register, batches/FEFO, backups, migration) |
-| 4 Pharmacy & clinic features | ⏳ partly (purchase batches/expiry/free qty/invoice; medicine edit; stock adjustments). Next: partial payments & outstanding, refunds UI, GST/MRP/HSN on bills, supplier master & ledger, purchase returns UI, patient medical/dental history, treatment master, barcode scan |
+| 4 Pharmacy & clinic features | ⏳ partly (purchase batches/expiry/free qty/invoice; medicine edit; stock adjustments). Next: partial payments & outstanding, refunds UI, MRP on bills, supplier master & ledger, purchase returns UI, patient medical/dental history, treatment master, barcode scan. **No GST** (not registered) |
 | 5 Financial reporting | ⏳ started (dental revenue in reports/dashboard, COGS from batches). Next: financial dashboard (receivables/payables, net profit), full report set, Excel/PDF |
 | 6 Performance & PWA | ✅ measured (Lighthouse 99, no regression); next: paginated loading, medicine search box, minified build |
 | 7 UI/UX refresh | ⏳ not started |
-| 8 Testing | ✅ 33 automated tests (23 server, 10 browser) passing |
-| 9 Deployment | ⏳ waiting: staging setup + owner acceptance (`docs/DEPLOYMENT.md`) |
+| 8 Testing | ✅ 34 automated tests (23 server, 11 browser) passing |
+| 9 Deployment | ✅ website on `main`/GitHub Pages · ⏳ owner updates the Apps Script once (`DEPLOYMENT.md` §A) |
 
 ## What changed and why
 
@@ -37,8 +39,8 @@ Branch: **`develop`** · Production (`main`) untouched until approval · Last up
 
 ### Other files
 - `index.html`: username field (any login), sync status line, change-password button, purchase form (batch no, expiry, free qty, MRP, invoice no), accessibility labels.
-- `sw.js`: cache version bump. `netlify.toml`: security headers. `apps-script/appsscript.json`: Asia/Kolkata time zone, web-app settings. `package.json`: `npm test`.
-- `tests/`: `gas-mock.js` (simulated Google services), `backend.test.js` (23), `e2e.test.js` (10).
+- `sw.js`: cache version bump. Content-Security-Policy `<meta>` tag in `index.html` (GitHub Pages can't send headers); the app detects an old Apps Script and says so. `apps-script/appsscript.json`: Asia/Kolkata time zone, web-app settings. `package.json`: `npm test`.
+- `tests/`: `gas-mock.js` (simulated Google services), `backend.test.js` (23), `e2e.test.js` (11).
 - `docs/`: `AUDIT.md`, `MIGRATION.md`, `DEPLOYMENT.md`, this file.
 
 ## Completed features (tested)
@@ -64,6 +66,6 @@ Server-side login · forced password change · lockout · session expiry · idle
 | Repeat visit (service worker) | 1.68 s | 0.21 s | ~0.2 s |
 
 ## Next session — start here
-1. Owner sets up staging (`DEPLOYMENT.md` A) and runs the acceptance list (B).
-2. Stage 4: partial payments + outstanding balances on bills and combined bills (needs owner answers: is the pharmacy GST-registered? GST % per medicine?).
-3. Stage 4: supplier master + ledger, purchase returns screen.
+1. Confirm the owner finished `DEPLOYMENT.md` §A and §B (check AuditLog for `migrateToV3` and logins).
+2. Stage 4: partial payments + outstanding balances on bills and combined bills, refunds (no GST — not registered).
+3. Stage 4: supplier master + ledger, purchase returns screen; then Stage 5 financial dashboard.

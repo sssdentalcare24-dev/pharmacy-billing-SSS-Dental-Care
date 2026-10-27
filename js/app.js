@@ -112,6 +112,11 @@
 
   API.login = function (username, password) {
     return post({ action: 'login', username: username, password: password }).then(function (res) {
+      if (res && res.success && !res.token) {   // the Apps Script is still the old version
+        res = { success: false, code: 'SERVER_OLD', error: 'The Apps Script server has not been updated yet. Paste the new Code.gs, run migrateToV3 and deploy a new version (see docs/DEPLOYMENT.md).' };
+        banner(res.error);
+        return res;
+      }
       if (res.success) API.saveSession({ token: res.token, user: res.user, at: Date.now() });
       else if (res.code === 'MIGRATION_REQUIRED' || res.code === 'USE_POST') banner(res.error);
       return res;

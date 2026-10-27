@@ -1,0 +1,943 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SSDC Billing — v3 upgrade report</title><style>
+:root{--navy:#1e3f5a;--blue:#2c5aa0;--line:#e3e8ef}
+*{box-sizing:border-box} body{margin:0;font:16px/1.6 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#24323f;background:#f5f7fa}
+header{background:var(--navy);color:#fff;padding:22px 20px} header h1{margin:0;font-size:22px;color:#fff;border:0;padding:0} header p{margin:4px 0 0;opacity:.85;font-size:14px}
+nav{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);padding:8px 12px;display:flex;gap:6px;flex-wrap:wrap;z-index:2}
+nav a{text-decoration:none;color:var(--blue);font-weight:600;font-size:14px;padding:6px 10px;border-radius:8px;background:#eef3fb}
+main{max-width:980px;margin:0 auto;padding:12px 16px 60px} section{background:#fff;border-radius:12px;padding:6px 22px 18px;margin:18px 0;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+h1{font-size:21px;color:var(--navy);border-bottom:2px solid var(--line);padding-bottom:6px} h2{font-size:18px;color:var(--navy);margin-top:26px} h3{font-size:16px}
+.tw{overflow-x:auto;margin:10px 0} table{border-collapse:collapse;width:100%;font-size:14px} th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top} th{background:#eef3fb}
+code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:13px} pre{background:#1f2933;color:#e4e7eb;padding:12px;border-radius:8px;overflow:auto} pre code{background:none;color:inherit}
+li.todo{list-style:none;margin-left:-18px} blockquote{border-left:4px solid var(--blue);margin:10px 0;padding:6px 14px;background:#f5f8fd}
+@media print{nav{display:none} section{box-shadow:none}}</style></head><body>
+<header><h1>🦷 Sri Sai Speciality Dental Care — Billing v3 upgrade report</h1><p>27 Oct 2026 · live on GitHub Pages · same Apps Script · no GST · 34 automated tests passing</p></header>
+<nav><a href="#s0">Progress &amp; what changed</a><a href="#s1">Switch-over steps</a><a href="#s2">Audit</a><a href="#s3">Migration, backup &amp; rollback</a></nav><main><section id="s0"><h1>Upgrade progress (read this first when continuing)</h1>
+<p><strong>v3 merged to <code>main</code> (GitHub Pages) on 27 Oct 2026.</strong> Hosting: GitHub Pages only (no Netlify). Server: the <strong>same</strong> Apps Script project and spreadsheet, upgraded in place with <code>migrateToV3</code> (automatic verified backup first). The pharmacy is <strong>not GST-registered</strong> → no GST on bills or purchases.</p>
+<p>Owner action still needed once: <code>docs/DEPLOYMENT.md</code> §A (paste Code.gs → migrateToV3 → installTriggers → deploy new version).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 Audit</td>
+<td>✅ <code>docs/AUDIT.md</code></td>
+</tr>
+<tr>
+<td>2 Architecture &amp; security</td>
+<td>✅ done (server-side auth, RBAC, POST, audit log, sessions, lockout, rate limit)</td>
+</tr>
+<tr>
+<td>3 Database &amp; business logic</td>
+<td>✅ core done (validation, idempotency, cancellations, stock register, batches/FEFO, backups, migration)</td>
+</tr>
+<tr>
+<td>4 Pharmacy &amp; clinic features</td>
+<td>⏳ partly (purchase batches/expiry/free qty/invoice; medicine edit; stock adjustments). Next: partial payments &amp; outstanding, refunds UI, MRP on bills, supplier master &amp; ledger, purchase returns UI, patient medical/dental history, treatment master, barcode scan. <strong>No GST</strong> (not registered)</td>
+</tr>
+<tr>
+<td>5 Financial reporting</td>
+<td>⏳ started (dental revenue in reports/dashboard, COGS from batches). Next: financial dashboard (receivables/payables, net profit), full report set, Excel/PDF</td>
+</tr>
+<tr>
+<td>6 Performance &amp; PWA</td>
+<td>✅ measured (Lighthouse 99, no regression); next: paginated loading, medicine search box, minified build</td>
+</tr>
+<tr>
+<td>7 UI/UX refresh</td>
+<td>⏳ not started</td>
+</tr>
+<tr>
+<td>8 Testing</td>
+<td>✅ 34 automated tests (23 server, 11 browser) passing</td>
+</tr>
+<tr>
+<td>9 Deployment</td>
+<td>✅ website on <code>main</code>/GitHub Pages · ⏳ owner updates the Apps Script once (<code>DEPLOYMENT.md</code> §A)</td>
+</tr>
+</tbody>
+</table></div>
+<h2>What changed and why</h2>
+<h3><code>apps-script/Code.gs</code> (v3, rewritten around the old functions)</h3>
+<ul>
+<li><strong>Login/session</strong> (<code>login_</code>, <code>getSession_</code>, <code>changePassword_</code>, users): salted SHA-256 ×500 hashes in a Users tab; random 64-char session tokens in CacheService; 3 h idle / 12 h absolute expiry; 5 wrong passwords → 15 min lock; password rules; owner can create/reset/disable logins; disabling or resetting ends that user's sessions; <code>emergencyResetOwnerPassword</code> for recovery. <em>Why: S-01…S-03, S-06.</em></li>
+<li><strong><code>handle_</code> gatekeeper</strong>: every request must be POST with a valid session; per-action role table (<code>PERMS</code>); staff never receive cost prices, purchases or expenses; writes run under a lock and are de-duplicated by request ID; denials and rejections audited. <em>Why: S-02, S-04, S-05.</em></li>
+<li><strong><code>saveBill_</code></strong>: re-validates every line, totals, discount limit, payment split; FEFO batch allocation; cost of goods from the actual batches; sequential bill number; shortfalls recorded instead of hidden. <em>Why: B-05…B-07, B-18, B-19.</em></li>
+<li><strong><code>cancelBill_</code> / <code>cancelPurchase_</code></strong> replace deletion; stock restored to the exact batches; reason required. <em>Why: B-09.</em></li>
+<li><strong>Batches + StockMovements</strong>: <code>addPurchase_</code> creates batches (batch no, expiry, free qty, MRP, invoice no, duplicate-invoice check); <code>adjustStock_</code> (damaged, expired, returns, count corrections — reason required); <code>updateMedicine_</code> cannot change stock silently; <code>deleteMedicine_</code> → Inactive.</li>
+<li><strong>Clinic records</strong>: server receipt numbers (<code>reserveReceiptNo_</code>); record IDs for prescriptions/exams/receipts; soft deletes; same-doctor appointment clash check. <em>Why: B-10, B-11, B-15, B-16.</em></li>
+<li><strong>Backups</strong>: <code>backupNow_</code> (verified), <code>scheduledBackup</code> (daily/weekly/monthly + pruning + failure e-mail), <code>restoreFromBackup</code>, <code>installTriggers</code>.</li>
+<li><strong>Migration</strong>: <code>migrateToV3DryRun</code>, <code>migrateToV3</code> (backup first, additive, re-runnable), <code>validateData_</code>.</li>
+<li>Daily stock e-mail now batch-aware (expired vs expiring ≤90 days).</li>
+</ul>
+<h3><code>js/app.js</code></h3>
+<ul>
+<li><strong>00-boot</strong>: new secure connection layer (<code>API.login</code>, <code>API.call</code>, POST + token + request ID), automatic conversion of all older calls, offline queue with per-item status, Sync Centre data, status line, 30-min auto-logout, <code>esc()</code>, <code>todayLocal()</code>, local QR.</li>
+<li><strong>01-core</strong>: server login, forced password change, session resume, <code>onSessionLost</code>; <code>loadData</code> never swaps in demo data (B-01), replaces lists even when empty (B-17), loads dental receipts and cancelled bills; cart/discount validation (B-06, B-07); bill save shows <em>Saving / Saved · Bill No / Pending / NOT saved</em> (and undoes a rejected bill on screen); cancel bill with reason; cancelled-bills section; dashboard counts dental income and per-medicine minimum stock; reports split Pharmacy / Dental / Total and the treatment chart shows real data only (B-02, B-12); local dates (B-14); escaping in lists (S-07); local QR (S-09).</li>
+<li><strong>03-receipt-numbers</strong>: server-issued numbers; offline numbers tagged per device.</li>
+<li><strong>04-combined-bill</strong>: works with the real data (B-03), stock check fixed (B-04), pharmacy and dental parts saved separately with real cost.</li>
+<li><strong>05/06</strong>: patient <code>addedOn</code> sent; appointment clash per doctor; exam/prescription record IDs.</li>
+<li><strong>12-admin (new)</strong>: change password, Sync Centre, owner Settings (users, billing rules, backups, data check, audit log), medicine edit, batches/FEFO view, stock adjustments, stock history.</li>
+</ul>
+<h3>Other files</h3>
+<ul>
+<li><code>index.html</code>: username field (any login), sync status line, change-password button, purchase form (batch no, expiry, free qty, MRP, invoice no), accessibility labels.</li>
+<li><code>sw.js</code>: cache version bump. Content-Security-Policy <code>&lt;meta&gt;</code> tag in <code>index.html</code> (GitHub Pages can't send headers); the app detects an old Apps Script and says so. <code>apps-script/appsscript.json</code>: Asia/Kolkata time zone, web-app settings. <code>package.json</code>: <code>npm test</code>.</li>
+<li><code>tests/</code>: <code>gas-mock.js</code> (simulated Google services), <code>backend.test.js</code> (23), <code>e2e.test.js</code> (11).</li>
+<li><code>docs/</code>: <code>AUDIT.md</code>, <code>MIGRATION.md</code>, <code>DEPLOYMENT.md</code>, this file.</li>
+</ul>
+<h2>Completed features (tested)</h2>
+<p>Server-side login · forced password change · lockout · session expiry · idle logout · user management · owner/staff permissions on the server · audit log · POST-only API · bill validation · discount limit · sequential bill numbers · duplicate-proof bills/purchases/records · split payments stored · bill &amp; purchase cancellation with stock restore · batch-wise stock · FEFO · expired stock never sold · stock movement register · stock adjustments with reasons · cost of goods from batches · dental revenue in reports · offline queue with visible status · verified backups (manual + scheduled) · restore · migration with backup · data check.</p>
+<h2>Remaining limitations / known gaps</h2>
+<ul>
+<li>Partial payments, outstanding balances, refunds (money back) and GST are <strong>not</strong> on bills yet (Stage 4).</li>
+<li>Prescription, exam-form and treatment-receipt <strong>history lists</strong> are still kept per device (the records themselves are in Sheets). Loading them from the server is Stage 4.</li>
+<li>All data still loads at login (paginated loading is Stage 6) — fine for now, will slow down after many thousands of bills.</li>
+<li>Login is protected against guessing per username; Apps Script cannot see IP addresses, so there is no per-device rate limit.</li>
+<li>Patient data cached on the device (for offline use) is not encrypted; use a screen lock on clinic phones.</li>
+<li>137 inline <code>onclick</code> handlers mean the CSP must allow inline script; XSS escaping was added to the main lists but not every older screen.</li>
+<li>Zoom is still disabled on phones (<code>user-scalable=no</code>) to avoid iPad input zoom; review in Stage 7.</li>
+<li>Combined bill does not support a discount (unchanged).</li>
+</ul>
+<h2>Performance (measured, Lighthouse 13.5, real throttling: slow 4G + 4× CPU, median of 4 runs)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Original single file</th>
+<th><code>main</code> (speed update)</th>
+<th><code>develop</code> (v3)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Performance score</td>
+<td>80</td>
+<td>99</td>
+<td>99</td>
+</tr>
+<tr>
+<td>First screen visible</td>
+<td>1.06 s</td>
+<td>0.88 s</td>
+<td>0.90 s</td>
+</tr>
+<tr>
+<td>Data downloaded</td>
+<td>237 KB</td>
+<td>142 KB</td>
+<td>154 KB</td>
+</tr>
+<tr>
+<td>Repeat visit (service worker)</td>
+<td>1.68 s</td>
+<td>0.21 s</td>
+<td>~0.2 s</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Next session — start here</h2>
+<ol>
+<li>Confirm the owner finished <code>DEPLOYMENT.md</code> §A and §B (check AuditLog for <code>migrateToV3</code> and logins).</li>
+<li>Stage 4: partial payments + outstanding balances on bills and combined bills, refunds (no GST — not registered).</li>
+<li>Stage 4: supplier master + ledger, purchase returns screen; then Stage 5 financial dashboard.</li>
+</ol></section><section id="s1"><h1>Deployment — GitHub Pages + the same Apps Script</h1>
+<pre><code>GitHub repo (main) ──► GitHub Pages  https://sssdentalcare24-dev.github.io/pharmacy-billing-SSS-Dental-Care/
+Apps Script (the existing project, same /exec link) ──► the existing spreadsheet
+</code></pre>
+<p>No Netlify, no second Apps Script, no second spreadsheet. Safety comes from the <strong>automatic verified backup</strong> that <code>migrateToV3</code> makes before it changes anything, and from the fact that the upgrade only <strong>adds</strong> tabs and columns.</p>
+<p>The website and the Apps Script must be on the same version: the v3 app talks only to the v3 server. Until the server is updated, the new app shows a red banner: <em>"The Apps Script server has not been updated yet…"</em> — nothing is saved in the meantime.</p>
+<hr />
+<h2>A. Switch-over (≈15 minutes, do it when the clinic is quiet)</h2>
+<ol>
+<li><strong>Apps Script editor</strong> → open your existing project.</li>
+<li><em>Project settings</em> → set <strong>Time zone = (GMT+05:30) India Standard Time</strong> (optional: tick <em>Show "appsscript.json"</em> and paste <code>apps-script/appsscript.json</code>).</li>
+<li>Open <code>Code.gs</code> → select all → paste the new <strong><code>apps-script/Code.gs</code></strong> from GitHub → <strong>Save</strong>.</li>
+<li>Function menu → <strong><code>migrateToV3DryRun</code></strong> → <strong>Run</strong> → read the log (it only lists what will be added).</li>
+<li>Function menu → <strong><code>migrateToV3</code></strong> → <strong>Run</strong> → allow the permissions Google asks for (Drive for the backup, Gmail for e-mails).</li>
+<li>The log shows <strong>"Backup OK"</strong> with a link, then <strong>"✅ Migration complete"</strong>.</li>
+<li>It also shows the <strong>temporary passwords</strong> for <code>owner</code> and <code>staff</code> (also e-mailed to the clinic Google account).</li>
+<li>Function menu → <strong><code>installTriggers</code></strong> → <strong>Run</strong> (daily backup ~2 AM + daily stock e-mail ~8 AM).</li>
+<li><strong>Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.</strong> The <code>/exec</code> link stays the same.</li>
+<li>Open the app on each device → log in with the temporary password → choose a personal password (at least 8 characters).</li>
+<li>Owner: <strong>Settings</strong> → set the <strong>staff discount limit</strong>, check <strong>Backups</strong> shows a verified backup, glance at the <strong>Audit log</strong>.</li>
+</ol>
+<p>If the browser still shows the old app: close and reopen it (the app updates itself in the background).</p>
+<h2>B. Quick check after switching (5 minutes)</h2>
+<ul>
+<li class="todo">☐ Owner and staff can log in; staff sees only the staff pages</li>
+<li class="todo">☐ Make a small bill → "✅ Saved on server · Bill No SSDC-…"; stock goes down</li>
+<li class="todo">☐ Owner → All Bills → ✖ cancel that test bill with reason "test" → stock comes back</li>
+<li class="todo">☐ Inventory → 📦 Stock on one medicine shows its batch (OPENING)</li>
+<li class="todo">☐ Settings → Backups → ✅ verified · Audit log shows the logins and the test bill</li>
+<li class="todo">☐ Thermal printer still prints</li>
+</ul>
+<h2>C. If something is wrong — rollback</h2>
+<ol>
+<li>Apps Script → <strong>Deploy → Manage deployments → ✏️ Edit → Version:</strong> choose the <strong>previous version</strong> → Deploy.</li>
+<li>GitHub → the repository → <em>Commits</em> → revert to commit <code>9a392c4</code> (the version before v3), or ask Claude to do it.</li>
+<li>Data: nothing was removed. If needed, open Drive → <em>SSDC Backups</em> → <code>SSDC Backup pre-migration …</code> and run <code>restoreFromBackup("&lt;file id&gt;")</code> (see <code>MIGRATION.md</code> §8).</li>
+</ol>
+<h2>D. Forgotten passwords</h2>
+<ul>
+<li><strong>Staff:</strong> owner → Settings → Users → <em>Reset password</em> (temporary password, staff changes it at next login).</li>
+<li><strong>Owner:</strong> Apps Script editor → run <strong><code>emergencyResetOwnerPassword</code></strong> → a temporary password is e-mailed to the clinic Google account.</li>
+</ul>
+<h2>E. Production checklist</h2>
+<ul>
+<li class="todo">☐ <code>npm test</code> → 34 passing (done before every release)</li>
+<li class="todo">☐ <code>migrateToV3DryRun</code> reviewed</li>
+<li class="todo">☐ <code>migrateToV3</code> finished with "✅ Migration complete" and a backup link</li>
+<li class="todo">☐ Triggers installed (Apps Script → ⏰ Triggers shows <code>scheduledBackup</code> and <code>sendDailyStockReport</code>)</li>
+<li class="todo">☐ New version deployed on the <strong>same</strong> deployment (link unchanged)</li>
+<li class="todo">☐ Every user changed the temporary password</li>
+<li class="todo">☐ Staff discount limit set</li>
+<li class="todo">☐ Next morning: a <code>SSDC Backup daily …</code> file exists in Drive → <em>SSDC Backups</em></li>
+</ul>
+<h2>F. Running the tests (for developers)</h2>
+<pre><code class="language-bash">npm install &amp;&amp; npx playwright install chromium
+npm test        # 23 server tests + 11 browser tests, all on simulated Google services
+</code></pre>
+<h2>G. Security on GitHub Pages</h2>
+<p>GitHub Pages cannot send security headers, so <code>index.html</code> carries a <strong>Content-Security-Policy <code>&lt;meta&gt;</code> tag</strong> (scripts only from this site, network only to Google Apps Script, no plugins) and <code>no-referrer</code>. The repository is public but contains <strong>no secrets</strong>: no passwords, no hashes, no Apps Script link (entered once per device), and the server requires a login for every request.</p></section><section id="s2"><h1>Stage 1 — Complete Source Code Audit</h1>
+<p><strong>Project:</strong> Sri Sai Speciality Dental Care — Pharmacy Billing &amp; Clinic Management
+<strong>Audited:</strong> 27 Oct 2026, commit <code>9a392c4</code> (<code>main</code>)
+<strong>Scope:</strong> <code>index.html</code> (3,659 lines), <code>js/app.js</code> (7,495 lines, 14 modules), <code>sw.js</code>, <code>manifest.webmanifest</code>, <code>apps-script/Code.gs</code> (1,029 lines)</p>
+<p>Severity: <strong>🔴 Critical</strong> (data loss, wrong money, open patient data) · <strong>🟠 High</strong> · <strong>🟡 Medium</strong> · <strong>⚪ Low</strong></p>
+<hr />
+<h2>1. Architecture as it exists today</h2>
+<pre><code>Browser (index.html + js/app.js)  ──GET ?action=…&amp;params──►  Google Apps Script Web App (Code.gs)
+   │  localStorage: caches + device-only histories                    │
+   │  Service worker: offline app shell                               ▼
+   └─ Bluetooth ESC/POS thermal printer                       Google Sheets (one spreadsheet)
+</code></pre>
+<p>Google Sheets tabs: <code>Medicines</code>, <code>Bills</code>, <code>BillItems</code>, <code>Purchases</code>, <code>TreatmentReceipts</code>, <code>Prescriptions</code>, <code>Patients</code>, <code>Appointments</code>, <code>ExamForms</code>, <code>Settings</code>, <code>Expenses</code>.</p>
+<p>All application logic (prices, totals, discounts, profit, stock checks, permissions) runs <strong>in the browser</strong>. The server stores whatever the browser sends.</p>
+<h2>2. Existing functionality (verified by reading the code, not the menus)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Works</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Owner / Staff login</td>
+<td>⚠️</td>
+<td>Browser-only check; hashes in public JS (see §4)</td>
+</tr>
+<tr>
+<td>Dashboard (today revenue/profit, low stock, expiring, calendar, recent bills)</td>
+<td>✅</td>
+<td>Uses UTC date for "today" (§3 B-14)</td>
+</tr>
+<tr>
+<td>Pharmacy billing (cart, discount %, Cash/UPI/Card/Split, success popup, print, WhatsApp)</td>
+<td>✅</td>
+<td>Validation gaps (§3)</td>
+</tr>
+<tr>
+<td>UPI QR + paste-bank-SMS verification</td>
+<td>✅</td>
+<td>QR generated by third-party site api.qrserver.com</td>
+</tr>
+<tr>
+<td>Inventory (add, delete, list)</td>
+<td>⚠️</td>
+<td><strong>No edit</strong> — price/expiry can't be changed; backend <code>updateMedicine</code> never called</td>
+</tr>
+<tr>
+<td>Purchases (add, delete)</td>
+<td>⚠️</td>
+<td>Delete doesn't reverse stock; ID mismatch (§3)</td>
+</tr>
+<tr>
+<td>All Bills (list, search, reprint, WhatsApp, delete)</td>
+<td>⚠️</td>
+<td>Delete erases record and doesn't restore stock</td>
+</tr>
+<tr>
+<td>Expenses (add, delete, CSV export, Sheets sync + merge)</td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>Reports (KPIs, 30-day chart, payment/doctor/treatment charts, top medicines, monthly table, supplier &amp; purchase reports, CSV downloads)</td>
+<td>⚠️</td>
+<td>Treatment chart shows <strong>invented numbers</strong> when empty; dental revenue missing</td>
+</tr>
+<tr>
+<td>Patients (add, delete, search, WhatsApp)</td>
+<td>✅</td>
+<td>No edit; no medical/dental history fields</td>
+</tr>
+<tr>
+<td>Appointments (slots, book, cancel/restore, delete, WhatsApp booking popup)</td>
+<td>✅</td>
+<td>Slot clash ignores doctor</td>
+</tr>
+<tr>
+<td>WA Reminders (today list, templates editable &amp; synced via Settings)</td>
+<td>✅</td>
+<td>Opens wa.me links (manual send)</td>
+</tr>
+<tr>
+<td>Prescription (form, preview, print, history, Sheets save)</td>
+<td>⚠️</td>
+<td>History is device-only; Sheets delete removes wrong row</td>
+</tr>
+<tr>
+<td>Treatment receipt (form, payment, print, history)</td>
+<td>⚠️</td>
+<td>Receipt numbers are per-device (duplicates)</td>
+</tr>
+<tr>
+<td>Combined dental + pharmacy bill</td>
+<td>⚠️</td>
+<td>Several broken references (§3 B-03)</td>
+</tr>
+<tr>
+<td>Exam form (dental chart, findings, print, history)</td>
+<td>⚠️</td>
+<td>Sheets sync fixed 27 Oct; history device-only; Sheets delete removes wrong row</td>
+</tr>
+<tr>
+<td>Bluetooth thermal printing (58/80 mm, ESC/POS, QR)</td>
+<td>✅</td>
+<td>Chrome/Android only (Web Bluetooth)</td>
+</tr>
+<tr>
+<td>Offline (service worker, sync queue added 27 Oct)</td>
+<td>✅</td>
+<td></td>
+</tr>
+<tr>
+<td>Daily stock e-mail (time trigger)</td>
+<td>✅</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<h2>3. Bugs and calculation errors</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Sev</th>
+<th>Where</th>
+<th>Problem</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B-01</td>
+<td>🔴</td>
+<td><code>loadData()</code> catch → <code>loadDemoData()</code></td>
+<td>If Sheets fails to load (bad network, Apps Script error), the app <strong>replaces real medicines with 3 demo medicines</strong> (Amoxicillin/Ibuprofen/Paracetamol, IDs 1-3) and empties the bill list</td>
+<td>Staff can bill fake items; bills get saved against non-existent medicine IDs; stock never deducted</td>
+</tr>
+<tr>
+<td>B-02</td>
+<td>🔴</td>
+<td><code>renderTreatmentChart()</code></td>
+<td>When no local treatment data, shows <strong>hard-coded fake numbers</strong> (40/20/15/10/10/5) as if real</td>
+<td>Misleading business report</td>
+</tr>
+<tr>
+<td>B-03</td>
+<td>🔴</td>
+<td>Combined bill (<code>04-combined-bill.js</code>)</td>
+<td>Uses <code>window.medicines</code> / <code>window.bills</code>, which don't exist (<code>let</code> variables aren't on <code>window</code>)</td>
+<td>Local stock not reduced; <strong>cost price saved as ₹0</strong> for every combined-bill item (profit overstated); bill doesn't appear in lists until reload; reprint-from-All-Bills falls back to device history only</td>
+</tr>
+<tr>
+<td>B-04</td>
+<td>🔴</td>
+<td>Combined bill <code>addCbMedicine</code></td>
+<td><code>parseInt(stock) \|\| 9999</code> → stock 0 becomes 9999</td>
+<td>Out-of-stock medicines can be sold</td>
+</tr>
+<tr>
+<td>B-05</td>
+<td>🔴</td>
+<td>Backend <code>getAllData</code></td>
+<td>Payment mode <code>Split</code> isn't in the allowed list → read back as <strong>Cash</strong>; split cash/UPI amounts never sent or stored; <code>paymentRef</code> sent but not stored</td>
+<td>Wrong payment-mode reports; no UPI reference trail</td>
+</tr>
+<tr>
+<td>B-06</td>
+<td>🟠</td>
+<td>Billing cart</td>
+<td>Quantity can be 0, negative or blank (<code>NaN</code>); <code>updateCartQty</code> has no stock check; adding the same item twice skips the stock check</td>
+<td>Negative line totals; overselling</td>
+</tr>
+<tr>
+<td>B-07</td>
+<td>🟠</td>
+<td>Discount</td>
+<td>Discount % unbounded (e.g. 150% → negative bill); no staff limit</td>
+<td>Revenue loss / errors</td>
+</tr>
+<tr>
+<td>B-08</td>
+<td>🟠</td>
+<td>Purchases</td>
+<td>Local ID <code>PUR-&lt;time&gt;</code> differs from server ID <code>PUR-&lt;other time&gt;</code>; if a just-added medicine is chosen the <strong>temporary medicine ID</strong> is sent</td>
+<td>Deleting a fresh purchase deletes nothing on server; stock not added on server</td>
+</tr>
+<tr>
+<td>B-09</td>
+<td>🟠</td>
+<td>Backend <code>deletePurchase</code> / <code>deleteBill</code></td>
+<td>Rows are deleted, stock not reversed, nothing recorded</td>
+<td>Stock wrong after any deletion; records lost</td>
+</tr>
+<tr>
+<td>B-10</td>
+<td>🟠</td>
+<td>Backend <code>deletePrescription</code>, <code>deleteExamForm</code></td>
+<td>Delete the <strong>first row matching the patient name</strong></td>
+<td>Can delete a different visit's prescription/exam</td>
+</tr>
+<tr>
+<td>B-11</td>
+<td>🟠</td>
+<td>Receipt numbers (<code>03-receipt-numbers.js</code>)</td>
+<td>Counter stored per device in localStorage</td>
+<td>Two devices issue the same receipt number</td>
+</tr>
+<tr>
+<td>B-12</td>
+<td>🟠</td>
+<td>Dental revenue</td>
+<td><code>TreatmentReceipts</code> are returned by the server but never loaded; combined bills store only the pharmacy part in <code>Bills</code></td>
+<td>Reports' "Total Revenue" excludes dental treatment income after reload</td>
+</tr>
+<tr>
+<td>B-13</td>
+<td>🟡</td>
+<td>Backend <code>updateMedicine</code></td>
+<td><code>if (params.stock)</code> — stock 0 can't be saved</td>
+<td></td>
+</tr>
+<tr>
+<td>B-14</td>
+<td>🟡</td>
+<td>Dashboard/reports</td>
+<td>"Today" computed with <code>toISOString()</code> (UTC)</td>
+<td>Wrong day between 00:00–05:30 IST</td>
+</tr>
+<tr>
+<td>B-15</td>
+<td>🟡</td>
+<td>Appointments</td>
+<td>Slot clash check ignores doctor; backend <code>formatTime</code> silently snaps times to :00/:30</td>
+<td>Two doctors can't share a slot; stored time changes</td>
+</tr>
+<tr>
+<td>B-16</td>
+<td>🟡</td>
+<td>Patients</td>
+<td><code>addedOn</code> never sent to server</td>
+<td>Blank "Added On" column</td>
+</tr>
+<tr>
+<td>B-17</td>
+<td>🟡</td>
+<td><code>loadData</code></td>
+<td>Patients/appointments/expenses only replaced when server list is non-empty</td>
+<td>Deleted-everywhere records reappear from device cache</td>
+</tr>
+<tr>
+<td>B-18</td>
+<td>🟡</td>
+<td>Dashboard profit</td>
+<td>Profit = bill total − cost, using <strong>current</strong> cost price when stored cost is 0</td>
+<td>Historical profit changes when cost price changes</td>
+</tr>
+<tr>
+<td>B-19</td>
+<td>⚪</td>
+<td>Backend <code>saveBill</code></td>
+<td>Stock floored at 0 silently (<code>Math.max(0, …)</code>)</td>
+<td>Oversell hidden</td>
+</tr>
+</tbody>
+</table></div>
+<h2>4. Security vulnerabilities</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Sev</th>
+<th>Finding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S-01</td>
+<td>🔴</td>
+<td><strong>Backend has no authentication.</strong> Anyone who has the Apps Script URL can read every patient, phone number, prescription and bill (<code>?action=getAllData</code>) and delete records. The URL was hard-coded in the original HTML.</td>
+</tr>
+<tr>
+<td>S-02</td>
+<td>🔴</td>
+<td><strong>Permissions are only hidden buttons.</strong> "Staff" restrictions live in the browser; any action can be called directly.</td>
+</tr>
+<tr>
+<td>S-03</td>
+<td>🔴</td>
+<td>Login is checked in the browser. Since 27 Oct passwords are SHA-256 hashes, but the hashes are public and the passwords (<code>1234</code>, <code>123.456</code>) are trivially guessable — and the check can be skipped entirely from DevTools.</td>
+</tr>
+<tr>
+<td>S-04</td>
+<td>🟠</td>
+<td>Patient data travels in <strong>URL query strings</strong> (GET) — ends up in browser history, proxy and Google request logs.</td>
+</tr>
+<tr>
+<td>S-05</td>
+<td>🟠</td>
+<td>No audit trail: no record of who created/deleted a bill, changed stock, etc.</td>
+</tr>
+<tr>
+<td>S-06</td>
+<td>🟠</td>
+<td>No session expiry, no failed-login lockout, no password change, no account recovery.</td>
+</tr>
+<tr>
+<td>S-07</td>
+<td>🟡</td>
+<td>Stored XSS: names/notes are inserted with <code>innerHTML</code> unescaped (84 places). Input comes from staff only, so risk is insider/accidental.</td>
+</tr>
+<tr>
+<td>S-08</td>
+<td>🟡</td>
+<td>Patient data cached unencrypted in localStorage (<code>pt_records</code>, <code>appointments</code>, <code>medistock_cache</code>, histories) and not cleared on logout.</td>
+</tr>
+<tr>
+<td>S-09</td>
+<td>🟡</td>
+<td>UPI ID + amount sent to third-party <code>api.qrserver.com</code> to draw QR (a local QR library is already bundled).</td>
+</tr>
+<tr>
+<td>S-10</td>
+<td>⚪</td>
+<td>No security headers (GitHub Pages can't set them) → fixed with a Content-Security-Policy <code>&lt;meta&gt;</code> tag.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>5. Performance (measured 27 Oct, Lighthouse 13.5 + real throttling — see README)</h2>
+<p>Already done on 27 Oct: file split → single bundle, inline CSS, 4 KB embedded logo, service worker, lazy lists, idle rendering, server-side cache. First visit 1.68 s → 0.98 s; repeat 1.68 s → 0.21 s; Lighthouse 80 → 97.</p>
+<p>Remaining bottlenecks:
+- <strong>Every startup downloads every record</strong> (<code>getAllData</code>: all bills, items, patients, appointments, purchases, expenses). Grows forever → will slow down month by month.
+- Each request to Apps Script costs 0.5–3 s (cold start). UI does 2 calls at login (<code>getAllData</code>, <code>getSettings</code>).
+- <code>updateMedicineSelect</code> rebuilds 3 full <code>&lt;select&gt;</code> lists on every refresh; no search box for medicines (scrolling a long dropdown).
+- JS is not minified (440 KB raw / ~100 KB gzip).</p>
+<h2>6. Duplicate code / maintainability</h2>
+<ul>
+<li>Bill HTML/receipt building is duplicated ~6 times (<code>printBillFromSuccess</code>, <code>reprrintBill</code>, combined bill, thermal builders, WhatsApp texts).</li>
+<li>Time parsing duplicated (frontend <code>loadData</code> + backend <code>formatTime</code>).</li>
+<li>137 inline <code>onclick</code> handlers; global variables everywhere (<code>_cbCart</code>, <code>_patients</code>, …).</li>
+<li>Misspelled function <code>reprrintBill</code>.</li>
+<li><code>sheetsPost()</code> is defined but never used.</li>
+</ul>
+<h2>7. Dependencies</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Dependency</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>qrcode-generator 1.4.4</td>
+<td>Bundled locally ✅</td>
+</tr>
+<tr>
+<td>api.qrserver.com</td>
+<td>Used for UPI/treatment QR images — replace with local library (S-09)</td>
+</tr>
+<tr>
+<td>wa.me / maps links</td>
+<td>Fine (links only)</td>
+</tr>
+<tr>
+<td>No frameworks, no build step</td>
+<td>Good for maintainability</td>
+</tr>
+</tbody>
+</table></div>
+<h2>8. Database limitations (Google Sheets)</h2>
+<ul>
+<li>No real relationships: bills reference medicines by ID, but patients are referenced <strong>by name text</strong> everywhere (bills, receipts, prescriptions, exams).</li>
+<li>Single <code>Medicines.Stock</code> number and single <code>Expiry</code> per medicine — <strong>no batches</strong>, so FEFO and expiry-loss tracking are impossible.</li>
+<li>No stock ledger: stock changes in place with no history.</li>
+<li>No status columns: cancellation = deletion.</li>
+<li>No server timestamps on some sheets; dates mixed between text and Date cells.</li>
+<li>Sheets limits: 10 M cells per spreadsheet; Apps Script ~30 simultaneous executions, 6-min max runtime. Comfortable for one clinic for several years if data loading is paginated.</li>
+</ul>
+<h2>9. Mobile usability</h2>
+<ul>
+<li>Zoom disabled (<code>user-scalable=no</code>) — accessibility issue.</li>
+<li>Medicine choice is a plain <code>&lt;select&gt;</code> — slow with many medicines on a phone; no search/barcode.</li>
+<li>Tables have mobile card versions ✅. Payment button not fixed on small screens.</li>
+</ul>
+<h2>10. Data consistency</h2>
+<ul>
+<li>Many histories exist <strong>only on the device</strong> that created them: prescriptions, exam forms, treatment receipts, combined bills (<code>rx_history</code>, <code>ef_history</code>, <code>tr_history</code>, <code>cb_history</code>). Clearing the browser loses them locally (Sheets has partial copies).</li>
+<li>Optimistic saves show "saved" before the server confirms; failures only show a toast.</li>
+<li>Two devices billing the same medicine at the same time each check stale stock.</li>
+</ul>
+<h2>11. Missing functionality (vs. the upgrade brief)</h2>
+<p>Server-side auth/RBAC/sessions/audit log · batch inventory + FEFO · stock movement register · bill cancellation &amp; refunds · partial payments &amp; outstanding balances · GST/MRP/HSN · supplier master &amp; ledger · purchase returns · financial dashboard with COGS-based profit · CSV/Excel/PDF exports for all reports · automated backups &amp; restore · barcode scanning · patient medical/dental history · treatment master · automated tests.</p>
+<hr />
+<h2>12. Architecture decision: Firebase vs. Google Sheets</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Keep Google Sheets + Apps Script (hardened)</th>
+<th>Migrate to Firebase Auth + Firestore</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Existing data &amp; staff habits</td>
+<td>Unchanged; owner keeps viewing/exporting Sheets</td>
+<td>Full migration + sync back to Sheets for reports</td>
+</tr>
+<tr>
+<td>Server-side auth &amp; RBAC</td>
+<td>Yes — sessions, roles, lockout implemented in Apps Script</td>
+<td>Yes — Firebase Auth + security rules</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Free</td>
+<td>Free tier likely enough; billing account required</td>
+</tr>
+<tr>
+<td>Speed</td>
+<td>0.5–3 s per call (mitigated by cache)</td>
+<td>~100–300 ms</td>
+</tr>
+<tr>
+<td>Risk</td>
+<td>Low, incremental</td>
+<td>High: rewrite of every save/load path</td>
+</tr>
+<tr>
+<td>Setup the owner must do</td>
+<td>Paste script, run one migration</td>
+<td>Create Firebase project, keys, rules, hosting config</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Decision: keep Google Sheets + Apps Script, hardened.</strong> It satisfies the security requirements (server-side auth, server-side permission checks, POST bodies, audit log) without risking the clinic's data or daily work. Firestore remains a documented future option (<code>docs/MIGRATION.md</code>) if speed or scale ever becomes the limit.</p>
+<h2>13. Implementation plan</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Content</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>This audit</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Server-side login (salted hashes, sessions with expiry, lockout, change password, user management), role permissions enforced in Code.gs, POST-only JSON API, audit log, rate limit, remove hashes from JS, idle auto-logout</td>
+<td>This session</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Server-side bill validation, idempotency, sequential bill numbers, bill cancellation (no deletion) with stock restore, purchase cancellation, <strong>stock movement register</strong>, <strong>batch-wise stock with FEFO</strong> (backend + purchase batch entry), backups (daily/weekly/monthly + verify + alert), migration with automatic backup</td>
+<td>This session</td>
+</tr>
+<tr>
+<td>—</td>
+<td>Fix B-01…B-19</td>
+<td>This session (as each module is touched)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Partial payments/outstanding, refunds UI, MRP (no GST — not registered), supplier master &amp; ledger, purchase returns, patient history fields, treatment master, barcode scan</td>
+<td>Next</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Financial dashboard (COGS-based profit, receivables/payables), full report set, Excel/PDF export</td>
+<td>Next</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Paginated loading, medicine search box, sync centre UI, minified build</td>
+<td>Next</td>
+</tr>
+<tr>
+<td>7</td>
+<td>UI/UX refresh (same branding)</td>
+<td>Next</td>
+</tr>
+<tr>
+<td>8–9</td>
+<td>Full regression tests, release to GitHub Pages + same Apps Script</td>
+<td>Each stage</td>
+</tr>
+</tbody>
+</table></div>
+<p>Process (decided by the owner on 27 Oct): GitHub Pages only, the <strong>same</strong> Apps Script and spreadsheet upgraded in place. Safety = automatic verified backup inside <code>migrateToV3</code>, additive-only changes, 34 automated tests, rollback steps in <code>DEPLOYMENT.md</code> §C. The pharmacy is not GST-registered.</p></section><section id="s3"><h1>Database migration plan — v2 → v3</h1>
+<p><strong>Principle:</strong> additive only. No existing row is deleted, moved or rewritten. New columns are appended to the <strong>right</strong> of existing tabs, new tabs are added, and a <strong>verified backup copy</strong> is made automatically before anything changes. If the backup can't be verified, the migration stops without changing anything (tested).</p>
+<h2>1. Existing structure (v2)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Columns (A → …)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Medicines</td>
+<td>ID, Name, Stock, Unit Price, Cost Price, Expiry, Date &amp; Time</td>
+</tr>
+<tr>
+<td>Bills</td>
+<td>Bill ID, Patient Name, Doctor, Phone, Date, Subtotal, Discount, Total, Cost Total, Payment Mode, Date &amp; Time</td>
+</tr>
+<tr>
+<td>BillItems</td>
+<td>Bill ID, Medicine ID, Medicine Name, Quantity, Unit Price, Cost Price, Amount, Date &amp; Time</td>
+</tr>
+<tr>
+<td>Purchases</td>
+<td>ID, Date, Supplier, Medicine ID, Medicine Name, Quantity, Cost Price, Total Cost, Date &amp; Time</td>
+</tr>
+<tr>
+<td>TreatmentReceipts</td>
+<td>Receipt No, Date, Patient, Doctor, Amount, Amount in Words, Treatments, Saved At</td>
+</tr>
+<tr>
+<td>Prescriptions</td>
+<td>Date, Patient Name, Age, Sex, Prescription, Saved At</td>
+</tr>
+<tr>
+<td>Patients</td>
+<td>ID, Name, Phone, Age, Sex, Doctor, Treatment, Balance, Medical Alerts, Status, Last Visit, Added On</td>
+</tr>
+<tr>
+<td>Appointments</td>
+<td>ID, Patient, Phone, Date, Time, Reason, Doctor, Status, Booked At</td>
+</tr>
+<tr>
+<td>ExamForms</td>
+<td>Date, Patient, Age, Sex, Doctor, Phone, … (22 columns)</td>
+</tr>
+<tr>
+<td>Settings</td>
+<td>Key, Value, Updated At</td>
+</tr>
+<tr>
+<td>Expenses</td>
+<td>ID, Date, Category, Amount, Vendor, Notes, Payment Mode, Added At</td>
+</tr>
+</tbody>
+</table></div>
+<h2>2. Proposed structure (v3)</h2>
+<h3>New columns (appended at the right)</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>New columns</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Medicines</td>
+<td>Min Stock, Status</td>
+<td>per-medicine low-stock level; <code>Inactive</code> instead of deleting</td>
+</tr>
+<tr>
+<td>Bills</td>
+<td>Status, Bill No, Created By, Payment Ref, Cash Amount, UPI Amount, Card Amount, Cancelled At, Cancelled By, Cancel Reason</td>
+<td>cancellation instead of deletion; sequential numbers; split payments; who billed</td>
+</tr>
+<tr>
+<td>BillItems</td>
+<td>Batch Allocation</td>
+<td>JSON <code>[{b: batchId, q: qty}]</code> — exact batches each sale came from (FEFO)</td>
+</tr>
+<tr>
+<td>Purchases</td>
+<td>Batch No, Expiry, Batch ID, Status, Created By, Cancelled At, Cancelled By, Cancel Reason, Invoice No, MRP</td>
+<td>batch-wise stock, duplicate-invoice detection, cancellation</td>
+</tr>
+<tr>
+<td>TreatmentReceipts</td>
+<td>Payment Mode, Record ID, Created By, Status</td>
+<td>dental revenue by mode; precise deletion</td>
+</tr>
+<tr>
+<td>Prescriptions / ExamForms</td>
+<td>Record ID, Created By, Status</td>
+<td>delete exactly one record (was: first row with that patient name)</td>
+</tr>
+<tr>
+<td>Patients / Appointments</td>
+<td>Created By, Updated At</td>
+<td>traceability (<code>Status = Deleted</code> hides a record)</td>
+</tr>
+<tr>
+<td>Expenses</td>
+<td>Created By, Status</td>
+<td>traceability, soft delete</td>
+</tr>
+</tbody>
+</table></div>
+<h3>New tabs</h3>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Columns</th>
+<th>Relationship</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Users</td>
+<td>Username, Role, Password Hash, Salt, Active, Must Change Password, Failed Attempts, Locked Until, Created At, Last Login At, Display Name</td>
+<td>Bills/Purchases/… <code>Created By</code> → Users.Username</td>
+</tr>
+<tr>
+<td>Batches</td>
+<td>Batch ID, Medicine ID, Batch No, Expiry, Qty Received, Qty Available, Cost Price, MRP, Supplier, Purchase ID, Received At, Status</td>
+<td>Batches.Medicine ID → Medicines.ID; Batches.Purchase ID → Purchases.ID</td>
+</tr>
+<tr>
+<td>StockMovements</td>
+<td>Movement ID, Timestamp, Medicine ID, Medicine Name, Batch ID, Qty Change, Type, Reference, User, Reason, Stock After</td>
+<td>every stock change; Reference → Bill ID / Purchase ID / ADJ-…</td>
+</tr>
+<tr>
+<td>AuditLog</td>
+<td>Timestamp, User, Role, Action, Target ID, Details, Result</td>
+<td>every login, change, denial, rejection</td>
+</tr>
+</tbody>
+</table></div>
+<p>Relationships: <code>BillItems.Bill ID → Bills.Bill ID</code>, <code>BillItems.Medicine ID → Medicines.ID</code>, <code>Purchases.Medicine ID → Medicines.ID</code>, <code>Batches → Medicines/Purchases</code>, <code>StockMovements → Medicines/Batches/Bills/Purchases</code>. All IDs are unique; bills get a server sequence <code>SSDC-YY-NNNNN</code>, receipts <code>YYYY-NNNN</code> (server-side, continues after the highest existing number).</p>
+<p><code>Medicines.Stock</code> is kept up to date as the <strong>sum of available batches</strong> (so the old app and the Sheet still show a correct number); <code>Medicines.Expiry</code> = earliest available batch.</p>
+<h2>3. Field mapping</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Old data</th>
+<th>Becomes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Medicines row (Stock = N, Expiry = E, Cost = C)</td>
+<td>One batch <code>OPENING</code>, qty N, expiry E, cost C + movement <code>OPENING +N</code></td>
+</tr>
+<tr>
+<td>Bills row, empty status</td>
+<td><code>Status = Active</code></td>
+</tr>
+<tr>
+<td>Bills <code>Payment Mode = Split</code></td>
+<td>Read back as <strong>Split</strong> (v2 showed Cash)</td>
+</tr>
+<tr>
+<td>Old bills/purchases without allocation</td>
+<td>On cancellation, stock returns to the earliest-expiring batch (or a <code>RETURN</code> batch)</td>
+</tr>
+<tr>
+<td>Hard-coded login (owner/staff)</td>
+<td>Users <code>owner</code>, <code>staff</code> with <strong>random temporary passwords</strong> (logged + e-mailed), must be changed at first login</td>
+</tr>
+</tbody>
+</table></div>
+<h2>4. Migration scripts (in <code>apps-script/Code.gs</code>)</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Function</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>migrateToV3DryRun</code></td>
+<td>Prints the plan (tabs/columns to add, how many opening batches, units) — <strong>changes nothing</strong></td>
+</tr>
+<tr>
+<td><code>migrateToV3</code></td>
+<td>1) verified backup → 2) tabs + columns → 3) users → 4) bill statuses → 5) opening batches + movements → 6) <code>SCHEMA_VERSION = 3</code>. Safe to run again (skips what exists).</td>
+</tr>
+<tr>
+<td><code>validateData</code> (owner, Settings → Data check)</td>
+<td>Duplicate bill IDs, duplicate medicine names, Sheet stock ≠ batch total, bills pointing to unknown medicines, selling below cost</td>
+</tr>
+</tbody>
+</table></div>
+<p>Until the migration has run, the new server refuses every request with <em>"Server update not finished"</em> — the app never writes into a half-migrated sheet.</p>
+<h2>5. Duplicate detection</h2>
+<ul>
+<li>Bills: same <code>Bill ID</code> → stored once (retries, double taps, offline re-sends).</li>
+<li>Every write carries a request ID; the server replays the original answer for 6 h.</li>
+<li>Purchases: same ID → once; same <em>invoice no + medicine + batch</em> → refused.</li>
+<li>Medicines: same name (case-insensitive) → existing one returned.</li>
+<li>Treatment receipts / prescriptions / exam forms: same Record ID → once.</li>
+<li>Appointments: same doctor + date + time → refused (unless explicitly allowed).</li>
+</ul>
+<h2>6. Data validation</h2>
+<p>Server-side on every write: positive whole quantities, prices ≥ 0, line = qty × price, subtotal = Σ lines, discount ≤ subtotal and ≤ staff limit, total = subtotal − discount, split amounts = total, known medicine, known payment mode, required names/dates, password strength.</p>
+<h2>7. Backup procedure</h2>
+<ol>
+<li><strong>Automatic</strong> (<code>installTriggers</code>): daily ~2 AM; Sundays also <em>weekly</em>; 1st of month also <em>monthly</em>. Kept: 14 daily, 8 weekly, 12 monthly, 30 manual. Older copies go to Drive trash (recoverable 30 days).</li>
+<li><strong>Manual</strong>: Settings → Backups → <em>Back up now</em>, or run <code>backupNowFromEditor</code>.</li>
+<li><strong>Verification</strong>: every copy is reopened and each tab's row count compared with the original. Mismatch = failure.</li>
+<li><strong>Alerts</strong>: a failed automatic backup e-mails the clinic Google account and is written to the AuditLog.</li>
+</ol>
+<h2>8. Rollback procedure</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Steps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Undo the whole upgrade</td>
+<td>Apps Script → <em>Deploy → Manage deployments</em> → ✏️ edit → choose the <strong>previous version</strong> → Deploy (same link). Open the <code>SSDC Backup pre-migration …</code> copy in Drive if the data must also go back; run <code>restoreFromBackup("&lt;file id&gt;")</code>. Re-deploy the previous website: commit <code>9a392c4</code> (the current <code>main</code>).</td>
+</tr>
+<tr>
+<td>Bad data after a mistake</td>
+<td>Drive → <em>SSDC Backups</em> → open the latest good copy → check it → in Apps Script run <code>restoreFromBackup("&lt;file id&gt;")</code>. The app now reads the backup; the current file is backed up first and left untouched. To undo: <code>restoreFromBackup("&lt;previous id&gt;")</code> (logged).</td>
+</tr>
+<tr>
+<td>One wrong record</td>
+<td>Owner: cancel the bill / purchase (stock is restored), or record a stock adjustment with a reason. Nothing needs deleting.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>9. Future option: Firebase / Firestore</h2>
+<p>Not needed now (see <code>AUDIT.md</code> §12). If request speed or data size ever becomes the limit, the v3 structure maps 1:1 to Firestore collections (<code>medicines</code>, <code>batches</code>, <code>bills/{id}/items</code>, <code>stockMovements</code>, <code>auditLog</code>, …) with Firebase Auth replacing the Users tab. The same tests (<code>tests/backend.test.js</code>) define the behaviour to keep.</p></section></main></body></html>

@@ -82,7 +82,7 @@ All application logic (prices, totals, discounts, profit, stock checks, permissi
 | S-07 | 🟡 | Stored XSS: names/notes are inserted with `innerHTML` unescaped (84 places). Input comes from staff only, so risk is insider/accidental. |
 | S-08 | 🟡 | Patient data cached unencrypted in localStorage (`pt_records`, `appointments`, `medistock_cache`, histories) and not cleared on logout. |
 | S-09 | 🟡 | UPI ID + amount sent to third-party `api.qrserver.com` to draw QR (a local QR library is already bundled). |
-| S-10 | ⚪ | No security headers (GitHub Pages can't set them; Netlify can). |
+| S-10 | ⚪ | No security headers (GitHub Pages can't set them) → fixed with a Content-Security-Policy `<meta>` tag. |
 
 ## 5. Performance (measured 27 Oct, Lighthouse 13.5 + real throttling — see README)
 
@@ -159,10 +159,10 @@ Server-side auth/RBAC/sessions/audit log · batch inventory + FEFO · stock move
 | 2 | Server-side login (salted hashes, sessions with expiry, lockout, change password, user management), role permissions enforced in Code.gs, POST-only JSON API, audit log, rate limit, remove hashes from JS, idle auto-logout | This session |
 | 3 | Server-side bill validation, idempotency, sequential bill numbers, bill cancellation (no deletion) with stock restore, purchase cancellation, **stock movement register**, **batch-wise stock with FEFO** (backend + purchase batch entry), backups (daily/weekly/monthly + verify + alert), migration with automatic backup | This session |
 | — | Fix B-01…B-19 | This session (as each module is touched) |
-| 4 | Partial payments/outstanding, refunds UI, GST/MRP/HSN, supplier master & ledger, purchase returns, patient history fields, treatment master, barcode scan | Next |
+| 4 | Partial payments/outstanding, refunds UI, MRP (no GST — not registered), supplier master & ledger, purchase returns, patient history fields, treatment master, barcode scan | Next |
 | 5 | Financial dashboard (COGS-based profit, receivables/payables), full report set, Excel/PDF export | Next |
 | 6 | Paginated loading, medicine search box, sync centre UI, minified build | Next |
 | 7 | UI/UX refresh (same branding) | Next |
-| 8–9 | Full regression tests, staging → production | Each stage |
+| 8–9 | Full regression tests, release to GitHub Pages + same Apps Script | Each stage |
 
-Process: all work on the **`develop`** branch → tested on a **copy of the spreadsheet** with a **separate Apps Script deployment** → owner acceptance → merge to `main` / production. The live clinic system is not changed until approval.
+Process (decided by the owner on 27 Oct): GitHub Pages only, the **same** Apps Script and spreadsheet upgraded in place. Safety = automatic verified backup inside `migrateToV3`, additive-only changes, 34 automated tests, rollback steps in `DEPLOYMENT.md` §C. The pharmacy is not GST-registered.

@@ -1,88 +1,70 @@
-# Deployment, staging and production checklist
+# Deployment — GitHub Pages + the same Apps Script
 
 ```
-GitHub repo ── main ─────► Netlify PRODUCTION  (allbilling-srisaispecialitydentalcare.netlify.app)
-           │             └► GitHub Pages        (secondary)
-           └─ develop ──► Netlify branch deploy = STAGING (develop--allbilling-srisaispecialitydentalcare.netlify.app)
-
-Apps Script "SSDC Billing"          → live spreadsheet        (production)
-Apps Script "SSDC Billing STAGING"  → copy of the spreadsheet (staging)
+GitHub repo (main) ──► GitHub Pages  https://sssdentalcare24-dev.github.io/pharmacy-billing-SSS-Dental-Care/
+Apps Script (the existing project, same /exec link) ──► the existing spreadsheet
 ```
 
-The website and the server must be updated **together**: the v3 app talks only to the v3 server (POST + login), and the v3 server refuses the old app. That's why everything is tried on staging first.
+No Netlify, no second Apps Script, no second spreadsheet. Safety comes from the **automatic verified backup** that `migrateToV3` makes before it changes anything, and from the fact that the upgrade only **adds** tabs and columns.
+
+The website and the Apps Script must be on the same version: the v3 app talks only to the v3 server. Until the server is updated, the new app shows a red banner: *"The Apps Script server has not been updated yet…"* — nothing is saved in the meantime.
 
 ---
 
-## A. One-time: create the staging copy (≈10 minutes)
+## A. Switch-over (≈15 minutes, do it when the clinic is quiet)
 
-1. Google Drive → your billing spreadsheet → **File → Make a copy** → name it `SSDC Billing STAGING`. Copy its ID from the address bar (`/d/<ID>/edit`).
-2. Go to **script.google.com → New project** → name it `SSDC Billing STAGING`.
-3. Paste `apps-script/Code.gs` into `Code.gs`. (Optional: *Project settings → Show "appsscript.json"* and paste `apps-script/appsscript.json`.)
-4. **Project settings → Script properties → Add**: `SS_ID` = the copy's ID. (This is what keeps staging away from your real data.)
-5. Run `migrateToV3DryRun` → read the log. Run `migrateToV3` → allow the permissions → the log shows the temporary **owner** and **staff** passwords (also e-mailed).
-6. **Deploy → New deployment → Web app** · Execute as: *Me* · Who has access: *Anyone* → copy the `/exec` link.
-7. Netlify → Site → *Site configuration → Build & deploy*. If the site was created by drag-and-drop, first **Link repository** → this GitHub repo, production branch `main`. Then under *Branches* enable **branch deploys** for `develop`. Open `https://develop--<site>.netlify.app`, paste the **staging** `/exec` link when asked.
+1. **Apps Script editor** → open your existing project.
+2. *Project settings* → set **Time zone = (GMT+05:30) India Standard Time** (optional: tick *Show "appsscript.json"* and paste `apps-script/appsscript.json`).
+3. Open `Code.gs` → select all → paste the new **`apps-script/Code.gs`** from GitHub → **Save**.
+4. Function menu → **`migrateToV3DryRun`** → **Run** → read the log (it only lists what will be added).
+5. Function menu → **`migrateToV3`** → **Run** → allow the permissions Google asks for (Drive for the backup, Gmail for e-mails).
+   - The log shows **"Backup OK"** with a link, then **"✅ Migration complete"**.
+   - It also shows the **temporary passwords** for `owner` and `staff` (also e-mailed to the clinic Google account).
+6. Function menu → **`installTriggers`** → **Run** (daily backup ~2 AM + daily stock e-mail ~8 AM).
+7. **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.** The `/exec` link stays the same.
+8. Open the app on each device → log in with the temporary password → choose a personal password (at least 8 characters).
+9. Owner: **Settings** → set the **staff discount limit**, check **Backups** shows a verified backup, glance at the **Audit log**.
 
-## B. Acceptance testing on staging (owner + one staff member)
+If the browser still shows the old app: close and reopen it (the app updates itself in the background).
 
-Tick each item:
+## B. Quick check after switching (5 minutes)
 
-- [ ] Owner logs in with the temporary password → must set a new one → dashboard shows the copied data
-- [ ] Staff logs in → only New Bill, receipts, prescription, exam, patients, appointments, WA visible
-- [ ] Bill with 2 medicines, Cash → "✅ Saved on server · Bill No SSDC-…"; stock drops
-- [ ] Staff tries 25 % discount → capped at 10 %
-- [ ] UPI and Split payment bills → All Bills shows the right mode
-- [ ] Phone in airplane mode → make a bill → "⏳ waiting" badge → airplane off → synced once (check the Sheet: one row)
-- [ ] Owner cancels a bill with a reason → shows under "Cancelled bills", stock returns, Sheet row still there
-- [ ] Purchase with batch no + expiry → Inventory → 📦 Stock shows the batch; earliest expiry sold first
-- [ ] Record a "Damaged" stock change with a reason → Stock history shows it
-- [ ] Treatment receipt + combined bill → Reports shows Pharmacy / Dental / Total correctly
-- [ ] Prescription, exam form, appointment, patient, expense save (check the Sheet)
-- [ ] Thermal printer prints a bill (58 / 80 mm)
-- [ ] Settings → Users: create a staff login, reset a password, disable/enable
-- [ ] Settings → Backups → Back up now → ✅ verified
-- [ ] Settings → Data check → no unexpected issues
-- [ ] Settings → Audit log shows all of the above
-- [ ] Leave the app untouched 30 min → logged out
+- [ ] Owner and staff can log in; staff sees only the staff pages
+- [ ] Make a small bill → "✅ Saved on server · Bill No SSDC-…"; stock goes down
+- [ ] Owner → All Bills → ✖ cancel that test bill with reason "test" → stock comes back
+- [ ] Inventory → 📦 Stock on one medicine shows its batch (OPENING)
+- [ ] Settings → Backups → ✅ verified · Audit log shows the logins and the test bill
+- [ ] Thermal printer still prints
 
-## C. Going to production (after approval)
+## C. If something is wrong — rollback
 
-1. **Back up**: in the *production* Apps Script editor run `backupNowFromEditor` (or Drive → make a copy).
-2. Paste the v3 `Code.gs` into the **production** Apps Script project → Save.
-3. Run `migrateToV3DryRun` → check the plan → run `migrateToV3` → note the temporary passwords.
-4. Run `installTriggers` (daily backup + daily stock e-mail).
-5. **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy** (keeps the same `/exec` link).
-6. Merge `develop` → `main` on GitHub (pull request). Netlify and GitHub Pages publish automatically in ~1 minute.
-7. On each clinic device: open the app → log in with the temporary password → set a personal password.
-8. Watch Settings → Audit log for the first day.
+1. Apps Script → **Deploy → Manage deployments → ✏️ Edit → Version:** choose the **previous version** → Deploy.
+2. GitHub → the repository → *Commits* → revert to commit `9a392c4` (the version before v3), or ask Claude to do it.
+3. Data: nothing was removed. If needed, open Drive → *SSDC Backups* → `SSDC Backup pre-migration …` and run `restoreFromBackup("<file id>")` (see `MIGRATION.md` §8).
 
-**Rollback** (if anything is wrong): Apps Script → Manage deployments → edit → pick the previous version → Deploy; in GitHub revert the merge (the previous website is commit `9a392c4`). Data: see `MIGRATION.md` §8.
+## D. Forgotten passwords
 
-## D. Production deployment checklist
+- **Staff:** owner → Settings → Users → *Reset password* (temporary password, staff changes it at next login).
+- **Owner:** Apps Script editor → run **`emergencyResetOwnerPassword`** → a temporary password is e-mailed to the clinic Google account.
 
-- [ ] All automated tests pass (`npm test` → 33 passing)
-- [ ] Staging acceptance list (section B) signed off by the owner
-- [ ] Production backup made and opened once to confirm
-- [ ] `migrateToV3DryRun` output reviewed
-- [ ] `migrateToV3` finished with "✅ Migration complete"
-- [ ] Triggers installed (Apps Script → Triggers shows `scheduledBackup`, `sendDailyStockReport`)
+## E. Production checklist
+
+- [ ] `npm test` → 34 passing (done before every release)
+- [ ] `migrateToV3DryRun` reviewed
+- [ ] `migrateToV3` finished with "✅ Migration complete" and a backup link
+- [ ] Triggers installed (Apps Script → ⏰ Triggers shows `scheduledBackup` and `sendDailyStockReport`)
 - [ ] New version deployed on the **same** deployment (link unchanged)
-- [ ] `develop` merged to `main`; Netlify deploy green
-- [ ] Owner + every staff member changed their temporary password
-- [ ] Staff discount limit set (Settings → Billing rules)
-- [ ] First automatic backup visible next morning in Drive → *SSDC Backups*
-- [ ] Old public Apps Script link: if the old HTML (with the link inside) was ever public, it is harmless now — the v3 server requires a login for every request
+- [ ] Every user changed the temporary password
+- [ ] Staff discount limit set
+- [ ] Next morning: a `SSDC Backup daily …` file exists in Drive → *SSDC Backups*
 
-## E. Running the tests
+## F. Running the tests (for developers)
 
 ```bash
-npm install                      # installs Playwright (once)
-npx playwright install chromium  # browser for the end-to-end tests (once)
-npm test                         # 23 server tests + 10 browser tests
+npm install && npx playwright install chromium
+npm test        # 23 server tests + 11 browser tests, all on simulated Google services
 ```
 
-`tests/gas-mock.js` runs the real `Code.gs` against simulated Google Sheets/Drive/Cache, so tests never touch real data.
+## G. Security on GitHub Pages
 
-## F. Netlify settings
-
-`netlify.toml` (in the repo) sets the security headers (CSP, no framing, no sniffing, HSTS, camera/Bluetooth only for this site), no-cache for the app files (the service worker handles speed and offline), and hides `/tests` and `/apps-script`. Netlify: *Production branch* = `main`, *Branch deploys* = `develop`.
+GitHub Pages cannot send security headers, so `index.html` carries a **Content-Security-Policy `<meta>` tag** (scripts only from this site, network only to Google Apps Script, no plugins) and `no-referrer`. The repository is public but contains **no secrets**: no passwords, no hashes, no Apps Script link (entered once per device), and the server requires a login for every request.

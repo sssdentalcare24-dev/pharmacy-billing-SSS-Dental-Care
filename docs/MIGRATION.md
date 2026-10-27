@@ -90,7 +90,7 @@ Server-side on every write: positive whole quantities, prices ≥ 0, line = qty 
 
 | Situation | Steps |
 |---|---|
-| Undo the whole upgrade | Apps Script → *Manage deployments* → edit → choose the **previous version** → Deploy. Open the `SSDC Backup pre-migration …` copy in Drive if the data must also go back; run `restoreFromBackup("<file id>")`. Re-deploy the previous website: commit `9a392c4` (the current `main`). |
+| Undo the whole upgrade | Apps Script → *Deploy → Manage deployments* → ✏️ edit → choose the **previous version** → Deploy (same link). Open the `SSDC Backup pre-migration …` copy in Drive if the data must also go back; run `restoreFromBackup("<file id>")`. Re-deploy the previous website: commit `9a392c4` (the current `main`). |
 | Bad data after a mistake | Drive → *SSDC Backups* → open the latest good copy → check it → in Apps Script run `restoreFromBackup("<file id>")`. The app now reads the backup; the current file is backed up first and left untouched. To undo: `restoreFromBackup("<previous id>")` (logged). |
 | One wrong record | Owner: cancel the bill / purchase (stock is restored), or record a stock adjustment with a reason. Nothing needs deleting. |
 

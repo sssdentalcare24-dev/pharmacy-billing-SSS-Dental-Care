@@ -16,15 +16,14 @@ const SS = '1rOwubjghrsuWiGXR8X1A1841_8yd-cmMQIj44QBqNaA';
 const API = 'https://script.google.com/macros/s/AKfycbTESTDEPLOYMENT/exec';
 const OWNER_PW = 'Clinic#Owner2026', STAFF_PW = 'Reception#2026';
 
-// Same Content-Security-Policy as production (netlify.toml)
-const CSP = (fs.readFileSync(path.join(ROOT, 'netlify.toml'), 'utf8').match(/Content-Security-Policy = "([^"]+)"/) || [])[1] || '';
 function staticServer() {
   const types = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.webp': 'image/webp', '.webmanifest': 'application/manifest+json' };
   const srv = http.createServer((req, res) => {
     let p = decodeURIComponent(req.url.split('?')[0]); if (p.endsWith('/')) p += 'index.html';
     const f = path.join(ROOT, p);
     if (!f.startsWith(ROOT) || !fs.existsSync(f)) { res.writeHead(404); return res.end(); }
-    res.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream', 'Content-Security-Policy': CSP }); res.end(fs.readFileSync(f));
+    // CSP comes from the <meta> tag in index.html, exactly as on GitHub Pages
+    res.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream' }); res.end(fs.readFileSync(f));
   });
   return new Promise(r => srv.listen(0, () => r(srv)));
 }
@@ -335,5 +334,18 @@ test('unsent items from the previous app version are carried over and synced', a
     await t.page.evaluate(() => API.queue.flush());
     await waitUntil(t.page, () => API.queue.counts().pending === 0);
     assert.equal(t.rows('Bills').filter(r => r[1] === 'Old Queue').length, 1);
+  } finally { await t.close(); }
+});
+
+test('new app against the OLD Apps Script shows a clear "update the server" message', async () => {
+  const t = await setup();
+  try {
+    // old v2 server: POST was answered like getAllData, no login at all
+    t.setTamper(() => null);
+    await t.page.route(/script\.google\.com/, r => r.fulfill({ contentType: 'application/json', body: JSON.stringify({ success: true, medicines: [], bills: [] }) }));
+    await t.page.fill('#loginUsername', 'owner'); await t.page.fill('#loginPassword', 'whatever1'); await t.page.click('.login-btn');
+    await waitUntil(t.page, () => /not been updated/.test((document.getElementById('ssdcBanner') || {}).textContent || ''));
+    assert.equal(await t.page.evaluate(() => document.getElementById('loginScreen').classList.contains('hidden')), false);
+    assert.deepEqual(t.errors, []);
   } finally { await t.close(); }
 });
