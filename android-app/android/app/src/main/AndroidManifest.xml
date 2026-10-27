@@ -48,6 +48,11 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
+    <!-- Camera: scan medicine barcodes and photograph purchase invoices (asked only when used; phones without a camera can still install) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
     <!-- Lets the app open WhatsApp, UPI apps, maps and the browser (Android 11+ package visibility) -->
     <queries>
         <intent>

@@ -720,6 +720,13 @@
     }
   }
   BUBBLING.forEach(function (type) { document.addEventListener(type, dispatch, false); });
+  // Keyboard: Enter or Space on a focusable clickable element (menu items, cards) works like a click
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target;
+    if (!t || t.nodeType !== 1 || !t.hasAttribute('data-onclick') || /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(t.tagName)) return;
+    e.preventDefault(); t.click();
+  }, false);
   /* Only user-driven events. Events that fire by themselves (load, error, focus via autofocus,
      toggle on an already-open <details>) are deliberately NOT supported, so injected markup
      could never run anything without the user clicking or typing. */
@@ -875,7 +882,8 @@
                 examform:     '🦷 Examination Form',
                 appointments: '📅 Appointments',
                 wareminders:  '📲 WA Reminders',
-                prescription: '📋 Prescription'
+                prescription: '📋 Prescription',
+                patients:     '👥 Patients'
             };
             document.getElementById('pageTitle').textContent = titles[page] || 'Sri Sai Speciality Dental Care';
             if (page === 'reports') setTimeout(renderReports, 50);
@@ -1284,8 +1292,14 @@
 
             // Dental treatment income (receipts) is revenue with no medicine cost
             (serverTreatments || []).forEach(t => { if (String(t.date).split('T')[0] === today) { const a = parseFloat(t.amount) || 0; todayRevenue += a; todayProfit += a; } });
-            document.getElementById('todayRevenue').textContent = todayRevenue.toFixed(2);
-            document.getElementById('todayProfit').textContent = todayProfit.toFixed(2);
+            const inrFmt = v => (Math.round(v * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            document.getElementById('todayRevenue').textContent = inrFmt(todayRevenue);
+            document.getElementById('todayProfit').textContent = inrFmt(todayProfit);
+            const hello = document.getElementById('dashHello');
+            if (hello) {
+                const hr = new Date().getHours(), u = (window.API && API.user && API.user()) || {};
+                hello.textContent = (hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening') + (u.displayName ? ', ' + u.displayName : '');
+            }
 
             const lowStock = medicines.filter(m => m.stock < (parseFloat(m.minStock) || 10)).length;
             document.getElementById('lowStockCount').textContent = lowStock;
@@ -2686,6 +2700,23 @@ Reason (required):`) || '').trim();
             });
         }
 
+        // Paid / balance due of a printed bill: data-paid/data-due (pharmacy + combined bills)
+        // or the due line of a part-paid dental receipt. null = no payment details on the page.
+        function __thermalPay(doc, total) {
+            var el = doc.querySelector('[data-due]');
+            if (el) {
+                var due = parseFloat(el.getAttribute('data-due')) || 0, paid = parseFloat(el.getAttribute('data-paid'));
+                if (!isFinite(paid)) paid = Math.max(0, total - due);
+                return { paid: paid, due: due, total: total };
+            }
+            var dl = doc.querySelector('#__tr .due-line');
+            if (dl) {
+                var n = (dl.textContent.replace(/,/g, '').match(/\d+(\.\d+)?/g) || []).map(parseFloat);
+                if (n.length >= 3) return { total: n[0], paid: n[1], due: n[2] };
+            }
+            return null;
+        }
+
         function __buildThermalPreviewLines(html) {
             // W = characters per line. We use font-size:12px Courier New.
             // Courier New 12px → char width ≈ 7.2px on desktop, ~7.8px on mobile (due to DPI/rendering)
@@ -2737,14 +2768,14 @@ Reason (required):`) || '').trim();
                 dot();
                 spc('Pharmacy', 'Rs.289.60');
             }
-            function addFooter(gt) {
+            function addFooter(gt, qrTitle) {
                 nl(); dbl();
                 ctr('*  THANK YOU  *', true, true);
                 ctr('Beauty is Power, Smile is a Sword', true);
                 ctr('Visit Again! Stay Healthy :)', true);
                 dbl(); nl();
                 star();
-                ctr('SCAN & PAY', true);
+                ctr(qrTitle || 'SCAN & PAY', true);
                 nl();
                 // Special QR marker — replaced with canvas after render
                 lines.push({text:'__QR__:'+(gt>0?gt.toFixed(2):'289.60'), qr:true, amount:(gt>0?gt:289.60)});
@@ -2768,9 +2799,7 @@ Reason (required):`) || '').trim();
             }
 
             // ── REAL BILL PATH ───────────────────────────────
-            html = html.replace(/&#8377;/g,'Rs.').replace(/\u20b9/g,'Rs.')
-                       .replace(/&amp;/g,'&').replace(/&nbsp;/g,' ')
-                       .replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+            html = html.replace(/&#8377;/g,'Rs.').replace(/\u20b9/g,'Rs.').replace(/&nbsp;/g,' ');
             var doc2 = (new DOMParser()).parseFromString(html,'text/html');
             var grandTotal = 0;
             var isCB = !!doc2.getElementById('__cb');
@@ -2834,6 +2863,7 @@ Reason (required):`) || '').trim();
                 var trRows2=Array.from(trEl.querySelectorAll('table.treat td.item-cell')).map(function(td){return td.textContent.trim();}).filter(Boolean);
                 if(trRows2.length){ lft('TOWARDS:',true); trRows2.forEach(function(l){ctr(l.trim(),true,false);}); }
                 grandTotal=parseFloat((iV2[3]||'0').replace(/[^\d.]/g,''))||0;
+                var trPay2 = __thermalPay(doc2, grandTotal); if (trPay2 && trPay2.total) grandTotal = trPay2.total;
                 if(grandTotal>0){ dbl(); ctr('** TOTAL **',true,true); ctr('Rs. '+grandTotal.toFixed(2),true,true); dbl(); }
 
             } else if (isRx) {
@@ -2841,6 +2871,22 @@ Reason (required):`) || '').trim();
                 (rxEl?(rxEl.innerText||rxEl.textContent):'').split('\n')
                     .map(function(l){return l.trim();}).filter(Boolean).slice(0,20)
                     .forEach(function(l){if(!/^(sri sai|mob|timing|reg\.|b\.d)/i.test(l))lft(tr_(l,W));});
+
+            } else if (doc2.getElementById('__ph')) {
+                // ── Pharmacy bill: same data as the printer (data-* on #__ph) ──
+                var phEl = doc2.getElementById('__ph'), A = function (k) { return phEl.getAttribute('data-' + k) || ''; };
+                var phIt = []; try { phIt = JSON.parse(decodeURIComponent(A('items') || '[]')); } catch (e) {}
+                if (A('billid')) lft('Bill No : ' + tr_(A('billid'), W-9), true);
+                lft('Date    : ' + tr_(A('date'), W-9));
+                lft('Patient : ' + tr_(A('patient'), W-9));
+                lft('Doctor  : ' + tr_(A('doctor'), W-9));
+                lft('Payment : ' + tr_(A('mode') || 'Cash', W-9));
+                div_(); ctr('- MEDICINES -', true); dot(); spc('  Item', 'Amt'); dot();
+                phIt.forEach(function (it) { var a = (+it.amount || 0).toFixed(2); spc(tr_('  ' + (it.name || '') + ' x' + (it.qty || 1), W - a.length - 1), a); });
+                dot();
+                var phSub2 = +A('subtotal') || 0, phDisc2 = +A('discount') || 0; grandTotal = +A('total') || 0;
+                if (phDisc2 > 0) { spc('Subtotal', 'Rs.' + phSub2.toFixed(2)); spc('Discount', '-Rs.' + phDisc2.toFixed(2)); }
+                dbl(); ctr('** GRAND TOTAL **', true, true); ctr('Rs. ' + grandTotal.toFixed(2), true, true); dbl();
 
             } else {
                 // ── Generic pharmacy bill ─────────────────────
@@ -2922,13 +2968,18 @@ Reason (required):`) || '').trim();
                     }); dot();
                     spc('Grand Total', 'Rs.'+grandTotal.toFixed(2));
                 } else {
-                    addSampleMeds();
-                    if (!grandTotal) grandTotal = 289.60;
+                    lft('(no item lines found on this bill)');
                 }
                 dbl(); ctr('** GRAND TOTAL **',true,true); ctr('Rs. '+grandTotal.toFixed(2),true,true); dbl();
             }
 
-            addFooter(grandTotal);
+            var pv = __thermalPay(doc2, grandTotal);
+            if (pv && pv.due > 0.009) {
+                spc('Paid now', 'Rs.' + pv.paid.toFixed(2));
+                lines.push({ text: (function () { var l = 'BALANCE DUE', r = 'Rs.' + pv.due.toFixed(2); return l + ' '.repeat(Math.max(1, W - l.length - r.length)) + r; })(), bold: true });
+                dbl();
+                addFooter(pv.due, 'SCAN TO PAY BALANCE');
+            } else addFooter(grandTotal);
             return lines;
         }
 
@@ -4871,7 +4922,7 @@ Reason (required):`) || '').trim();
         }
     }
 
-    function buildCombinedBillHTML() {
+    function buildCombinedBillHTML(pay) {
         var no      = esc(document.getElementById('cb_no').value      || '___________');
         var dateV   = document.getElementById('cb_date').value    || '';
         var patient = esc(document.getElementById('cb_patient').value || '______________________________');
@@ -4923,6 +4974,7 @@ Reason (required):`) || '').trim();
         '<tr><td style="color:#27ae60;">💊 Pharmacy Charges</td><td>&#8377;'+phAmt.toFixed(2)+'</td></tr>' +
         '<tr class="grand-row"><td><strong>Grand Total</strong></td><td><strong>&#8377;'+grand.toFixed(2)+'</strong></td></tr>' +
         '</table></div>' +
+        (pay && pay.due > 0.009 ? '<div id="__cbpay" data-paid="'+pay.paid.toFixed(2)+'" data-due="'+pay.due.toFixed(2)+'" style="border:1.5px solid #000;padding:6px 10px;margin:8px 0;font-size:13px;display:flex;justify-content:space-between;gap:10px;"><span>Paid now: &#8377;'+pay.paid.toFixed(2)+'</span><strong>Balance due: &#8377;'+pay.due.toFixed(2)+'</strong></div>' : '') +
         '<div class="sig-row">Signature</div>' +
         '<div class="footer">Cherish your Yesterdays, Dream your Tomorrow, but live your today<br>Beauty is a Power and Smile is a Sword</div>' +
         '</div>';
@@ -5123,7 +5175,9 @@ Reason (required):`) || '').trim();
 
         // ── Print ────────────────────────────────────────────────
         saveCbRecordToHistory(billId);   // save to history BEFORE printing
-        setTimeout(function(){printBillHtml(buildCombinedBillHTML());},200);
+        var cbPaidNow = cbCredit ? 0 : (window.__cbPaid !== null && window.__cbPaid !== undefined ? window.__cbPaid : grand);
+        var cbPrintPay = { paid: Math.round(cbPaidNow * 100) / 100, due: Math.round((grand - cbPaidNow) * 100) / 100 };
+        setTimeout(function(){printBillHtml(buildCombinedBillHTML(cbPrintPay));},200);
         showToast('✅ Dashboard updated! Syncing to Google Sheets...','success');
         // Update receipt no placeholder for next bill
         var cbn = document.getElementById('cb_no');
@@ -7151,9 +7205,7 @@ Reason (required):`) || '').trim();
     //  MAIN BUILDER
     // ════════════════════════════════════════════════════════
     function _buildThermalBytes(html){
-        html=html.replace(/&#8377;/g,'Rs.').replace(/\u20b9/g,'Rs.')
-                 .replace(/&amp;/g,'&').replace(/&nbsp;/g,' ')
-                 .replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+        html=html.replace(/&#8377;/g,'Rs.').replace(/\u20b9/g,'Rs.').replace(/&nbsp;/g,' ');
 
         var doc=(new DOMParser()).parseFromString(html,'text/html');
         var out=[], grandTotal=0;
@@ -7304,6 +7356,7 @@ Reason (required):`) || '').trim();
                              .map(function(td){return _clean(td.textContent.trim());})
                              .filter(function(t){return t&&t.length>1;});
             grandTotal = parseFloat(trAmt2.replace(/[^\d.]/g,''))||0;
+            var trPay = __thermalPay(doc, grandTotal); if (trPay && trPay.total) grandTotal = trPay.total;   // part paid: TOTAL is the full charge
 
             if(trNo)  { out=out.concat(_bOn()); out=out.concat(_b('Bill No : '+_t(trNo,39)+'\n')); out=out.concat(_bOff()); }
             if(trDate)  out=out.concat(_b('Date    : '+_t(trDate,38)+'\n'));
@@ -7460,6 +7513,15 @@ Reason (required):`) || '').trim();
             });
         }
 
+        // ── Paid now / balance due (part payments and pay-later bills) ──
+        var payInfo = __thermalPay(doc, grandTotal), qrAmount = grandTotal, qrTitle = 'SCAN & PAY';
+        if (payInfo && payInfo.due > 0.009) {
+            out=out.concat(_dash(_t('Paid now',24), 'Rs.'+payInfo.paid.toFixed(2)));
+            out=out.concat(_bOn()); out=out.concat(_dash(_t('BALANCE DUE',24), 'Rs.'+payInfo.due.toFixed(2))); out=out.concat(_bOff());
+            out=out.concat(_dbl());
+            qrAmount = payInfo.due; qrTitle = 'SCAN TO PAY BALANCE';
+        }
+
         // ════════════════════════════════════
         //  FOOTER
         // ════════════════════════════════════
@@ -7480,16 +7542,16 @@ Reason (required):`) || '').trim();
         // ════════════════════════════════════
         //  UPI QR CODE
         // ════════════════════════════════════
-        if(grandTotal>0){
+        if(qrAmount>0){
             var C=[ESC,0x61,0x01];  // center command bytes
             out=out.concat(C); out=out.concat(_dbl());
-            out=out.concat(C); out=out.concat(_bOn()); out=out.concat(_b('SCAN & PAY\n')); out=out.concat(_bOff());
+            out=out.concat(C); out=out.concat(_bOn()); out=out.concat(_b(qrTitle+'\n')); out=out.concat(_bOff());
             out=out.concat(_nl());
-            out=out.concat(C); out=out.concat(_upiQR('8688033072@ybl',grandTotal,'SriSaiDental',4));
+            out=out.concat(C); out=out.concat(_upiQR('8688033072@ybl',qrAmount,'SriSaiDental',4));
             out=out.concat(_nl());
             // CENTER → font → CENTER again → text (double-ensures alignment)
             out=out.concat(C); out=out.concat([ESC,0x21,0x10]); out=out.concat(C); out=out.concat(_bOn());
-            out=out.concat(_b('Rs.'+grandTotal.toFixed(2)+'\n'));
+            out=out.concat(_b('Rs.'+qrAmount.toFixed(2)+'\n'));
             out=out.concat(_bOff()); out=out.concat([ESC,0x21,0x00]); out=out.concat(C);
             out=out.concat(_bOn()); out=out.concat(_b('8688033072@ybl\n')); out=out.concat(_bOff());
             out=out.concat(C); out=out.concat(_b('GPay / PhonePe / Any UPI\n'));
@@ -8395,6 +8457,9 @@ async function loadMovements(id) {
     document.body.classList.toggle('v31', on);
     document.querySelectorAll('.v31-only').forEach(function (el) { el.hidden = !on || (el.classList.contains('owner-only') && !API.isOwner()); });
     document.querySelectorAll('.v30-only').forEach(function (el) { el.hidden = on; });
+    // which server this copy is talking to — one look tells if the Apps Script update is done
+    var vl = document.getElementById('appVersionLabel'), f = (API.session && API.session.features) || null;
+    if (vl && (f || V31._serverOn)) { f = f || {}; vl.textContent = on ? 'App v3.1 · server v3.1 ✓' : 'App v3.1 · server needs update'; vl.style.color = on ? '' : '#ffd166'; vl.title = 'Server data version (schema) ' + (f.schema || '?'); }
   };
   V31.refresh = function () {
     var cur = document.querySelector('.page.active'), ae = document.activeElement;

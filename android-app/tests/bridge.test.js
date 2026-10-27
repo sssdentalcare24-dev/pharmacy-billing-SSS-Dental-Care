@@ -46,7 +46,7 @@ async function setup() {
     route.fulfill({ contentType: 'application/json', body: JSON.stringify(g.post(body)) });
   });
   await page.goto(`http://localhost:${srv.address().port}/`);
-  await page.addScriptTag({ content: SHIMS });
+  await page.evaluate(SHIMS);   // DevTools evaluation, like Capacitor's own injected bridge: not an inline <script>, so the strict CSP stays on
   // login (owner) with forced password change
   await page.fill('#loginUsername', 'owner'); await page.fill('#loginPassword', temp.owner); await page.click('.login-btn');
   await page.waitForSelector('#cpOld');

@@ -64,6 +64,18 @@ test('part payment on a pharmacy bill → due on the bill, in Dues, collected la
     await t.page.evaluate(() => confirmPayment());
     await waitUntil(t.page, () => /Saved on server/.test((document.getElementById('bsSyncStatus') || {}).textContent || ''));
     assert.match(await t.page.textContent('#bsDueBox'), /Balance due₹20\.00/);
+    // thermal receipt (printer bytes and on-screen preview): paid now, balance due, QR asks for the balance
+    const th = await t.page.evaluate(() => {
+      const keep = window.printBillHtml; let html = ''; window.printBillHtml = h => { html = h; };
+      try { printBillFromSuccess(); } finally { window.printBillHtml = keep; }
+      const bytes = _buildThermalBytes(html), txt = Array.from(bytes, c => String.fromCharCode(c)).join('');
+      const lines = __buildThermalPreviewLines(html);
+      return { txt, prev: lines.map(l => l.text).join('\n'), qr: (lines.find(l => l.qr) || {}).amount };
+    });
+    assert.match(th.txt, /Paid now[ .-]*Rs\.30\.00/); assert.match(th.txt, /BALANCE DUE[ .-]*Rs\.20\.00/); assert.match(th.txt, /SCAN TO PAY BALANCE/);
+    assert.match(th.txt, /Paracetamol 500mg x5/);
+    assert.match(th.prev, /BALANCE DUE\s+Rs\.20\.00/); assert.match(th.prev, /Paracetamol 500mg x5/); assert.equal(th.qr, 20);
+    assert.ok(!/Apcil|Cenodol|Mamatha/.test(th.txt + th.prev), 'no sample data on a real bill');
     const b = row(t, 'Bills', r => r[1] === 'Ravi Kumar' && r[7] === 50 && r[0] !== 'BILL-1700000000001');
     assert.equal(val(t, 'Bills', b, 'Paid Amount'), 30); assert.equal(val(t, 'Bills', b, 'Balance Due'), 20); assert.equal(val(t, 'Bills', b, 'Patient ID'), 'PT-1');
     await t.page.evaluate(() => { closeBillSuccess(); showPage('payments'); });
@@ -96,8 +108,12 @@ test('combined bill: pay part now with split cash/UPI — medicines paid first, 
     await t.page.check('#pp_cb input[type=checkbox]'); await t.page.fill('#pp_now_cb', '500');
     await t.page.evaluate(() => selectCbMode('Split'));
     await t.page.fill('#cbPmSplitCash', '200'); await t.page.fill('#cbPmSplitUpi', '300');
-    await t.page.evaluate(() => confirmCbPayment());
-    await waitUntil(t.page, () => true);
+    await t.page.evaluate(() => { window.__cbPrinted = ''; window.printBillHtml = h => { window.__cbPrinted = h; }; confirmCbPayment(); });
+    await waitUntil(t.page, () => !!window.__cbPrinted);
+    // the printed bill (A4 and thermal) says what was paid now and what is still due
+    const cbp = await t.page.evaluate(() => { const h = window.__cbPrinted, b = _buildThermalBytes(h); return { h, txt: Array.from(b, c => String.fromCharCode(c)).join('') }; });
+    assert.match(cbp.h, /Balance due: &#8377;550\.00/);
+    assert.match(cbp.txt, /Paid now[ .-]*Rs\.500\.00/); assert.match(cbp.txt, /BALANCE DUE[ .-]*Rs\.550\.00/);
     for (let i = 0; i < 50 && !(row(t, 'Bills', r => r[1] === 'Ravi Kumar' && String(r[0]).startsWith('CB-')) && row(t, 'TreatmentReceipts', r => r[2] === 'Ravi Kumar' && r[4] === 1000)); i++) await new Promise(r => setTimeout(r, 100));
     const pb = row(t, 'Bills', r => r[1] === 'Ravi Kumar' && String(r[0]).startsWith('CB-'));
     assert.ok(pb, 'pharmacy part saved');
