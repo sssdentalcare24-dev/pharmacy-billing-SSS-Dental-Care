@@ -70,18 +70,31 @@ export function makeBlobReader(win) {
   const blobs = new Map();
   const origCreate = win.URL.createObjectURL.bind(win.URL);
   win.URL.createObjectURL = (obj) => { const u = origCreate(obj); if (obj instanceof win.Blob) blobs.set(u, obj); return u; };
-  return async function read(href) {
-    if (blobs.has(href)) { const b = blobs.get(href); blobs.delete(href); return b.text(); }
+  const textLike = (type, name) => /^text\/|csv|json/i.test(type || '') || /\.(csv|txt|json)$/i.test(name || '');
+  // → { data, text }: text files as UTF-8 text; anything else (Excel .xlsx, images, PDF) as base64 so no byte is changed
+  return async function read(href, filename) {
+    if (blobs.has(href)) {
+      const b = blobs.get(href); blobs.delete(href);
+      if (textLike(b.type, filename)) return { data: await b.text(), text: true };
+      const bytes = new Uint8Array(await b.arrayBuffer()); let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return { data: win.btoa(bin), text: false };
+    }
     const m = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(href || '');
-    if (m) return m[2] ? decodeURIComponent(escape(win.atob(m[3]))) : decodeURIComponent(m[3]);
+    if (m) {
+      if (m[2] && !textLike(m[1], filename)) return { data: m[3], text: false };
+      return { data: m[2] ? decodeURIComponent(escape(win.atob(m[3]))) : decodeURIComponent(m[3]), text: true };
+    }
     throw new Error('File is no longer available — try the export again');
   };
 }
 export function makeDownloadHandler(fs, share, readFn) {
   return async function shareDownload(href, filename) {
-    const text = await readFn(href);
+    const file = await readFn(href, filename);
     const safe = String(filename || 'export.csv').replace(/[^\w.\-]+/g, '_');
-    const res = await fs.writeFile({ path: safe, data: text, directory: 'CACHE', encoding: 'utf8' });
+    const opts = { path: safe, data: file.data, directory: 'CACHE' };
+    if (file.text) opts.encoding = 'utf8';          // no encoding = Capacitor writes the base64 data as raw bytes
+    const res = await fs.writeFile(opts);
     await share.share({ title: safe, files: [res.uri], dialogTitle: 'Save or send ' + safe });
   };
 }

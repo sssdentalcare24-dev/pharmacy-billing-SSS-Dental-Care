@@ -1,4 +1,4 @@
-# Database migration plan — v2 → v3
+# Database migration plan — v2 → v3 → v3.1
 
 **Principle:** additive only. No existing row is deleted, moved or rewritten. New columns are appended to the **right** of existing tabs, new tabs are added, and a **verified backup copy** is made automatically before anything changes. If the backup can't be verified, the migration stops without changing anything (tested).
 
@@ -97,3 +97,44 @@ Server-side on every write: positive whole quantities, prices ≥ 0, line = qty 
 ## 9. Future option: Firebase / Firestore
 
 Not needed now (see `AUDIT.md` §12). If request speed or data size ever becomes the limit, the v3 structure maps 1:1 to Firestore collections (`medicines`, `batches`, `bills/{id}/items`, `stockMovements`, `auditLog`, …) with Firebase Auth replacing the Users tab. The same tests (`tests/backend.test.js`) define the behaviour to keep.
+
+## 10. v3.0 → v3.1 (`migrateToV31`, schema 3 → 4)
+
+Same principle: **additive only**, verified backup first (`SSDC Backup pre-migration …`), stops without changes if the backup can't be verified, safe to run again. `migrateToV31DryRun` prints the plan and changes nothing. Requires schema 3 (`migrateToV3` done).
+
+### New tabs
+
+| Tab | Columns |
+|---|---|
+| Payments | Payment ID, Payment No, Date, Type (COLLECTION / REFUND), Against Type, Against ID, Against No, Patient ID, Patient Name, Phone, Amount, Mode, Cash/UPI/Card Amount, Reference, Notes, Credit Value, Items, Cost Reversed, Created By/At, Status, Cancelled At/By, Cancel Reason |
+| CashClosings | Closing ID, Date, Opening Cash, Cash In, Cash Out, Expected Cash, Counted Cash, Difference, Deposited, UPI Total, Card Total, UPI/Card Verified, Notes, Closed By/At, Status, Details |
+| Suppliers | Supplier ID, Name, Phone, Contact Person, Address, Notes, Opening Balance, Status, Created At/By, Updated At |
+| SupplierLedger | Entry ID, Date, Supplier ID, Supplier Name, Type (OPENING / PURCHASE / PAYMENT / RETURN), Reference, Debit, Credit, Mode, Notes, Created By/At, Status, Cancelled At/By, Cancel Reason |
+| PurchaseInvoices | Invoice ID, Date, Supplier ID/Name, Invoice No, Lines, Items Total, Adjustment, Total, Paid Amount, Payment Mode/Ref, Notes, Attachment URL/ID, Status, Created By/At, Cancelled At/By, Cancel Reason |
+| PurchaseReturns | Return ID, Date, Supplier ID/Name, Medicine ID/Name, Batch ID/No, Qty, Rate, Amount, Reason, Created By/At, Status |
+| TreatmentMaster | Treatment ID, Name, Category, Price, Duration (min), Notes, Status, Updated At/By |
+| PatientTreatments | Record ID, Date, Patient ID/Name, Phone, Doctor, Treatment ID, Treatment, Tooth, Price, Status, Notes, Receipt No, Created By/At, Updated At, Completed On |
+| FollowUps | Follow-up ID, Patient ID/Name, Phone, Due Date, Reason, Doctor, Source, Status, Notes, Created By/At, Done At/By |
+
+### New columns (appended on the right of existing tabs)
+
+| Tab | Added columns |
+|---|---|
+| Medicines | Barcode, Generic Name, Category, Manufacturer |
+| Bills | Paid Amount, Balance Due, Payment Status, Patient ID, Returned Value, Refunded Amount |
+| TreatmentReceipts | Paid Amount, Balance Due, Payment Status, Patient ID, Returned Value, Refunded Amount, Cash/UPI/Card Amount, Discount, Payment Ref, Items |
+| Purchases | Supplier ID, Invoice ID, Free Qty |
+| Prescriptions | Patient ID, Doctor, Follow-up Date |
+| Patients | Medical History, Dental History, Allergies, Medications, Blood Group, Address, Emergency Contact, Date of Birth |
+| Appointments, ExamForms | Patient ID |
+
+### Back-filled values (the only cells the migration writes into existing rows)
+
+- **Bills / TreatmentReceipts:** for rows where *Paid Amount* is empty → Paid Amount = Total (Amount), Balance Due = 0, Payment Status = Paid, Returned Value = 0, Refunded Amount = 0. Before v3.1 every bill was paid in full, so this records what happened; no total, item or date is touched. A row whose Paid Amount is already filled is left alone (re-running changes nothing).
+- **Purchases:** *Supplier ID* is filled where the supplier name matches a supplier created from the purchase history (one supplier per distinct name; capital letters and spaces at the ends ignored). Old purchases count as **paid** (no ledger debt is invented).
+- **TreatmentMaster:** 18 common treatments at price ₹0 (owner enters prices).
+- Script property `LOCAL_KEY_SECRET` (random) — derives each user's device-encryption key; never sent to the app or stored in the repository. `SCHEMA_VERSION` → 4.
+
+### Rollback
+
+Deploy the previous Apps Script version (the v3.0 server ignores the new tabs and columns), or restore the `pre-migration` backup with `restoreFromBackup("<file id>")` (§8). Data entered after the update (collections, refunds, supplier payments) exists only in the new tabs — export it first if you restore the backup.

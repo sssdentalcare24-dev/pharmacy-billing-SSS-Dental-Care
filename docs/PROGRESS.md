@@ -1,72 +1,99 @@
 # Upgrade progress (read this first when continuing)
 
-**v3 merged to `main` (GitHub Pages) on 27 Oct 2026.** Hosting: GitHub Pages only (no Netlify). Server: the **same** Apps Script project and spreadsheet, upgraded in place with `migrateToV3` (automatic verified backup first). The pharmacy is **not GST-registered** → no GST on bills or purchases.
+**Current release: v3.1** (app 3.1.0 · server 3.1.0 · database schema 4) — 27 Oct 2026.
+Hosting: GitHub Pages only (no Netlify). Server: the **same** Apps Script project and spreadsheet, upgraded in place. The pharmacy is **not GST-registered** → no GST on bills or purchases.
 
-Owner action still needed once: `docs/DEPLOYMENT.md` §A (paste Code.gs → migrateToV3 → installTriggers → deploy new version).
+**Owner action needed once:** `docs/DEPLOYMENT.md` §A — paste the new `Code.gs`, run `migrateToV31DryRun` then `migrateToV31`, deploy a new version, run the health check + restore drill from Settings. Until then the new website keeps working exactly like v3.0 and the new screens stay hidden.
 
-| Stage | Status |
-|---|---|
-| 1 Audit | ✅ `docs/AUDIT.md` |
-| 2 Architecture & security | ✅ done (server-side auth, RBAC, POST, audit log, sessions, lockout, rate limit) |
-| 3 Database & business logic | ✅ core done (validation, idempotency, cancellations, stock register, batches/FEFO, backups, migration) |
-| 4 Pharmacy & clinic features | ⏳ partly (purchase batches/expiry/free qty/invoice; medicine edit; stock adjustments). Next: partial payments & outstanding, refunds UI, MRP on bills, supplier master & ledger, purchase returns UI, patient medical/dental history, treatment master, barcode scan. **No GST** (not registered) |
-| 5 Financial reporting | ⏳ started (dental revenue in reports/dashboard, COGS from batches). Next: financial dashboard (receivables/payables, net profit), full report set, Excel/PDF |
-| 6 Performance & PWA | ✅ measured (Lighthouse 99, no regression); next: paginated loading, medicine search box, minified build |
-| 7 UI/UX refresh | ⏳ not started |
-| 8 Testing | ✅ 34 automated tests (23 server, 11 browser) passing |
-| Android app | ✅ `android-app/` — Capacitor 8 project for Android Studio: native Bluetooth printer bridge, Android printing / Save as PDF, CSV sharing, WhatsApp/UPI links, back button, clinic icon + splash; 4 tests. APK is built by the owner in Android Studio (`android-app/README.md`) |
-| 9 Deployment | ✅ website on `main`/GitHub Pages · ⏳ owner updates the Apps Script once (`DEPLOYMENT.md` §A) |
+## Status against the consolidated improvement report
 
-## What changed and why
-
-### `apps-script/Code.gs` (v3, rewritten around the old functions)
-- **Login/session** (`login_`, `getSession_`, `changePassword_`, users): salted SHA-256 ×500 hashes in a Users tab; random 64-char session tokens in CacheService; 3 h idle / 12 h absolute expiry; 5 wrong passwords → 15 min lock; password rules; owner can create/reset/disable logins; disabling or resetting ends that user's sessions; `emergencyResetOwnerPassword` for recovery. *Why: S-01…S-03, S-06.*
-- **`handle_` gatekeeper**: every request must be POST with a valid session; per-action role table (`PERMS`); staff never receive cost prices, purchases or expenses; writes run under a lock and are de-duplicated by request ID; denials and rejections audited. *Why: S-02, S-04, S-05.*
-- **`saveBill_`**: re-validates every line, totals, discount limit, payment split; FEFO batch allocation; cost of goods from the actual batches; sequential bill number; shortfalls recorded instead of hidden. *Why: B-05…B-07, B-18, B-19.*
-- **`cancelBill_` / `cancelPurchase_`** replace deletion; stock restored to the exact batches; reason required. *Why: B-09.*
-- **Batches + StockMovements**: `addPurchase_` creates batches (batch no, expiry, free qty, MRP, invoice no, duplicate-invoice check); `adjustStock_` (damaged, expired, returns, count corrections — reason required); `updateMedicine_` cannot change stock silently; `deleteMedicine_` → Inactive.
-- **Clinic records**: server receipt numbers (`reserveReceiptNo_`); record IDs for prescriptions/exams/receipts; soft deletes; same-doctor appointment clash check. *Why: B-10, B-11, B-15, B-16.*
-- **Backups**: `backupNow_` (verified), `scheduledBackup` (daily/weekly/monthly + pruning + failure e-mail), `restoreFromBackup`, `installTriggers`.
-- **Migration**: `migrateToV3DryRun`, `migrateToV3` (backup first, additive, re-runnable), `validateData_`.
-- Daily stock e-mail now batch-aware (expired vs expiring ≤90 days).
-
-### `js/app.js`
-- **00-boot**: new secure connection layer (`API.login`, `API.call`, POST + token + request ID), automatic conversion of all older calls, offline queue with per-item status, Sync Centre data, status line, 30-min auto-logout, `esc()`, `todayLocal()`, local QR.
-- **01-core**: server login, forced password change, session resume, `onSessionLost`; `loadData` never swaps in demo data (B-01), replaces lists even when empty (B-17), loads dental receipts and cancelled bills; cart/discount validation (B-06, B-07); bill save shows *Saving / Saved · Bill No / Pending / NOT saved* (and undoes a rejected bill on screen); cancel bill with reason; cancelled-bills section; dashboard counts dental income and per-medicine minimum stock; reports split Pharmacy / Dental / Total and the treatment chart shows real data only (B-02, B-12); local dates (B-14); escaping in lists (S-07); local QR (S-09).
-- **03-receipt-numbers**: server-issued numbers; offline numbers tagged per device.
-- **04-combined-bill**: works with the real data (B-03), stock check fixed (B-04), pharmacy and dental parts saved separately with real cost.
-- **05/06**: patient `addedOn` sent; appointment clash per doctor; exam/prescription record IDs.
-- **12-admin (new)**: change password, Sync Centre, owner Settings (users, billing rules, backups, data check, audit log), medicine edit, batches/FEFO view, stock adjustments, stock history.
-
-### Other files
-- `index.html`: username field (any login), sync status line, change-password button, purchase form (batch no, expiry, free qty, MRP, invoice no), accessibility labels.
-- `sw.js`: cache version bump. Content-Security-Policy `<meta>` tag in `index.html` (GitHub Pages can't send headers); the app detects an old Apps Script and says so. `apps-script/appsscript.json`: Asia/Kolkata time zone, web-app settings. `package.json`: `npm test`.
-- `tests/`: `gas-mock.js` (simulated Google services), `backend.test.js` (23), `e2e.test.js` (11).
-- `docs/`: `AUDIT.md`, `MIGRATION.md`, `DEPLOYMENT.md`, this file.
-
-## Completed features (tested)
-Server-side login · forced password change · lockout · session expiry · idle logout · user management · owner/staff permissions on the server · audit log · POST-only API · bill validation · discount limit · sequential bill numbers · duplicate-proof bills/purchases/records · split payments stored · bill & purchase cancellation with stock restore · batch-wise stock · FEFO · expired stock never sold · stock movement register · stock adjustments with reasons · cost of goods from batches · dental revenue in reports · offline queue with visible status · verified backups (manual + scheduled) · restore · migration with backup · data check.
-
-## Remaining limitations / known gaps
-- Partial payments, outstanding balances, refunds (money back) and GST are **not** on bills yet (Stage 4).
-- Prescription, exam-form and treatment-receipt **history lists** are still kept per device (the records themselves are in Sheets). Loading them from the server is Stage 4.
-- All data still loads at login (paginated loading is Stage 6) — fine for now, will slow down after many thousands of bills.
-- Login is protected against guessing per username; Apps Script cannot see IP addresses, so there is no per-device rate limit.
-- Patient data cached on the device (for offline use) is not encrypted; use a screen lock on clinic phones.
-- 137 inline `onclick` handlers mean the CSP must allow inline script; XSS escaping was added to the main lists but not every older screen.
-- Zoom is still disabled on phones (`user-scalable=no`) to avoid iPad input zoom; review in Stage 7.
-- Combined bill does not support a discount (unchanged).
-
-## Performance (measured, Lighthouse 13.5, real throttling: slow 4G + 4× CPU, median of 4 runs)
-
-| | Original single file | `main` (speed update) | `develop` (v3) |
+| Area (report Part 2) | Item | Status | Where |
 |---|---|---|---|
-| Performance score | 80 | 99 | 99 |
-| First screen visible | 1.06 s | 0.88 s | 0.90 s |
-| Data downloaded | 237 KB | 142 KB | 154 KB |
-| Repeat visit (service worker) | 1.68 s | 0.21 s | ~0.2 s |
+| **1 Billing** | Partial payment / pay later | ✅ | New bill, dental receipt, bill summary: "pay part now" box; staff pay-later can be switched off by the owner |
+| | Patient outstanding balance | ✅ | 💰 Dues & Payments → Dues; patient profile; dashboard tile; badge on every bill |
+| | Refund management | ✅ | Bill detail → ↩ Return / refund (items back to their batch, or allowance); refunds tab |
+| | Complete payment history | ✅ | Dues & Payments → History; per bill; per patient (Records) |
+| | Cancellation workflow | ✅ verified | Cancel needs a reason, restores stock to the same batches, blocked while collections/refunds exist (cancel those first, owner only, with reason) |
+| | Payment reconciliation | ✅ | 🧮 Cash closing: expected cash from every bill, receipt, collection, refund, expense and supplier payment; counted cash + denominations; UPI / card ticks; difference recorded |
+| **2 Inventory** | Barcode scanning | ✅ | 📷 next to the medicine search (camera, or type/USB scanner); barcode field on medicines |
+| | Advanced medicine search | ✅ | Type name, generic name, barcode or batch on New bill, Bill summary and Inventory |
+| | Batch history | ✅ | 📜 on each medicine: every batch with purchases, sales, returns, adjustments |
+| | Expiry loss / dead stock / valuation / movements | ✅ | Inventory → 📊 Stock reports (valuation at cost and MRP, expiring, expiry & damage loss, dead, slow, reorder, movements) — Excel / PDF |
+| **3 Suppliers** | Master, ledger, outstanding, payments | ✅ | 🏭 Suppliers (owner): opening balance, ledger, pay supplier, we-owe totals |
+| | Purchase returns | ✅ | Supplier ledger → ↩ Return goods (stock out of the batch, credit on the ledger) |
+| | Invoice attachment | ✅ | Purchase invoice → photo / PDF saved in Drive folder "SSDC Purchase Invoices", linked on the invoice |
+| | Supplier-wise analysis | ✅ | Finance → Reports → Purchase analysis (by supplier / by medicine), Supplier outstanding |
+| **4 Dental** | Medical & dental history, allergies | ✅ | Patient profile (blood group, medicines, history, emergency contact); allergy warning when billing / prescribing |
+| | Treatment master + pricing | ✅ | Settings → Treatment price list (18 common treatments seeded at ₹0 — owner sets prices); price chips on the receipt |
+| | Treatment history | ✅ | Patient → Records → Treatments (planned / in progress / done, tooth, doctor); bill planned treatments |
+| | Prescription & exam history sync | ✅ | History lists now load from the server (all devices see the same) |
+| | Follow-ups | ✅ | 🔔 Follow-ups page (overdue / today / upcoming, WhatsApp, done); follow-up date on prescriptions |
+| **5 Financial** | Cash closing, receivables, payables | ✅ | Cash closing; Dues; Suppliers |
+| | Pharmacy gross profit, dental analysis, operating profit | ✅ | 💹 Finance dashboard (any period: today, month, FY, custom) |
+| | Monthly / annual statements | ✅ | Finance → Statement (month by month, FY April–March) |
+| | Refund reports, inventory valuation | ✅ | Finance → Reports; Stock reports |
+| **6 Reports** | Daily/monthly sales, pharmacy profit, dental revenue, doctor-wise, medicine-wise, expiry loss, slow-moving, supplier & patient outstanding, expenses, purchases, refunds | ✅ 16 reports | Finance → Reports; every report exports **Excel (.xlsx)** and **PDF** (print → Save as PDF); "everything in one Excel" |
+| **7 UI/UX** | Dashboard, sidebar, tables, mobile, receipts | ✅ | Grouped sidebar, quick actions, clearer KPI labels, card tables on phones, sticky table headers, keyboard access; thermal receipt shows Paid now / Balance due and the UPI QR asks for the balance |
+| **8 Technical** | v3 migration verification | ✅ | Settings → 🩺 System health → Run health check (schema, tabs, columns, triggers, backups, data check); footer shows "server v3.1 ✓" |
+| | Server-side pagination / optimised loading | ✅ | Loads the last 365 days (owner can change); older bills/records on demand; unchanged data is not re-sent |
+| | JS minification | ✅ | `npm run build` → `js/app.min.js` (−31 %); a test fails if it is out of date |
+| | Encrypted local patient data | ✅ | AES-GCM with a per-user key from the server; unreadable after logout |
+| | Improved CSP / XSS | ✅ | No inline JavaScript at all (`script-src 'self'` + one hash); every data value escaped; spreadsheet-formula injection blocked |
+| | Security testing | ✅ | Automated: permission matrix for every action, forged/expired sessions, lockout, CSP, XSS, formula injection, secrets scan |
+| | Android testing | ✅ (simulated) | 4 bridge tests in Chromium; the APK must still be rebuilt and tried on a phone (`DEPLOYMENT.md` §D) |
+| | Backup / restore testing | ✅ | Restore drill (makes a backup, reads it back, compares every tab) — button in Settings and `restoreDrill()` in the editor |
+| | Production deployment verification | ⏳ owner | `DEPLOYMENT.md` §B checklist after the Apps Script update |
+
+Report Part 3 (immediate issues): **Netlify v1.0** → delete the Netlify site (`DEPLOYMENT.md` §E); **backend migration** → health check; **patient data** → encrypted on devices, owner-only screens checked on the server; **financial accuracy** → randomised books-balance tests (below); **backups** → restore drill.
+
+## Financial accuracy — how it is checked
+
+- Money model (server and app use the same rule): for every bill or dental receipt, **Balance due = (Total − Returned value) − (Paid − Refunded)**. A return first reduces what is still owed; only money paid beyond the new total is refunded. Over-collection is refused.
+- `tests/finance-invariants.test.js` runs three randomised days (bills paid in full / in part / later, collections, cancelled collections, returns with and without restock, allowances, dental receipts, cancelled bills). An independent calculation in the test must match the server **to the paisa**: every balance, total patients owe, stock of every medicine, and the day's cash summary (cash/UPI in and out). The server's own data check must find nothing.
+- Dashboard labels say exactly what each number is ("Gross profit today — medicine margin + dental, before expenses"). The full picture (returns, expenses, expiry loss) is on the Finance page. No calculation was changed silently; where v3.1 adds new figures they are separate and labelled.
+
+## What changed in v3.1 and why
+
+### `apps-script/Code.gs`
+- New tabs: Payments, CashClosings, Suppliers, SupplierLedger, PurchaseInvoices, PurchaseReturns, TreatmentMaster, PatientTreatments, FollowUps. New columns appended on the right of Medicines, Bills, TreatmentReceipts, Purchases, Prescriptions, Patients, Appointments, ExamForms (see `MIGRATION.md` §10).
+- New actions for payments, refunds, cash closing, suppliers, invoices, attachments, treatments, follow-ups, patient history, paging, reports, health check, restore drill — all behind the same login + permission gatekeeper; v3.1 actions answer "run migrateToV31" until the update is done.
+- `migrateToV31DryRun` / `migrateToV31`: verified backup first, additive only, re-runnable; old bills and receipts are marked **paid in full** (that is what they were); suppliers are created from purchase history; 18 common treatments are added at ₹0.
+- Security hardening: text starting with `= + - @` is stored as plain text (a typed formula can never run in the sheet or leak data); action / permission / lookup tables only accept their own names (`constructor`, `toString` … are unknown actions); a device data key per user for encrypting cached patient data.
+
+### `js/app.js` (source) → `js/app.min.js` (what the site loads)
+- `00b-secure-store` encrypted device storage · `00c-safe-handlers` safe `data-on…` handlers (no eval) · `13-v31-core` shared helpers · `14-money` · `15-suppliers` · `16-stock` · `17-clinic` · `18-finance` (Excel writer, charts, statements, reports) · `19-system` (settings, health check, restore drill, older bills, dashboard tiles).
+- Older screens: every data value now passes through `esc()`; CSV exports quote cells and neutralise formulas; the thermal receipt reads the real bill data (never sample medicines) and prints Paid now / Balance due.
+
+### `index.html`
+- Strict Content-Security-Policy (no `'unsafe-inline'` scripts), grouped sidebar, new pages, v3.1 styles, mobile table cards.
+
+### Android (`android-app/`)
+- Builds from `js/app.min.js`; camera permission for barcodes / invoice photos (optional hardware); version 3.1.0 (code 4).
+
+## Tests (all passing)
+
+| File | What | Count |
+|---|---|---|
+| `tests/backend.test.js` | v3 server: login, sessions, permissions, billing, FEFO, cancellations, purchases, backups, migration | 23 |
+| `tests/backend-v31.test.js` | v3.1 server: migration, part payments, collections, returns/refunds, cash closing, suppliers, invoices, attachments, clinic, paging, reports, health check, restore drill, formula guard | 21 |
+| `tests/security.test.js` | permission matrix for **every** action (no session / forged / staff), unknown actions, no secrets in responses or the repository, duplicate functions | 7 |
+| `tests/finance-invariants.test.js` | randomised books-balance check (3 seeds) | 3 |
+| `tests/safe-handlers.test.js`, `tests/build.test.js` | every handler parses, the interpreter refuses unsafe code, CSP hash, minified file up to date | 6 |
+| `tests/e2e.test.js` | browser: v3 flows, offline queue, old server compatibility | 11 |
+| `tests/e2e-v31.test.js` | browser: every v3.1 screen, encrypted storage, Excel export, barcode, XSS, CSP, thermal receipt | 11 |
+| `android-app/tests/bridge.test.js` | Android build + native bridge (simulated) | 4 |
+
+## Remaining limitations (honest list)
+
+- The Android app is tested with simulated plugins; it still needs a real-phone check after rebuilding (Bluetooth printer, camera, printing).
+- Barcode scanning by camera needs a browser with the Barcode Detector (Chrome / Android); elsewhere type the code or use a USB scanner.
+- Apps Script cannot see IP addresses, so login protection is per username (5 tries → 15 min lock), not per device.
+- PDF export uses the browser's "Save as PDF" (no separate PDF file generator).
+- Combined bill has no discount (unchanged from v3.0).
+- Phones still disable pinch-zoom (`user-scalable=no`) to stop iPad input zoom.
 
 ## Next session — start here
-1. Confirm the owner finished `DEPLOYMENT.md` §A and §B (check AuditLog for `migrateToV3` and logins).
-2. Stage 4: partial payments + outstanding balances on bills and combined bills, refunds (no GST — not registered).
-3. Stage 4: supplier master + ledger, purchase returns screen; then Stage 5 financial dashboard.
+1. Confirm the owner finished `DEPLOYMENT.md` §A–§B (Settings → Health check shows schema 4 and a verified backup; the sidebar footer shows "server v3.1 ✓").
+2. Rebuild the APK on the clinic PC (`DEPLOYMENT.md` §D) and try printer, camera and printing on a phone.
+3. Delete the old Netlify site if it still exists (`DEPLOYMENT.md` §E).
+4. Ideas not yet requested: SMS / WhatsApp Business API for automatic reminders; per-doctor commission report.

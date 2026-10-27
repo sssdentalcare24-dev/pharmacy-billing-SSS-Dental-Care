@@ -6,7 +6,7 @@ The clinic website, packaged as an Android app. Same features, same login, same 
 |---|---|
 | App name | SSDC Billing |
 | App ID | `in.srisaidentalcare.billing` |
-| Version | 3.0.0 (code 3) |
+| Version | 3.1.0 (code 4) |
 | Android | 7.0 and newer (minSdk 24, targetSdk 36) |
 
 ## What is different inside the app
@@ -17,7 +17,8 @@ Android's in-app browser lacks a few things Chrome has, so the app adds native r
 |---|---|
 | Bluetooth thermal printer | Native Bluetooth plugin. Same printers as before. Android asks for "Nearby devices" permission once; no location permission needed |
 | A4 printing (bills, prescriptions, receipts, exam forms) | Android print screen → any printer, or **Save as PDF** |
-| CSV exports (reports, expenses) | Android share sheet → WhatsApp, Drive, email, Files |
+| CSV and Excel exports (reports, expenses, finance) | Android share sheet → WhatsApp, Drive, email, Files (Excel files are kept byte-for-byte) |
+| Barcode scanning, invoice photos | Camera (Android asks once; phones without a camera can still type the code) |
 | WhatsApp, UPI, maps links | Open the WhatsApp / UPI / Maps app |
 | Back button | Closes popup → form → menu → goes to the home page → leaves the app |
 | Offline | Built in (no service worker needed) |
@@ -53,9 +54,10 @@ Android's in-app browser lacks a few things Chrome has, so the app adds native r
 
 ## After the website changes
 
-The app carries its own copy of the website. When `index.html` or `js/app.js` change:
+The app carries its own copy of the website (`index.html` + the built `js/app.min.js`). When the website changes:
 
 ```
+npm run build          (in the repository root, if js/app.js was edited)
 cd android-app
 npm run sync
 ```

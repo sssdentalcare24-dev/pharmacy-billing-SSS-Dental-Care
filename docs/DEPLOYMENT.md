@@ -1,70 +1,100 @@
-# Deployment — GitHub Pages + the same Apps Script
+# Deployment — GitHub Pages + the same Apps Script (v3.1)
 
 ```
 GitHub repo (main) ──► GitHub Pages  https://sssdentalcare24-dev.github.io/pharmacy-billing-SSS-Dental-Care/
 Apps Script (the existing project, same /exec link) ──► the existing spreadsheet
 ```
 
-No Netlify, no second Apps Script, no second spreadsheet. Safety comes from the **automatic verified backup** that `migrateToV3` makes before it changes anything, and from the fact that the upgrade only **adds** tabs and columns.
+No Netlify, no second Apps Script, no second spreadsheet. Safety comes from the **automatic verified backup** each migration makes before it changes anything, and from the fact that migrations only **add** tabs and columns.
 
-The website and the Apps Script must be on the same version: the v3 app talks only to the v3 server. Until the server is updated, the new app shows a red banner: *"The Apps Script server has not been updated yet…"* — nothing is saved in the meantime.
+**Order does not matter for safety.** The v3.1 website works with a v3.0 server (the new screens stay hidden and the sidebar footer says *"server needs update"*). Once the server is updated, the new screens appear by themselves after the next login.
 
 ---
 
-## A. Switch-over (≈15 minutes, do it when the clinic is quiet)
+## A. Update the Apps Script to v3.1 (≈10 minutes, when the clinic is quiet)
 
-1. **Apps Script editor** → open your existing project.
-2. *Project settings* → set **Time zone = (GMT+05:30) India Standard Time** (optional: tick *Show "appsscript.json"* and paste `apps-script/appsscript.json`).
-3. Open `Code.gs` → select all → paste the new **`apps-script/Code.gs`** from GitHub → **Save**.
-4. Function menu → **`migrateToV3DryRun`** → **Run** → read the log (it only lists what will be added).
-5. Function menu → **`migrateToV3`** → **Run** → allow the permissions Google asks for (Drive for the backup, Gmail for e-mails).
-   - The log shows **"Backup OK"** with a link, then **"✅ Migration complete"**.
-   - It also shows the **temporary passwords** for `owner` and `staff` (also e-mailed to the clinic Google account).
-6. Function menu → **`installTriggers`** → **Run** (daily backup ~2 AM + daily stock e-mail ~8 AM).
-7. **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.** The `/exec` link stays the same.
-8. Open the app on each device → log in with the temporary password → choose a personal password (at least 8 characters).
-9. Owner: **Settings** → set the **staff discount limit**, check **Backups** shows a verified backup, glance at the **Audit log**.
+**Already on v3.0** (you ran `migrateToV3` before — the app has owner/staff logins):
 
-If the browser still shows the old app: close and reopen it (the app updates itself in the background).
+1. **Apps Script editor** → open the existing project → `Code.gs` → select all → paste the new **`apps-script/Code.gs`** from GitHub → **Save**.
+2. Function menu → **`migrateToV31DryRun`** → **Run** → read the log (it only lists what will be added; nothing changes).
+3. Function menu → **`migrateToV31`** → **Run** → allow any new permission Google asks for (Drive, for invoice attachments).
+   - The log shows **"Backup OK"** with a link, then **"✅ v3.1 update complete"**.
+   - Old bills and dental receipts are marked **paid in full** (that is what they were). Suppliers are created from your purchase history. A treatment price list with 18 common treatments is added at **₹0** — set your prices in the app.
+4. **Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy.** The `/exec` link stays the same.
+5. Open the app → log in as owner → sidebar footer shows **"App v3.1 · server v3.1 ✓"**.
+6. **Settings → 🩺 System health → Run health check** → everything ✅ (if "temporary password" or "triggers" are ❌, follow the hint shown).
+7. In the same box → **🧪 Run restore drill** → *"Restore drill passed — N cells identical"*. This proves today's backup can really be restored.
+8. **Settings → 🦷 Treatment price list → ✏️ Edit prices** → enter your prices. Optional: **Settings → 💰 Payments & history** → whether staff may let a patient pay part now / later, and how many days of bills to keep on phones/PCs (default 1 year; older ones load when needed).
 
-## B. Quick check after switching (5 minutes)
+**Still on v2** (no logins yet): run `migrateToV3DryRun` → `migrateToV3` (note the temporary passwords in the log/e-mail) → `migrateToV31` → `installTriggers` → deploy a new version (step 4) → everyone logs in and sets a password.
 
-- [ ] Owner and staff can log in; staff sees only the staff pages
-- [ ] Make a small bill → "✅ Saved on server · Bill No SSDC-…"; stock goes down
-- [ ] Owner → All Bills → ✖ cancel that test bill with reason "test" → stock comes back
-- [ ] Inventory → 📦 Stock on one medicine shows its batch (OPENING)
-- [ ] Settings → Backups → ✅ verified · Audit log shows the logins and the test bill
-- [ ] Thermal printer still prints
+If a phone or computer still shows the old screens: close the app/tab and open it again (it updates itself in the background).
+
+## B. Quick check after the update (10 minutes)
+
+- [ ] Owner and staff can log in; staff does not see Suppliers, Finance, Inventory, Purchases, Expenses, Reports, Settings
+- [ ] New bill → tick **Pay part now** → pay half → "Saved on server", the bill shows **Due ₹…**, it appears in **💰 Dues & Payments**
+- [ ] Dues → **Collect** the rest → the bill shows Paid; **History** shows the collection
+- [ ] Thermal / A4 print of a part-paid bill shows **Paid now** and **Balance due**
+- [ ] Owner: bill → **↩ Return / refund** one medicine → stock goes back up, refund shown
+- [ ] **🧮 Cash closing** → expected cash matches the drawer (enter the count; the difference is saved)
+- [ ] **🏭 Suppliers** → open a supplier → ledger; record a purchase invoice with a photo
+- [ ] **👥 Patients** → open a patient → profile (allergies) → Records
+- [ ] **💹 Finance** → This month → numbers look right; **Reports → ⬇ Excel** downloads
+- [ ] Inventory → 📷 scan a medicine barcode (phone) or type the code
+- [ ] Settings → System health all ✅; restore drill passed
+- [ ] Old bills from before the update still show and reprint
 
 ## C. If something is wrong — rollback
 
-1. Apps Script → **Deploy → Manage deployments → ✏️ Edit → Version:** choose the **previous version** → Deploy.
-2. GitHub → the repository → *Commits* → revert to commit `9a392c4` (the version before v3), or ask Claude to do it.
-3. Data: nothing was removed. If needed, open Drive → *SSDC Backups* → `SSDC Backup pre-migration …` and run `restoreFromBackup("<file id>")` (see `MIGRATION.md` §8).
+1. Apps Script → **Deploy → Manage deployments → ✏️ Edit → Version:** choose the **previous version** → Deploy. (The v3.1 tabs/columns stay in the sheet; the v3.0 server ignores them.)
+2. Website: GitHub → *Commits* on `main` → revert the v3.1 merge, or ask Claude. The v3.0 website works with both servers.
+3. Data: nothing was removed. Drive → *SSDC Backups* → `SSDC Backup pre-migration …` is the copy taken just before the update; `restoreFromBackup("<file id>")` switches to it (see `MIGRATION.md` §8).
 
-## D. Forgotten passwords
+## D. Android app (after the website is updated)
+
+On the clinic PC, in the repository folder:
+
+```bat
+git pull
+cd android-app
+npm install
+npm run sync             (copies the website into the app: www/ → Android assets)
+```
+
+Then build the signed APK the same way as last time — Android Studio → **Build → Generate Signed App Bundle / APK… → APK** (details in `android-app/README.md`), or `android\gradlew.bat assembleRelease` with JDK 21.
+
+- Version is **3.1.0 (code 4)**. If `android-app/android/keystore.properties` contains a `versionCode` line, set it to **4** or higher — Android refuses to install an update with the same code.
+- Install the new APK over the old one (same signing key → data and login are kept).
+- On the phone, try: Bluetooth thermal print, A4 print / Save as PDF, 📷 barcode scan (Android asks for the camera once), invoice photo, WhatsApp link.
+
+## E. Remove the old Netlify copy (report issue "Netlify shows v1.0")
+
+The old Netlify site still runs the **v1.0** app with the old, unsafe login. Nobody should use it for billing.
+
+1. Log in at **app.netlify.com** → open the site → **Site configuration → Delete this site** (bottom of the page).
+2. Remove any Netlify bookmark / home-screen icon on clinic phones and computers; add the GitHub Pages link instead.
+3. GitHub Pages (`main`) is the **only** production website. Old Apps Script deployments: Apps Script → *Deploy → Manage deployments* → archive every deployment except the one whose `/exec` link the app uses.
+
+## F. Forgotten passwords
 
 - **Staff:** owner → Settings → Users → *Reset password* (temporary password, staff changes it at next login).
 - **Owner:** Apps Script editor → run **`emergencyResetOwnerPassword`** → a temporary password is e-mailed to the clinic Google account.
 
-## E. Production checklist
+## G. Release checklist (developers)
 
-- [ ] `npm test` → 34 passing (done before every release)
-- [ ] `migrateToV3DryRun` reviewed
-- [ ] `migrateToV3` finished with "✅ Migration complete" and a backup link
-- [ ] Triggers installed (Apps Script → ⏰ Triggers shows `scheduledBackup` and `sendDailyStockReport`)
-- [ ] New version deployed on the **same** deployment (link unchanged)
-- [ ] Every user changed the temporary password
-- [ ] Staff discount limit set
-- [ ] Next morning: a `SSDC Backup daily …` file exists in Drive → *SSDC Backups*
-
-## F. Running the tests (for developers)
+- [ ] `npm run build` after any change to `js/app.js` (a test fails if `js/app.min.js` is stale)
+- [ ] `npm test` → all passing (server, security, finance, handlers, browser)
+- [ ] `cd android-app && npm run build:www && npm test` → 4 passing; `npx cap copy android`
+- [ ] Merge `develop` → `main` (GitHub Pages publishes `main`)
+- [ ] Owner: §A, then §B on the live site
 
 ```bash
-npm install && npx playwright install chromium
-npm test        # 23 server tests + 11 browser tests, all on simulated Google services
+npm install            # esbuild; Playwright browsers: npx playwright install chromium
+npm run build
+npm test
 ```
 
-## G. Security on GitHub Pages
+## H. Security on GitHub Pages
 
-GitHub Pages cannot send security headers, so `index.html` carries a **Content-Security-Policy `<meta>` tag** (scripts only from this site, network only to Google Apps Script, no plugins) and `no-referrer`. The repository is public but contains **no secrets**: no passwords, no hashes, no Apps Script link (entered once per device), and the server requires a login for every request.
+GitHub Pages cannot send security headers, so `index.html` carries a **Content-Security-Policy `<meta>` tag**: scripts only from this site (no inline JavaScript at all — buttons use `data-on…` attributes run by a small safe interpreter), network only to Google Apps Script, no plugins, no framing of other sites. The repository is public but contains **no secrets**: no passwords, no hashes, no Apps Script link (entered once per device), no signing keys; the server requires a login for every request and checks the role for every action. A test scans the repository for keys and passwords on every run.

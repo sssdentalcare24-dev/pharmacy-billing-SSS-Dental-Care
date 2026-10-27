@@ -5,8 +5,8 @@
   "description": "Sri Sai Speciality Dental Care — billing, pharmacy inventory and clinic management (static PWA + Google Apps Script)",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test --test-concurrency=1 tests/backend.test.js tests/backend-v31.test.js tests/safe-handlers.test.js tests/build.test.js tests/security.test.js tests/e2e.test.js tests/e2e-v31.test.js",
-    "test:backend": "node --test tests/backend.test.js tests/backend-v31.test.js tests/safe-handlers.test.js tests/build.test.js tests/security.test.js",
+    "test": "node --test --test-concurrency=1 tests/backend.test.js tests/backend-v31.test.js tests/safe-handlers.test.js tests/build.test.js tests/security.test.js tests/finance-invariants.test.js tests/e2e.test.js tests/e2e-v31.test.js",
+    "test:backend": "node --test tests/backend.test.js tests/backend-v31.test.js tests/safe-handlers.test.js tests/build.test.js tests/security.test.js tests/finance-invariants.test.js",
     "test:e2e": "node --test --test-concurrency=1 tests/e2e.test.js tests/e2e-v31.test.js"
   },
   "devDependencies": {

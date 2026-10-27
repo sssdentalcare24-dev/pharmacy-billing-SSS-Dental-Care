@@ -1,6 +1,6 @@
 // Tests for the Android app build (android-app/www) and its native bridge,
 // run in Chromium with simulated Android plugins and the real Code.gs backend.
-//   cd android-app && npm run build:www && node --test tests/
+//   cd android-app && npm run build:www && npm test
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -129,6 +129,22 @@ test('CSV downloads become a shared file; Back button closes things in the right
     });
     assert.equal(share.write.data, 'Medicine,Qty\nParacetamol,5'); assert.equal(share.write.path, 'Medicine_Report.csv');
     assert.deepEqual(share.share.files, ['file:///cache/Medicine_Report.csv']);
+    assert.equal(share.write.encoding, 'utf8');
+    // Excel (.xlsx) exports are binary: written byte-for-byte (base64, no text encoding) — a real zip
+    const xl = await t.page.evaluate(async () => {
+      const calls = {};
+      const handler = SSDCShims.makeDownloadHandler(
+        { writeFile: async (o) => { calls.write = o; return { uri: 'file:///cache/' + o.path }; } },
+        { share: async (o) => { calls.share = o; } }, SSDCShims.makeBlobReader(window));
+      const orig = HTMLAnchorElement.prototype.click;
+      let done; const finished = new Promise(r => { done = r; });
+      HTMLAnchorElement.prototype.click = function () { if (this.hasAttribute('download')) { handler(this.href, this.getAttribute('download')).then(done); return; } return orig.call(this); };
+      try { V31.xlsx.download('Test Report.xlsx', [{ name: 'Sheet', rows: [['Medicine', 'Qty'], ['Paracetamol', 5]] }]); await finished; }
+      finally { HTMLAnchorElement.prototype.click = orig; }
+      const bin = atob(calls.write.data);
+      return { encoding: calls.write.encoding, path: calls.write.path, magic: bin.slice(0, 2), size: bin.length };
+    });
+    assert.equal(xl.encoding, undefined); assert.equal(xl.path, 'Test_Report.xlsx'); assert.equal(xl.magic, 'PK'); assert.ok(xl.size > 300);
 
     const steps = await t.page.evaluate(() => {
       const out = [];
