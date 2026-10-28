@@ -77,6 +77,8 @@ test('part payment on a pharmacy bill → due on the bill, in Dues, collected la
     assert.match(th.prev, /BALANCE DUE\s+Rs\.20\.00/); assert.match(th.prev, /Paracetamol 500mg x5/); assert.equal(th.qr, 20);
     assert.ok(!/Apcil|Cenodol|Mamatha/.test(th.txt + th.prev), 'no sample data on a real bill');
     const b = row(t, 'Bills', r => r[1] === 'Ravi Kumar' && r[7] === 50 && r[0] !== 'BILL-1700000000001');
+    const billNo = val(t, 'Bills', b, 'Bill No'); assert.match(billNo, /^SSDC-\d{2}-\d{5}$/);
+    assert.ok(th.txt.includes('Bill No : ' + billNo) && th.prev.includes('Bill No : ' + billNo), 'the receipt shows the bill number, not the internal id');
     assert.equal(val(t, 'Bills', b, 'Paid Amount'), 30); assert.equal(val(t, 'Bills', b, 'Balance Due'), 20); assert.equal(val(t, 'Bills', b, 'Patient ID'), 'PT-1');
     await t.page.evaluate(() => { closeBillSuccess(); showPage('payments'); });
     await waitUntil(t.page, () => /Ravi Kumar/.test(document.getElementById('payments').textContent) && /₹20/.test(document.getElementById('payments').textContent));

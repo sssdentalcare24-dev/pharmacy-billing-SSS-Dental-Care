@@ -1930,8 +1930,8 @@ Thank you! Visit again.`;
     <div class="mode">${esc(modeLabel)}</div>
   </div>
   <div class="body">
-    <div id="__ph" data-patient="${esc(b.patientName||'')}" data-doctor="${esc(b.doctor||'')}" data-date="${esc(b.date||'')}" data-billid="${esc(b.billId||'')}" data-total="${parseFloat(b.total||0).toFixed(2)}" data-subtotal="${parseFloat(b.subtotal||0).toFixed(2)}" data-discount="${parseFloat(b.discount||0).toFixed(2)}" data-mode="${esc(b.paymentMode||'Cash')}" data-paid="${(+(b.paidAmount !== undefined ? b.paidAmount : b.total) || 0).toFixed(2)}" data-due="${(+b.balanceDue || 0).toFixed(2)}" data-items="${encodeURIComponent(JSON.stringify((b.items||[]).map(function(i){return{name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount};})))}" style="display:none"></div>
-    <div class="bill-id">${esc(b.billId)}</div>
+    <div id="__ph" data-patient="${esc(b.patientName||'')}" data-doctor="${esc(b.doctor||'')}" data-date="${esc(b.date||'')}" data-billid="${esc(b.billNo||b.billId||'')}" data-total="${parseFloat(b.total||0).toFixed(2)}" data-subtotal="${parseFloat(b.subtotal||0).toFixed(2)}" data-discount="${parseFloat(b.discount||0).toFixed(2)}" data-mode="${esc(b.paymentMode||'Cash')}" data-paid="${(+(b.paidAmount !== undefined ? b.paidAmount : b.total) || 0).toFixed(2)}" data-due="${(+b.balanceDue || 0).toFixed(2)}" data-items="${encodeURIComponent(JSON.stringify((b.items||[]).map(function(i){return{name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount};})))}" style="display:none"></div>
+    <div class="bill-id">${esc(b.billNo||b.billId)}</div>
     <div class="clinic-header">
       <div class="name">🦷 Sri Sai Speciality Dental Care</div>
       <div class="sub">${CONFIG ? (CONFIG.clinicAddress || '') : ''}</div>
@@ -2126,6 +2126,7 @@ Thank you! Visit again.`;
         function applyBillSaveResult(billId, res, items) {
             const b = bills.find(x => x.billId === billId);
             if (res && res.success) {
+                if (res.billNo && _lastBillData && _lastBillData.billId === billId) _lastBillData.billNo = res.billNo;   // receipt printed from the success window shows the bill number
                 if (b) { b.syncStatus = 'saved'; if (res.billNo) b.billNo = res.billNo; if (res.costTotal !== undefined && currentRole === 'owner') b.costTotal = res.costTotal;
                     if (res.balanceDue !== undefined) { b.paidAmount = res.paidAmount; b.balanceDue = res.balanceDue; b.paymentStatus = res.balanceDue > 0.009 ? (res.paidAmount > 0 ? 'Partial' : 'Unpaid') : 'Paid'; } }
                 setBillSyncStatus('saved', res.billNo);
@@ -3593,14 +3594,14 @@ Reason (required):`) || '').trim();
                 '<div id="__ph" data-patient="'+(bill.patientName||'').replace(/"/g,'&quot;')
                     +'" data-doctor="'+(bill.doctor||'').replace(/"/g,'&quot;')
                     +'" data-date="'+(bill.date||'')
-                    +'" data-billid="'+(bill.billId||'')
+                    +'" data-billid="'+esc(bill.billNo||bill.billId||'')
                     +'" data-total="'+parseFloat(bill.total||0).toFixed(2)
                     +'" data-subtotal="'+subtotal.toFixed(2)
                     +'" data-discount="'+discount.toFixed(2)
                     +'" data-mode="'+(bill.paymentMode||'Cash')
                     +'" data-items="'+encodeURIComponent(JSON.stringify(items.map(function(i){ return {name:i.medicineName||i.name||'',qty:i.qty,price:i.price,amount:i.amount}; })))
                     +'" style="display:none"></div>' +
-                '<div class="bid">'+esc(bill.billId)+'</div>' +
+                '<div class="bid">'+esc(bill.billNo||bill.billId)+'</div>' +
                 '<div class="hdr"><h2>&#x1F9B7; '+CONFIG.clinicName+'</h2>' +
                 '<p>'+(CONFIG.clinicAddress||'')+'</p>' +
                 '<p>'+(CONFIG.clinicPhone?'&#128222; '+CONFIG.clinicPhone:'')+'</p></div>' +
@@ -3636,7 +3637,7 @@ Reason (required):`) || '').trim();
             if (typeof items === 'string') { try { items = JSON.parse(items); } catch(e) { items = []; } }
 
             let message = `*${CONFIG.clinicName.toUpperCase()}*\n\n`;
-            message += `*Bill ID: ${bill.billId}*\n`;
+            message += `*Bill No: ${bill.billNo || bill.billId}*\n`;
             message += `Date: ${bill.date}\n`;
             message += `Hello ${bill.patientName}!\n\n`;
             message += `Doctor: ${bill.doctor || 'N/A'}\n\n`;
